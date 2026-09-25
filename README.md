@@ -27,4 +27,4 @@ The first production steps are tracked as GitHub issues:
 3. [Operator controls and validated IPC](https://github.com/roger6vi/Bingo/issues/3)
 4. [Read-only public draw display](https://github.com/roger6vi/Bingo/issues/4)
 
-The prototype's display, video/audio, and sample-counter recovery were observed interactively on macOS before the Electron 41 upgrade. With Electron 41, automated tests, build, dependency audit, and a bounded process-start check passed; its GUI has **not** been visually rechecked. Windows runtime and packaged-app behavior remain untested.
+With Electron 41 on macOS, the operator visually confirmed the public display, video with audio, sample count 5 restored after restarting, and the fullscreen secondary display falling back to the primary on disconnect, staying there after reconnect, then returning to secondary only on operator command. Automated tests (19/19), build, and dependency audit also passed. These are prototype checks, not a production bingo validation; Windows runtime and packaged-app behavior remain untested.
