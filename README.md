@@ -1,27 +1,30 @@
-# Desktop feasibility harness
+# Bingo
 
-A minimal macOS-first Electron + TypeScript harness for checking public-display placement, local media linkage, and sample-state recovery. The same screen API and coordinate-based window plan are intended to work on Windows, but Windows has not been tested. This is not the bingo product.
+An offline 90-ball bingo application for community events, with a private operator view and a separate public display. Development starts on macOS with one Electron + TypeScript codebase; Windows support is planned for later.
 
-## Local commands
+## Current status
 
-Requires Node 24 (tested with Node 24.11.0) and npm. Install dependencies with `npm ci` before launching Electron. The prototype was built and exercised on macOS; Windows and packaged-app execution have not been tested.
+This repository contains a **desktop feasibility prototype, not a playable bingo game**. It opens operator and public windows, can play a bundled local video, and saves a sample counter between launches. The counter is a technical sample, not event storage; the real application will use SQLite. Draws, tickets, prizes, themes, and event recovery are not implemented yet.
+
+## Run the prototype
+
+Requires Node.js 24 and npm on macOS. From the repository root:
 
 ```sh
+npm ci
 npm test
-npm run build
 npm start
 ```
 
-`npm test` uses Node's built-in runner and built-in TypeScript stripping; it needs no dependency install. `npm start` compiles TypeScript to `dist/` and launches Electron using the two HTML pages in `src/`. Run from the project root. Do not move only `dist/` without the HTML pages.
+`npm start` builds the TypeScript code and opens the operator window. Use **Open / reopen public window** to show the public display. On a Mac with a second screen it opens fullscreen there; with one screen it opens as a preview. The public view contains a one-second sample video with manual playback controls. `npm run build` checks the TypeScript build without launching Electron.
 
-The app starts with only the operator window, clamped to the primary work area. Use **Open / reopen public window** to show public output: fullscreen on the first secondary display, or a windowed primary work-area preview when alone. Closing public leaves operator running; open it again with the same button. On secondary disconnect, the existing public window is moved to primary preview and the operator shows a pause reminder (no game engine or automatic pause exists). Reconnecting does not move it back: use **Move public window to secondary display**. That button does nothing if public is closed or no secondary exists.
+## Next work
 
-The operator window shows a **Recovered sample count** from `sample-state.json` in Electron's `app.getPath('userData')`. Click **Increment sample count**, quit, and reopen to check recovery on a real machine. A missing or invalid/unsupported JSON file displays zero; a non-missing read error or failed write is reported. Writes use a same-directory temporary file and rename. This tiny single-process feasibility sample is **not SQLite**, a durable transactional database, or production event storage; corrupt-file recovery discards the invalid count on the next increment. Node tests use an in-memory filesystem for missing/corrupt files and write failures, plus a real temporary directory and a fresh Node process for sample-count recovery. The user also observed count 2 after quitting Electron with ⌘Q and reopening it on macOS. None of this validates SQLite, crash durability, or recovery of a production bingo event.
+The first production steps are tracked as GitHub issues:
 
-The public window contains a self-generated, one-second H.264/AAC MP4 at `assets/sample.mp4`, referenced as `../assets/sample.mp4` from `src/public.html`. Use its explicit player controls; it does not autoplay. The resource test verifies the local path and markup; the user additionally observed video and audio playback in the Electron public window on macOS. No downloaded or licensed media is included.
+1. [Testable 90-ball event core](https://github.com/roger6vi/Bingo/issues/1)
+2. [SQLite event persistence and recovery](https://github.com/roger6vi/Bingo/issues/2)
+3. [Operator controls and validated IPC](https://github.com/roger6vi/Bingo/issues/3)
+4. [Read-only public draw display](https://github.com/roger6vi/Bingo/issues/4)
 
-## Feasibility results and limits
-
-Final independent checks passed: `npm test` (19/19), `npm run build`, and `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1 assets/sample.mp4` (`duration=1.000000`). The user observed the operator and public windows, video and audio playback, and sample count 2 restored after quitting and reopening Electron on macOS. With a secondary monitor connected, the user saw the public window fullscreen there; disconnecting moved that window to a primary-display preview while the operator stayed open. After reconnecting, the preview remained on the primary display until the operator explicitly returned it to fullscreen on the secondary.
-
-These are tests of this source-tree prototype, not of a packaged application. The sample counter is not a bingo game or production persistence; ticket/claim/prize rules, SQLite event recovery, Windows runtime, and packaging remain unimplemented or untested. The first proposed production work units are listed in `planning/initial-issues.md`. Detailed internal feasibility notes remain in the separate private archive and are not part of this public snapshot.
+The prototype's display, video/audio, and sample-counter recovery were observed interactively on macOS before the Electron 41 upgrade. With Electron 41, automated tests, build, dependency audit, and a bounded process-start check passed; its GUI has **not** been visually rechecked. Windows runtime and packaged-app behavior remain untested.
