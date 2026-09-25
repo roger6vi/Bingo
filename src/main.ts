@@ -1,7 +1,7 @@
-import { app, BrowserWindow, ipcMain, screen } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, screen } from 'electron';
 import path from 'node:path';
-import fs from 'node:fs';
-import { createSampleState } from './sample-state';
+import { createEventStore } from './event-store';
+import { initializeCurrentEvent } from './event-persistence';
 import { createWindowLifecycle } from './window-lifecycle';
 import { planOperatorWindow, planPublicWindow } from './window-plan';
 import { createPublicWindowMover } from './window-placement';
@@ -10,8 +10,18 @@ const htmlPath = (name: string) => path.join(__dirname, '..', 'src', name);
 const preload = path.join(__dirname, 'preload.js');
 
 app.whenReady().then(() => {
-  // Feasibility sample only: this JSON file is not production persistence or SQLite.
-  const sample = createSampleState(path.join(app.getPath('userData'), 'sample-state.json'), fs);
+  try {
+    const databasePath = path.join(app.getPath('userData'), 'current-event.sqlite');
+    const { store } = initializeCurrentEvent(createEventStore(databasePath));
+    app.once('before-quit', () => store.close());
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    dialog.showErrorBox('Could not open current event',
+      `The event database could not be initialized. Existing event data was not reset.\n\n${detail}`);
+    app.quit();
+    return;
+  }
+
   const primary = screen.getPrimaryDisplay();
   const operator = new BrowserWindow({
     ...planOperatorWindow(primary.workArea),
@@ -39,14 +49,6 @@ app.whenReady().then(() => {
     },
   });
 
-  ipcMain.handle('sample-read', (event) => {
-    if (event.sender !== operator.webContents) throw new Error('Unauthorized sample state read');
-    return sample.read();
-  });
-  ipcMain.handle('sample-increment', (event) => {
-    if (event.sender !== operator.webContents) throw new Error('Unauthorized sample state change');
-    return sample.increment();
-  });
   ipcMain.on('open-public', (event) => {
     if (event.sender !== operator.webContents) return;
     lifecycle.openPublic().focus();
@@ -56,6 +58,10 @@ app.whenReady().then(() => {
   });
   screen.on('display-removed', () => lifecycle.displaysChanged());
   screen.on('display-metrics-changed', () => lifecycle.displaysChanged());
+}).catch((error: unknown) => {
+  const detail = error instanceof Error ? error.message : String(error);
+  dialog.showErrorBox('Could not start application', detail);
+  app.quit();
 });
 
 app.on('window-all-closed', () => app.quit());

@@ -6,28 +6,8 @@
   <p>Desktop feasibility harness; no bingo controls yet.</p>
   <button id="open-public" type="button">Open / reopen public window</button>
   <button id="move-public" type="button">Move public window to secondary display</button>
-  <p>Recovered sample count: <span id="sample-count">Loading…</span></p>
-  <button id="increment-sample" type="button">Increment sample count</button>
-  <p id="sample-error" role="alert"></p>
   <p id="status" role="status" aria-live="polite"></p>
   <script>
-    const count = document.getElementById('sample-count');
-    const sampleError = document.getElementById('sample-error');
-    const increment = document.getElementById('increment-sample');
-    window.desktop.readSample().then(state => { count.textContent = String(state.count); })
-      .catch(() => { sampleError.textContent = 'Could not read sample state.'; });
-    increment.addEventListener('click', async () => {
-      increment.disabled = true;
-      try {
-        const state = await window.desktop.incrementSample();
-        count.textContent = String(state.count);
-        sampleError.textContent = '';
-      } catch {
-        sampleError.textContent = 'Could not save sample state.';
-      } finally {
-        increment.disabled = false;
-      }
-    });
     document.getElementById('open-public').addEventListener('click', () => window.desktop.openPublic());
     document.getElementById('move-public').addEventListener('click', () => window.desktop.movePublicToSecondary());
     window.desktop.onPublicStatus((pauseSuggested) => {
