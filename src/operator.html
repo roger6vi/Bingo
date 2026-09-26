@@ -3,18 +3,26 @@
 <head><meta charset="utf-8"><title>Operator preview</title></head>
 <body>
   <h1>Operator window</h1>
-  <p>Desktop feasibility harness; no bingo controls yet.</p>
-  <button id="open-public" type="button">Open / reopen public window</button>
-  <button id="move-public" type="button">Move public window to secondary display</button>
-  <p id="status" role="status" aria-live="polite"></p>
-  <script>
-    document.getElementById('open-public').addEventListener('click', () => window.desktop.openPublic());
-    document.getElementById('move-public').addEventListener('click', () => window.desktop.movePublicToSecondary());
-    window.desktop.onPublicStatus((pauseSuggested) => {
-      document.getElementById('status').textContent = pauseSuggested
-        ? 'Secondary display disconnected. Public output moved to primary preview; pause bingo until ready.'
-        : '';
-    });
-  </script>
+  <section aria-labelledby="event-heading">
+    <h2 id="event-heading">Current event</h2>
+    <p>Remaining numbers: <output id="remaining-count" aria-live="polite">90</output></p>
+    <h3>Called numbers (draw order)</h3>
+    <ol id="called-numbers" aria-label="Called numbers in draw order"></ol>
+    <label for="manual-number">Manual number (1–90)</label>
+    <input id="manual-number" type="number" min="1" max="90" step="1" inputmode="numeric" required>
+    <button id="draw-manual" type="button" disabled>Draw manual number</button>
+    <button id="draw-digital" type="button" disabled>Draw digital number</button>
+    <button id="reload-event" type="button">Reload event</button>
+    <p id="stale-warning" role="status" hidden>Event history may be stale. Reload before relying on it.</p>
+    <p id="event-error" role="alert"></p>
+  </section>
+  <section aria-labelledby="public-heading">
+    <h2 id="public-heading">Public window preview</h2>
+    <button id="open-public" type="button">Open / reopen public window</button>
+    <button id="move-public" type="button">Move public window to secondary display</button>
+    <p id="status" role="status" aria-live="polite"></p>
+  </section>
+  <p>Claims, prizes, and public draw synchronization are not implemented.</p>
+  <script type="module" src="./operator-ui.mjs"></script>
 </body>
 </html>
