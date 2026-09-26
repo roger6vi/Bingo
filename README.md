@@ -4,7 +4,7 @@ An offline 90-ball bingo application for community events, with a private operat
 
 ## Current status
 
-This repository contains a **desktop feasibility prototype, not a playable bingo game**. It opens operator and public windows, can play a bundled local video, and persists one current 90-ball event in a SQLite database under Electron's user-data directory (`current-event.sqlite`). Startup loads that event or explicitly creates it when absent. Invalid or unreadable data causes a visible startup error, not a reset. The event core and store support ordered draw history, but operator draw controls, tickets, prizes, and themes are not implemented yet.
+This repository contains a **desktop feasibility prototype, not a playable bingo game**. It opens operator and public windows, can play a bundled local video, and persists one current 90-ball event in a SQLite database under Electron's user-data directory (`current-event.sqlite`). Startup loads that event or explicitly creates it when absent. Invalid or unreadable data causes a visible startup error, not a reset. The operator window displays and reloads the persisted current event, its ordered called numbers, and the remaining count. It supports manual draws (integer 1–90) and digital draws; the visible history changes only after a successful persisted acknowledgement. Failed requests retain the last acknowledged history, warn that it may be stale, and offer reload. Tickets, claims, prizes, and themes are not implemented.
 
 ## Run the prototype
 
@@ -16,7 +16,7 @@ npm test
 npm start
 ```
 
-`npm start` builds the TypeScript code and opens the operator window. Use **Open / reopen public window** to show the public display. On a Mac with a second screen it opens fullscreen there; with one screen it opens as a preview. The public view contains a one-second sample video with manual playback controls. `npm run build` checks the TypeScript build without launching Electron. Persistence uses built-in `node:sqlite` (`DatabaseSync`), which requires the bundled Electron/Node runtime to support this experimental API; host Node tests alone do not validate Electron startup or quit/reopen recovery.
+`npm start` builds the TypeScript code and opens the operator window. Draw manually with a number from 1 to 90 or draw digitally; use **Reload event** to fetch the persisted event after an error. The public window is a separate preview and does not show the draw history. Use **Open / reopen public window** to show the public display. On a Mac with a second screen it opens fullscreen there; with one screen it opens as a preview. The public view contains a one-second sample video with manual playback controls. `npm run build` checks the TypeScript build without launching Electron. Persistence uses built-in `node:sqlite` (`DatabaseSync`), which requires the bundled Electron/Node runtime to support this experimental API; host Node tests alone do not validate Electron startup or quit/reopen recovery.
 
 ## Next work
 
@@ -27,4 +27,4 @@ The first production steps are tracked as GitHub issues:
 3. [Operator controls and validated IPC](https://github.com/roger6vi/Bingo/issues/3)
 4. [Read-only public draw display](https://github.com/roger6vi/Bingo/issues/4)
 
-Earlier Electron 41/macOS feasibility checks confirmed the public display, video with audio, and secondary-display fallback/reselection. SQLite-backed Electron quit/reopen recovery still needs a separate interactive smoke check. These are prototype checks, not a production bingo validation; Windows runtime and packaged-app behavior remain untested.
+Electron 41/macOS checks confirmed the public display, video with audio, secondary-display fallback/reselection, and an isolated operator manual/digital draw, error, reload, quit/reopen flow with exact persisted history recovery. Public draw synchronization, ticket claims, prizes, themes, Windows runtime, and packaged-app behavior remain outside this prototype; host Node tests alone do not verify these behaviors.
