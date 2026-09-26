@@ -9,7 +9,9 @@ import { createPublicWindowMover } from './window-placement';
 const htmlPath = (name: string) => path.join(__dirname, '..', 'src', name);
 const preload = path.join(__dirname, 'preload.js');
 
-app.whenReady().then(() => {
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else app.whenReady().then(() => {
   try {
     const databasePath = path.join(app.getPath('userData'), 'current-event.sqlite');
     const { store } = initializeCurrentEvent(createEventStore(databasePath));
