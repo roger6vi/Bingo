@@ -1,0 +1,32 @@
+body {
+  box-sizing: border-box;
+  margin: 0;
+  padding: clamp(1rem, 3vw, 2rem);
+  background: #f4f6f8;
+  color: #182736;
+  font: 1rem/1.5 system-ui, sans-serif;
+}
+
+bingo-shell {
+  display: block;
+  max-width: 70rem;
+  margin: auto;
+}
+
+section {
+  margin-block: 1.5rem;
+  padding: 1rem;
+  border: 1px solid #bdc9d4;
+  border-radius: 0.5rem;
+  background: #fff;
+}
+
+button, input { font: inherit; }
+button { margin: 0.25rem; padding: 0.35rem 0.7rem; }
+
+#latest-draw { display: block; font-size: clamp(3rem, 12vw, 10rem); font-weight: bold; line-height: 1.2; }
+#called-numbers { display: flex; flex-wrap: wrap; gap: 0.3em 1.8em; padding-left: 2em; }
+#called-numbers li { min-width: 2em; }
+#event-error, #stale-warning { color: #9b1c1c; font-weight: bold; }
+
+video { max-width: 100%; }

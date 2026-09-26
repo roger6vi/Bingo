@@ -1,3 +1,5 @@
+import './bingo-shell.mjs';
+import './screen.css';
 import { createOperatorController } from './operator-controller.mjs';
 
 function required(id, type) {
