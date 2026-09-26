@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -69,6 +69,85 @@ test('a fresh Node process recovers exact history and appends to it', (t) => {
   const reopened = createEventStore(path);
   try { assert.deepEqual(reopened.load()?.calledNumbers, [87, 3, 90]); }
   finally { reopened.close(); }
+});
+
+test('simultaneous first opens never observe a partially initialized database', async (t) => {
+  const path = fixture(t);
+  const release = join(fs.realpathSync(join(path, '..')), 'release');
+  const moduleUrl = new URL('../src/event-store.ts', import.meta.url).href;
+  const script = `
+    const fs = require('node:fs');
+    if (process.argv[3] === 'pause') {
+      const sqlite = require('node:sqlite');
+      const Original = sqlite.DatabaseSync;
+      sqlite.DatabaseSync = class extends Original {
+        constructor(path) {
+          super(path);
+          process.send({ opened: true });
+          while (!fs.existsSync(process.argv[2])) {
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+          }
+        }
+      };
+      require('node:module').syncBuiltinESMExports();
+    }
+    process.on('message', async (message) => {
+      if (message !== 'start') return;
+      try {
+        const { createEventStore } = await import(process.argv[1]);
+        const store = createEventStore(process.argv[3] === 'pause' ? process.argv[4] : process.argv[2]);
+        try {
+          const db = new (require('node:sqlite').DatabaseSync)(
+            process.argv[3] === 'pause' ? process.argv[4] : process.argv[2]);
+          try { process.send({ version: db.prepare('PRAGMA user_version').get().user_version,
+            empty: store.load() === null }); }
+          finally { db.close(); }
+        } finally { store.close(); }
+      } catch (error) { process.send({ error: String(error) }); }
+      process.exit();
+    });
+    process.send({ ready: true });
+  `;
+  const children: ReturnType<typeof spawn>[] = [];
+  function child(mode: 'pause' | 'normal') {
+    const proc = spawn(process.execPath, ['--eval', script, moduleUrl,
+      mode === 'pause' ? release : path, mode, path], { stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+    children.push(proc);
+    return proc;
+  }
+  function message(proc: ReturnType<typeof spawn>, key: string): Promise<Record<string, unknown>> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`Timed out waiting for ${key}`)), 10000);
+      const onMessage = (value: Record<string, unknown>) => {
+        if (key in value || 'error' in value) {
+          clearTimeout(timer);
+          proc.off('message', onMessage);
+          resolve(value);
+        }
+      };
+      proc.on('message', onMessage);
+      proc.once('exit', (code) => {
+        if (code !== 0) { clearTimeout(timer); reject(new Error(`Opener exited ${code}`)); }
+      });
+    });
+  }
+  t.after(() => { for (const proc of children) proc.kill(); });
+  const first = child('pause');
+  assert.equal((await message(first, 'ready')).ready, true);
+  const opened = message(first, 'opened');
+  first.send('start');
+  assert.equal((await opened).opened, true);
+  const second = child('normal');
+  assert.equal((await message(second, 'ready')).ready, true);
+  const result = message(second, 'version');
+  second.send('start');
+  const secondResult = await result;
+  const firstResultPending = message(first, 'version');
+  fs.writeFileSync(release, 'go');
+  const firstResult = await firstResultPending;
+  assert.deepEqual(secondResult, { version: 1, empty: true });
+  assert.deepEqual(firstResult, { version: 1, empty: true });
+  assert.deepEqual(fs.readdirSync(join(path, '..')).sort(), ['event.sqlite', 'release']);
 });
 
 test('invalid and duplicate transitions leave disk unchanged after reopening', (t) => {
@@ -158,6 +237,11 @@ test('unsupported version and existing unknown database never initialize as vers
   fs.writeFileSync(empty, '');
   assert.throws(() => createEventStore(empty), /schema|unknown|version|existing/i);
   assert.equal(fs.statSync(empty).size, 0);
+  const malformed = join(fs.realpathSync(join(path, '..')), 'malformed.sqlite');
+  const bytes = Buffer.from('not a sqlite database');
+  fs.writeFileSync(malformed, bytes);
+  assert.throws(() => createEventStore(malformed), /database|malformed|schema/i);
+  assert.deepEqual(fs.readFileSync(malformed), bytes);
 });
 
 test('version-1 schemas missing mandatory constraints are rejected without alteration', (t) => {

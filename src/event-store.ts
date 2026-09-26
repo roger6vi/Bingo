@@ -1,4 +1,5 @@
-import { statSync } from 'node:fs';
+import { closeSync, linkSync, openSync, statSync, unlinkSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import type { EventSnapshot } from './event-core';
 
@@ -36,22 +37,35 @@ function decode(history: unknown): EventSnapshot {
 }
 
 export function createEventStore(path: string) {
-  const isNew = !existed(path);
+  if (!existed(path)) {
+    // Initialize off-path: the target must never expose SQLite's transient version-0 file.
+    const stage = `${path}.${randomUUID()}.stage`;
+    closeSync(openSync(stage, 'wx', 0o600));
+    try {
+      const candidate = new DatabaseSync(stage);
+      try {
+        candidate.exec('BEGIN IMMEDIATE');
+        try {
+          candidate.exec(`CREATE TABLE current_event (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            history TEXT NOT NULL
+          ); PRAGMA user_version = 1; COMMIT`);
+        } catch (error) {
+          try { candidate.exec('ROLLBACK'); } catch { /* Preserve the original error. */ }
+          throw error;
+        }
+      } finally { candidate.close(); }
+      // A hard link publishes atomically without replacing a concurrent winner (or an unknown DB).
+      try { linkSync(stage, path); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      }
+    } finally { unlinkSync(stage); }
+  }
   const db = new DatabaseSync(path);
   try {
     db.exec('PRAGMA busy_timeout = 0');
-    if (isNew) {
-      db.exec(`BEGIN IMMEDIATE`);
-      try {
-        db.exec(`CREATE TABLE current_event (
-          id INTEGER PRIMARY KEY CHECK (id = 1),
-          history TEXT NOT NULL
-        ); PRAGMA user_version = 1; COMMIT`);
-      } catch (error) {
-        try { db.exec('ROLLBACK'); } catch { /* No active transaction may remain. */ }
-        throw error;
-      }
-    } else {
+    {
       const version = db.prepare('PRAGMA user_version').get()?.user_version;
       if (version !== VERSION) throw new Error(`Unsupported event schema version: ${String(version)}`);
       const columns = db.prepare('PRAGMA table_info(current_event)').all();
