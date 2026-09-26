@@ -1,4 +1,11 @@
+import './bingo-shell.mjs';
+import './screen.css';
+import sampleVideoUrl from '../assets/sample.mp4?url';
 import { createPublicController } from './public-controller.mjs';
+
+const sampleSource = document.getElementById('sample-video-source');
+if (!(sampleSource instanceof HTMLSourceElement)) throw new Error('Missing sample video source');
+sampleSource.src = sampleVideoUrl;
 
 function required(id, type) {
   const element = document.getElementById(id);

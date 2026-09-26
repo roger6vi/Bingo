@@ -10,7 +10,7 @@ import { createWindowLifecycle } from './window-lifecycle';
 import { planOperatorWindow, planPublicWindow } from './window-plan';
 import { createPublicWindowMover } from './window-placement';
 
-const htmlPath = (name: string) => path.join(__dirname, '..', 'src', name);
+const htmlPath = (name: 'operator.html' | 'public.html') => path.join(__dirname, 'renderer', name);
 const preload = path.join(__dirname, 'preload.js');
 const publicPreload = path.join(__dirname, 'public-preload.js');
 

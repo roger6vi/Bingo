@@ -5,12 +5,19 @@
   "main": "dist/main.js",
   "scripts": {
     "test": "node --test tests/*.test.ts",
-    "build": "tsc -p tsconfig.json",
+    "build:main": "tsc -p tsconfig.json",
+    "build:renderer": "vite build",
+    "build": "npm run build:main && npm run build:renderer",
+    "test:build": "node --test verification/renderer-build.test.mjs",
     "start": "npm run build && electron ."
   },
   "devDependencies": {
     "@types/node": "24.7.0",
     "electron": "41.10.3",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "vite": "7.3.6"
+  },
+  "dependencies": {
+    "lit": "3.3.2"
   }
 }

@@ -1,16 +1,12 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"><title>Public display</title>
-  <style>
-    body { font: 1.5rem/1.4 system-ui, sans-serif; max-width: 70rem; margin: auto; padding: 2rem; }
-    #latest-draw { display: block; font-size: clamp(3rem, 12vw, 10rem); font-weight: bold; line-height: 1.2; }
-    #called-numbers { display: flex; flex-wrap: wrap; gap: 0.3em 1.8em; padding-left: 2em; }
-    #called-numbers li { min-width: 2em; }
-    #event-error, #stale-warning { color: #9b1c1c; font-weight: bold; }
-  </style>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; media-src 'self'; img-src 'self' data:; font-src 'self'; object-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Public display</title>
 </head>
 <body>
+  <bingo-shell>
   <main>
     <h1>Current event</h1>
     <p id="event-status" role="status" aria-live="polite">Waiting for event state</p>
@@ -24,11 +20,12 @@
   <section aria-labelledby="media-heading">
     <h2 id="media-heading">Sample media preview (not event state)</h2>
     <video controls width="480" preload="none">
-      <source src="../assets/sample.mp4" type="video/mp4">
+      <source id="sample-video-source" type="video/mp4">
       This browser cannot play the local sample video.
     </video>
     <p>Use the player controls to start playback; sound will not start automatically.</p>
   </section>
+  </bingo-shell>
   <script type="module" src="./public-ui.mjs"></script>
 </body>
 </html>
