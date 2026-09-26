@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, screen } from 'electron';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { createEventStore } from './event-store';
 import { drawManual, drawDigital } from './event-core';
 import { initializeCurrentEvent } from './event-persistence';
@@ -32,9 +33,10 @@ if (!app.requestSingleInstanceLock()) {
     ...planOperatorWindow(primary.workArea),
     webPreferences: { preload, contextIsolation: true, nodeIntegration: false },
   });
+  const operatorPath = htmlPath('operator.html');
   registerEventIpc(ipcMain, store, { drawManual, drawDigital }, Math.random,
-    operator.webContents, operator.webContents.mainFrame);
-  void operator.loadFile(htmlPath('operator.html'));
+    operator.webContents, () => operator.webContents.mainFrame, pathToFileURL(operatorPath).href);
+  void operator.loadFile(operatorPath);
 
   const lifecycle = createWindowLifecycle<BrowserWindow>({
     displays: () => screen.getAllDisplays(),

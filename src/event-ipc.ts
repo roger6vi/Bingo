@@ -29,10 +29,12 @@ const committed = (snapshot: EventSnapshot): EventResult =>
 
 export function registerEventIpc(
   registrar: Registrar, store: EventStore, rules: DrawRules, random: () => number,
-  sender: object, mainFrame: object,
+  sender: object, getMainFrame: () => { url: string } | null, expectedUrl: string,
 ): void {
   function authorized(event: EventRequest): void {
-    if (event.sender !== sender || event.senderFrame !== mainFrame) {
+    if (event.sender !== sender) throw new Error('Unauthorized event request');
+    const mainFrame = getMainFrame();
+    if (mainFrame === null || event.senderFrame !== mainFrame || mainFrame.url !== expectedUrl) {
       throw new Error('Unauthorized event request');
     }
   }
