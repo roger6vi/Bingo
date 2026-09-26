@@ -1,7 +1,9 @@
 import { app, BrowserWindow, dialog, ipcMain, screen } from 'electron';
 import path from 'node:path';
 import { createEventStore } from './event-store';
+import { drawManual, drawDigital } from './event-core';
 import { initializeCurrentEvent } from './event-persistence';
+import { registerEventIpc } from './event-ipc';
 import { createWindowLifecycle } from './window-lifecycle';
 import { planOperatorWindow, planPublicWindow } from './window-plan';
 import { createPublicWindowMover } from './window-placement';
@@ -12,9 +14,10 @@ const preload = path.join(__dirname, 'preload.js');
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else app.whenReady().then(() => {
+  let store: ReturnType<typeof createEventStore>;
   try {
     const databasePath = path.join(app.getPath('userData'), 'current-event.sqlite');
-    const { store } = initializeCurrentEvent(createEventStore(databasePath));
+    ({ store } = initializeCurrentEvent(createEventStore(databasePath)));
     app.once('before-quit', () => store.close());
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -29,6 +32,8 @@ if (!app.requestSingleInstanceLock()) {
     ...planOperatorWindow(primary.workArea),
     webPreferences: { preload, contextIsolation: true, nodeIntegration: false },
   });
+  registerEventIpc(ipcMain, store, { drawManual, drawDigital }, Math.random,
+    operator.webContents, operator.webContents.mainFrame);
   void operator.loadFile(htmlPath('operator.html'));
 
   const lifecycle = createWindowLifecycle<BrowserWindow>({
