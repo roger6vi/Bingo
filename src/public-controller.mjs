@@ -3,10 +3,14 @@ const unavailable = 'The current event is unavailable.';
 const readFailure = 'Could not read the current event.';
 
 function validHistory(history) {
-  return Array.isArray(history) && history.length <= 90 &&
-    history.every((number) => typeof number === 'number' &&
-      Number.isInteger(number) && number >= 1 && number <= 90) &&
-    new Set(history).size === history.length;
+  if (!Array.isArray(history) || history.length > 90) return false;
+  for (let index = 0; index < history.length; index++) {
+    if (!Object.hasOwn(history, index)) return false;
+    const number = history[index];
+    if (typeof number !== 'number' || !Number.isInteger(number) ||
+        number < 1 || number > 90) return false;
+  }
+  return new Set(history).size === history.length;
 }
 
 export function createPublicController(api, view) {

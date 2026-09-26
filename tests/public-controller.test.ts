@@ -44,6 +44,35 @@ test('accepts identical histories and multi-number catch-up appends, never deriv
   assert.equal(f.renders.length, 4);
 });
 
+test('a sparse bootstrap cannot establish a loaded draw and recovers with dense history', () => {
+  const f = fixture();
+  const sparse: number[] = [];
+  sparse.length = 2;
+  sparse[1] = 7;
+  assert.equal(Object.hasOwn(sparse, 0), false);
+  f.send(success(sparse));
+  assert.deepEqual(f.last(), { loaded: false, calledNumbers: [], latest: null, count: 0,
+    remaining: 90, stale: false, error: 'Invalid public event update.' });
+  f.send(success([7]));
+  assert.deepEqual(f.last(), { loaded: true, calledNumbers: [7], latest: 7, count: 1,
+    remaining: 89, stale: false, error: null });
+});
+
+test('sparse post-bootstrap append holes preserve the accepted draw until dense recovery', () => {
+  const f = fixture();
+  f.send(success([4, 8]));
+  const sparse = [4, 8];
+  sparse.length = 4;
+  sparse[3] = 7;
+  assert.equal(Object.hasOwn(sparse, 2), false);
+  f.send(success(sparse));
+  assert.deepEqual(f.last(), { loaded: true, calledNumbers: [4, 8], latest: 8, count: 2,
+    remaining: 88, stale: true, error: 'Invalid public event update.' });
+  f.send(success([4, 8, 6, 7]));
+  assert.deepEqual(f.last(), { loaded: true, calledNumbers: [4, 8, 6, 7], latest: 7, count: 4,
+    remaining: 86, stale: false, error: null });
+});
+
 test('rejects malformed results and histories without replacing an accepted snapshot', () => {
   const invalid: unknown[] = [null, [], 'text', 2, {}, { ok: false }, { ok: 1 },
     { ok: true }, { ok: true, snapshot: null }, { ok: true, snapshot: [] },
