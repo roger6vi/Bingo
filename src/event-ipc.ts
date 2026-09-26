@@ -30,6 +30,7 @@ const committed = (snapshot: EventSnapshot): EventResult =>
 export function registerEventIpc(
   registrar: Registrar, store: EventStore, rules: DrawRules, random: () => number,
   sender: object, getMainFrame: () => { url: string } | null, expectedUrl: string,
+  notifyCommitted?: (snapshot: EventSnapshot) => void,
 ): void {
   function authorized(event: EventRequest): void {
     if (event.sender !== sender) throw new Error('Unauthorized event request');
@@ -53,6 +54,9 @@ export function registerEventIpc(
           throw error;
         }
       });
+      // The store has returned after commit. A broken display cannot undo the draw.
+      try { notifyCommitted?.({ calledNumbers: [...snapshot.calledNumbers] }); }
+      catch { /* Delivery is best effort after persistence commits. */ }
       return committed(snapshot);
     } catch (error) {
       if (domain.thrown && error === domain.error) {

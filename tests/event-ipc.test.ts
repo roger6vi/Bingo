@@ -7,7 +7,8 @@ const rules = { drawManual, drawDigital };
 
 type Handler = (event: { sender: object; senderFrame: object | null }, ...args: unknown[]) => unknown;
 
-function fixture(initial: readonly number[] | null = [90, 1], random = () => 0) {
+function fixture(initial: readonly number[] | null = [90, 1], random = () => 0,
+  notify?: (snapshot: EventSnapshot) => void) {
   const sender = {}, frame = { url: 'file:///app/operator.html' }, other = {};
   const handlers = new Map<string, Handler>();
   const calls: string[] = [];
@@ -31,7 +32,7 @@ function fixture(initial: readonly number[] | null = [90, 1], random = () => 0) 
   registerEventIpc({ handle: (channel: string, handler: Handler) => {
     assert.equal(handlers.has(channel), false);
     handlers.set(channel, handler);
-  } }, store, rules, random, sender, () => frame, frame.url);
+  } }, store, rules, random, sender, () => frame, frame.url, notify);
   const invoke = (channel: string, args: unknown[] = [], from = sender, fromFrame: object | null = frame) => {
     const handler = handlers.get(channel);
     assert.ok(handler);
@@ -157,6 +158,57 @@ test('the successful response comes from the post-update return, not the propose
   }, rules, () => 0, sender, () => frame, frame.url);
   assert.deepEqual(bound.get(EVENT_CHANNELS.manual)?.({ sender, senderFrame: frame }, 2),
     { ok: true, snapshot: { calledNumbers: [1, 2, 3] } });
+});
+
+test('notification follows the committed return, not the proposal, and gets its own clone', () => {
+  const sender = {}, frame = { url: 'file:///app/operator.html' };
+  const handlers = new Map<string, Handler>();
+  const order: string[] = [];
+  const committed = { calledNumbers: [1, 2, 3] };
+  let received: EventSnapshot | undefined;
+  registerEventIpc({ handle: (channel, handler) => { handlers.set(channel, handler); } }, {
+    load: () => null,
+    update: (transition) => {
+      order.push('transition');
+      assert.deepEqual(transition({ calledNumbers: [1] }).calledNumbers, [1, 2]);
+      order.push('commit');
+      return committed;
+    },
+  }, rules, () => 0, sender, () => frame, frame.url, (snapshot) => {
+    order.push('notify');
+    received = snapshot;
+  });
+  const result = handlers.get(EVENT_CHANNELS.manual)?.({ sender, senderFrame: frame }, 2);
+  assert.deepEqual(order, ['transition', 'commit', 'notify']);
+  assert.deepEqual(received, committed);
+  assert.notEqual(received, committed);
+  assert.notEqual(received?.calledNumbers, committed.calledNumbers);
+  assert.notEqual(received, (result as { snapshot: EventSnapshot }).snapshot);
+  assert.deepEqual(result, { ok: true, snapshot: { calledNumbers: [1, 2, 3] } });
+});
+
+test('notification never runs for invalid, unauthorized, domain or storage failures', () => {
+  const notified: EventSnapshot[] = [];
+  const f = fixture([1], () => NaN, (snapshot) => notified.push(snapshot));
+  assert.deepEqual(f.invoke(EVENT_CHANNELS.manual, [0]), failure('invalid_request', 'Invalid event request.'));
+  assert.throws(() => f.invoke(EVENT_CHANNELS.manual, [2], f.other), /unauthorized/i);
+  assert.deepEqual(f.invoke(EVENT_CHANNELS.manual, [1]), failure('duplicate', 'That number has already been called.'));
+  assert.deepEqual(f.invoke(EVENT_CHANNELS.digital), failure('invalid_draw', 'Could not draw a number. Reload and try again.'));
+  f.setFailure('update');
+  assert.deepEqual(f.invoke(EVENT_CHANNELS.manual, [2]), failure('storage_failure', 'Could not save the draw. Reload and try again.'));
+  assert.deepEqual(f.invoke(EVENT_CHANNELS.get), { ok: true, snapshot: { calledNumbers: [1] } });
+  assert.deepEqual(notified, []);
+  const full = fixture(Array.from({ length: 90 }, (_, i) => i + 1), () => 0,
+    (snapshot) => notified.push(snapshot));
+  assert.equal((full.invoke(EVENT_CHANNELS.digital) as { code: string }).code, 'exhausted');
+  assert.deepEqual(notified, []);
+});
+
+test('notifier exceptions cannot reverse an acknowledged commit', () => {
+  const f = fixture([1], () => 0, () => { throw new Error('display disconnected'); });
+  assert.deepEqual(f.invoke(EVENT_CHANNELS.manual, [2]),
+    { ok: true, snapshot: { calledNumbers: [1, 2] } });
+  assert.deepEqual(f.snapshot(), [1, 2]);
 });
 
 test('a failed update never acknowledges a proposed snapshot or leaks storage details', () => {

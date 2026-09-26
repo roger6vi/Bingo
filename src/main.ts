@@ -5,12 +5,14 @@ import { createEventStore } from './event-store';
 import { drawManual, drawDigital } from './event-core';
 import { initializeCurrentEvent } from './event-persistence';
 import { registerEventIpc } from './event-ipc';
+import { createPublicEventDelivery } from './public-event-delivery';
 import { createWindowLifecycle } from './window-lifecycle';
 import { planOperatorWindow, planPublicWindow } from './window-plan';
 import { createPublicWindowMover } from './window-placement';
 
 const htmlPath = (name: string) => path.join(__dirname, '..', 'src', name);
 const preload = path.join(__dirname, 'preload.js');
+const publicPreload = path.join(__dirname, 'public-preload.js');
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -34,8 +36,10 @@ if (!app.requestSingleInstanceLock()) {
     webPreferences: { preload, contextIsolation: true, nodeIntegration: false },
   });
   const operatorPath = htmlPath('operator.html');
+  const publicDelivery = createPublicEventDelivery(store);
   registerEventIpc(ipcMain, store, { drawManual, drawDigital }, Math.random,
-    operator.webContents, () => operator.webContents.mainFrame, pathToFileURL(operatorPath).href);
+    operator.webContents, () => operator.webContents.mainFrame, pathToFileURL(operatorPath).href,
+    publicDelivery.publishCommitted);
   void operator.loadFile(operatorPath);
 
   const lifecycle = createWindowLifecycle<BrowserWindow>({
@@ -46,9 +50,14 @@ if (!app.requestSingleInstanceLock()) {
       const window = new BrowserWindow({
         ...plan.bounds,
         fullscreen: plan.fullscreen,
-        webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+        webPreferences: { preload: publicPreload, contextIsolation: true, nodeIntegration: false, sandbox: true },
       });
-      window.on('closed', () => lifecycle.publicClosed(window));
+      const contents = window.webContents;
+      contents.on('did-finish-load', () => publicDelivery.attachAfterLoad(contents));
+      window.on('closed', () => {
+        publicDelivery.detachIfCurrent(contents);
+        lifecycle.publicClosed(window);
+      });
       void window.loadFile(htmlPath('public.html'));
       return window;
     },
