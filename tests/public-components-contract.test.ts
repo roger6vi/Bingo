@@ -3,9 +3,18 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 const source = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
-const names = ['panel', 'number', 'latest-draw', 'status'];
+const names = ['panel', 'number', 'latest-draw', 'status', 'number-board'];
 
-test('four Lit elements register exactly once and consume only semantic styling', () => {
+test('component browser script provisions Playwright Chromium before tokens and WTR', () => {
+  const scripts = JSON.parse(source('package.json')).scripts;
+  assert.equal(scripts['test:components:install'], 'playwright install chromium');
+  assert.equal(
+    scripts['test:components'],
+    'npm run test:components:install && npm run build:tokens && ./node_modules/.bin/web-test-runner --config web-test-runner.config.mjs',
+  );
+});
+
+test('five Lit elements register exactly once and consume only semantic styling', () => {
   for (const name of names) {
     const code = source(`src/components/bingo-${name}.mjs`);
     assert.match(code, /import\s*\{[^}]*LitElement[^}]*html[^}]*\}\s*from ['"]lit['"]/);
@@ -38,13 +47,25 @@ test('panel, number, latest draw and status expose semantic accessible contracts
   assert.match(status, /\$\{this\.message\}/);
 });
 
+test('number board owns ordered list and remains display-only', () => {
+  const board = source('src/components/bingo-number-board.mjs');
+  assert.match(board, /calledNumbers: \{ attribute: false \}/);
+  assert.match(board, /<ol aria-label="Called numbers in draw order">/);
+  assert.match(board, /<li aria-current=/);
+  assert.match(board, /li\[aria-current\]\s*\{[^}]*outline:[^}]*var\(--bingo-color-accent\)/);
+  assert.match(board, /<bingo-number \.value=\$\{number\} \.compact=\$\{true\}/);
+  assert.doesNotMatch(board, /aria-live|addEventListener|localStorage|replaceChildren|\.sort\(|\.slice\(/);
+});
+
 test('draw numbers keep display type while empty labels fit their host', () => {
   const number = source('src/components/bingo-number.mjs');
-  assert.match(number, /this\.value === null \? ['"]empty['"] : ['"]drawn['"]/);
+  assert.match(number, /this\.value === null \? ['"]empty['"] : this\.compact \? ['"]drawn compact['"] : ['"]drawn['"]/);
   assert.match(number, /<span\b[^>]*class=\$\{[^}]+\}/);
   assert.match(number, /:host\s*\{[^}]*max-width:\s*100%/);
   assert.match(number, /span\s*\{[^}]*max-width:\s*100%[^}]*box-sizing:\s*border-box/);
+  assert.match(number, /compact: \{ type: Boolean \}/);
   assert.match(number, /span\.drawn\s*\{[^}]*font:[^}]*var\(--bingo-font-display\)/);
+  assert.match(number, /span\.drawn\.compact\s*\{[^}]*var\(--bingo-font-size\)/);
   assert.match(number, /span\.empty\s*\{[^}]*font:[^}]*var\(--bingo-font-size\)[^}]*overflow-wrap:\s*anywhere/);
 });
 
@@ -57,7 +78,8 @@ test('public markup composes the shell with one main and h1, draw order and sepa
   assert.match(page, /Called: <output id="called-count" aria-live="off">0<\/output>/);
   assert.match(page, /Remaining: <output id="remaining-count" aria-live="off">90<\/output>/);
   assert.doesNotMatch(page, /aria-live="polite"/);
-  assert.match(page, /<ol id="called-numbers"[^>]*draw order/);
+  assert.match(page, /<bingo-number-board id="called-numbers"><\/bingo-number-board>/);
+  assert.doesNotMatch(page, /<ol id="called-numbers"/);
   assert.match(page, /Sample media preview \(not event state\)/);
   assert.match(page, /<video\b[^>]*controls[^>]*preload="none"/);
   assert.doesNotMatch(page, /\bautoplay\b|<style\b/);
@@ -77,6 +99,9 @@ test('public adapter maps controller fields to all display states without mutati
   assert.match(ui, /eventError\.hidden = !state\.error/);
   assert.match(ui, /state\.loaded\s*\?/);
   assert.match(ui, /latestNumber\.emptyLabel = state\.loaded \? 'No draws yet' : 'Waiting for draw'/);
+  assert.match(ui, /history\.calledNumbers = state\.calledNumbers/);
+  assert.match(ui, /history\.loaded = state\.loaded/);
+  assert.doesNotMatch(ui, /replaceChildren|HTMLOListElement/);
 });
 
 test('public layout is responsive and uses semantic colors only', () => {

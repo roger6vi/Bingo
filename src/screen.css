@@ -47,8 +47,6 @@ bingo-shell:has(.public-layout) h1 {
 .public-layout bingo-panel { min-width: 0; }
 .public-layout bingo-status { margin-top: var(--bingo-space-section); }
 bingo-status[hidden] { display: none; }
-#called-numbers { display: flex; flex-wrap: wrap; gap: var(--bingo-space-inset-compact) var(--bingo-space-section); padding-left: var(--bingo-space-list-indent); }
-#called-numbers li { min-width: var(--bingo-space-list-indent); }
 .sample-panel { display: block; margin-top: var(--bingo-space-section); }
 video { max-width: 100%; }
 @media (max-width: 720px) {
