@@ -28,6 +28,50 @@ function flatten(tree, prefix = '', result = {}, semantic = false) {
   return result;
 }
 
+// Accept only semantic color variables in visual color slots. Non-color border and
+// shadow grammar is deliberately small: unknown syntax fails rather than letting
+// named colors, gradients or functional colors through a keyword denylist.
+const semanticColor = /var\(--bingo-color-[a-z][\w-]*\)/g;
+const length = '(?:0|[+-]?(?:\\d*\\.)?\\d+(?:px|em|rem|vh|vw|%))';
+const borderParts = new RegExp(`^(?:(?:${length}|none|hidden|dotted|dashed|solid|double|groove|ridge|inset|outset)\\s*)*$`, 'i');
+const shadowParts = new RegExp(`^(?:(?:${length}|inset)\\s*)+$`, 'i');
+
+function validShadowLayers(value) {
+  return value.split(',').every((layer) => {
+    const colors = [...layer.matchAll(semanticColor)];
+    return colors.length === 1 && shadowParts.test(layer.replace(semanticColor, '').trim());
+  });
+}
+
+function validateScreenColors(css) {
+  // The declaration scanner does not normalize CSS escapes; refuse them rather
+  // than allowing escaped identifiers to bypass the semantic color contract.
+  if (css.includes('\\')) throw new Error('Unsupported CSS escape in screen');
+  const declarations = css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/(?:^|[;{}])\s*([\w-]+)\s*:\s*([^;{}]*)/gm);
+  for (const [, property, rawValue] of declarations) {
+    const name = property.toLowerCase();
+    if (name.startsWith('--bingo-color-')) throw new Error(`Screen cannot override semantic color variable: ${property}`);
+    const shorthand = /^(?:border(?:-(?:top|right|bottom|left|block|inline)(?:-(?:start|end))?)?|outline|column-rule)$/.test(name);
+    const shadow = /^(?:box-shadow|text-shadow)$/.test(name);
+    const filter = /^(?:-webkit-)?(?:backdrop-)?filter$/.test(name);
+    const image = /^(?:background-image|border-image(?:-source)?|mask(?:-image)?)$/.test(name);
+    const color = name === 'color' || name === 'background' || name === 'fill' || name === 'stroke' ||
+      name === 'text-decoration' || /(?:^|-)color$/.test(name);
+    if (!shorthand && !shadow && !filter && !image && !color) continue;
+    const value = rawValue.trim();
+    const variables = [...value.matchAll(semanticColor)];
+    const rest = value.replace(semanticColor, '').trim();
+    let valid = filter ? value === 'none' : shadow ? validShadowLayers(value) : variables.length > 0 && (
+      shorthand ? variables.length === 1 && borderParts.test(rest) :
+      // color lists (e.g. border-color) allow up to four semantic slots.
+      /^(?:border.*-color|scrollbar-color)$/.test(name) ? variables.length <= 4 && rest === '' :
+      variables.length === 1 && rest === ''
+    );
+    if (image && value === 'none') valid = true;
+    if (!valid) throw new Error(`Screen contains raw color or unsupported color syntax: ${property}: ${value}`);
+  }
+}
+
 export function validateTokenContracts({ reference, themes, css, ...layers }) {
   if (Object.keys(layers).length) throw new Error('Component or extra token layer forbidden');
   const refs = flatten(reference);
@@ -61,7 +105,7 @@ export function validateTokenContracts({ reference, themes, css, ...layers }) {
       throw new Error(`Component alias forbidden: --bingo-${name}`);
     }
   }
-  if (/(?:#[\da-f]{3,8}\b|\b(?:rgb|hsl|oklch|lab|color)\s*\(|(?:^|[;{])\s*(?:color|background(?:-color)?|border-color|outline-color)\s*:\s*(?:red|blue|black|white|transparent|currentcolor)\b)/i.test(css)) throw new Error('Screen contains raw color');
+  validateScreenColors(css);
   return { keys, referenceKeys: Object.keys(refs).sort(), differences };
 }
 

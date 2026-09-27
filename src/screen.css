@@ -25,8 +25,10 @@ section {
 }
 
 button, input { font: inherit; color: var(--bingo-color-text); background: var(--bingo-color-surface); border-color: var(--bingo-color-border); }
-button { margin: var(--bingo-space-small); padding: var(--bingo-space-inset-compact) var(--bingo-space-inset-inline); cursor: pointer; transition: background-color var(--bingo-motion-normal); }
-button:hover { color: var(--bingo-color-canvas); background: var(--bingo-color-accent); }
+button { margin: var(--bingo-space-small); padding: var(--bingo-space-inset-compact) var(--bingo-space-inset-inline); }
+button:not(:disabled) { cursor: pointer; transition: background-color var(--bingo-motion-normal); }
+button:not(:disabled):hover { color: var(--bingo-color-canvas); background: var(--bingo-color-accent); }
+button:disabled { color: var(--bingo-color-muted); background: var(--bingo-color-canvas); border-color: var(--bingo-color-border); cursor: not-allowed; opacity: 0.65; }
 :focus-visible { outline: 2px solid var(--bingo-color-focus); outline-offset: var(--bingo-space-small); }
 
 #latest-draw { display: block; font-size: var(--bingo-font-display); font-weight: var(--bingo-font-emphasis); line-height: var(--bingo-font-tight); }
@@ -36,5 +38,5 @@ button:hover { color: var(--bingo-color-canvas); background: var(--bingo-color-a
 video { max-width: 100%; }
 
 @media (prefers-reduced-motion: reduce) {
-  button { transition: none; }
+  button:not(:disabled) { transition: none; }
 }
