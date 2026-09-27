@@ -23,7 +23,7 @@ test('panel, number, latest draw and status expose semantic accessible contracts
   const number = source('src/components/bingo-number.mjs');
   assert.match(number, /Waiting for draw/);
   assert.match(number, /this\.value === null \? this\.emptyLabel : this\.value/);
-  assert.match(number, /html`<span>\$\{this\.value/);
+  assert.match(number, /html`<span\b[^>]*>\$\{this\.value/);
   assert.doesNotMatch(number, /<output\b|role\s*=\s*["']?status\b|aria-live\s*=/i);
   const latest = source('src/components/bingo-latest-draw.mjs');
   assert.equal([...latest.matchAll(/aria-live="polite"/g)].length, 1);
@@ -36,6 +36,16 @@ test('panel, number, latest draw and status expose semantic accessible contracts
   assert.match(status, /role=\$\{.*(?:alert|status)/);
   assert.match(status, /warning|error/);
   assert.match(status, /\$\{this\.message\}/);
+});
+
+test('draw numbers keep display type while empty labels fit their host', () => {
+  const number = source('src/components/bingo-number.mjs');
+  assert.match(number, /this\.value === null \? ['"]empty['"] : ['"]drawn['"]/);
+  assert.match(number, /<span\b[^>]*class=\$\{[^}]+\}/);
+  assert.match(number, /:host\s*\{[^}]*max-width:\s*100%/);
+  assert.match(number, /span\s*\{[^}]*max-width:\s*100%[^}]*box-sizing:\s*border-box/);
+  assert.match(number, /span\.drawn\s*\{[^}]*font:[^}]*var\(--bingo-font-display\)/);
+  assert.match(number, /span\.empty\s*\{[^}]*font:[^}]*var\(--bingo-font-size\)[^}]*overflow-wrap:\s*anywhere/);
 });
 
 test('public markup composes the shell with one main and h1, draw order and separate opt-in media', () => {
