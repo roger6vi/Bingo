@@ -6,7 +6,9 @@
   "scripts": {
     "test": "node --test tests/*.test.ts",
     "build:main": "tsc -p tsconfig.json",
-    "build:renderer": "vite build",
+    "build:tokens": "node scripts/build-tokens.mjs",
+    "test:tokens": "node scripts/token-contract.mjs",
+    "build:renderer": "npm run build:tokens && vite build",
     "build": "npm run build:main && npm run build:renderer",
     "test:build": "node --test verification/renderer-build.test.mjs",
     "start": "npm run build && electron ."
@@ -14,6 +16,7 @@
   "devDependencies": {
     "@types/node": "24.7.0",
     "electron": "41.10.3",
+    "style-dictionary": "5.5.5",
     "typescript": "5.9.3",
     "vite": "7.3.6"
   },

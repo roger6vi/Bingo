@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import test from 'node:test';
 
 const root = path.resolve(import.meta.dirname, '..');
@@ -54,6 +55,33 @@ test('public sample is bundled under renderer and remains opt-in', () => {
   assert.ok(statSync(path.join(renderer, 'assets', media[0])).size > 0);
   assert.ok(js.includes(media[0]), 'public entry references bundled MP4');
   assert.doesNotMatch(html, /\bautoplay\b/i);
+});
+
+test('both pages bundle both generated theme shells and semantic contracts', () => {
+  const css = readdirSync(path.join(renderer, 'assets'))
+    .filter((file) => file.endsWith('.css')).map((file) => text(`dist/renderer/assets/${file}`)).join('\n');
+  assert.match(css, /:root,\s*\[data-theme=["']?pixel-classic["']?\]/);
+  assert.match(css, /\[data-theme=["']?high-contrast["']?\]/);
+  for (const key of ['color-canvas', 'color-surface', 'color-text', 'color-muted',
+    'color-accent', 'color-danger', 'color-focus', 'color-border', 'space-layout',
+    'font-body', 'radius-surface', 'motion-normal']) {
+    assert.ok(css.includes(`--bingo-${key}:`), key);
+  }
+  for (const page of ['operator', 'public']) {
+    const html = text(`dist/renderer/${page}.html`);
+    const styles = [...html.matchAll(/href="(\.\/[^\"]+\.css)"/g)]
+      .map((match) => text(`dist/renderer/${match[1].slice(2)}`)).join('\n');
+    assert.match(styles, /\[data-theme=["']?high-contrast["']?\]/, `${page} includes theme CSS`);
+    assert.match(styles, /--bingo-color-canvas:/, `${page} includes semantic CSS`);
+  }
+});
+
+test('generated token outputs remain ignored and untracked', () => {
+  for (const file of ['src/generated/pixel-classic.css', 'src/generated/high-contrast.css']) {
+    assert.ok(statSync(path.join(root, file)).size > 0);
+    assert.equal(execFileSync('git', ['check-ignore', file], { cwd: root, encoding: 'utf8' }).trim(), file);
+    assert.equal(execFileSync('git', ['ls-files', file], { cwd: root, encoding: 'utf8' }).trim(), '');
+  }
 });
 
 test('renderer output stays confined to its directory', () => {

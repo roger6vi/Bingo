@@ -1,0 +1,31 @@
+{
+  "color": {
+    "canvas": { "$type": "color", "$value": "{color.black}", "$description": "High-contrast page background" },
+    "surface": { "$type": "color", "$value": "{color.black}" },
+    "text": { "$type": "color", "$value": "{color.white}" },
+    "muted": { "$type": "color", "$value": "{color.white}" },
+    "accent": { "$type": "color", "$value": "{color.yellow}" },
+    "danger": { "$type": "color", "$value": "{color.yellow}" },
+    "focus": { "$type": "color", "$value": "{color.cyan}" },
+    "border": { "$type": "color", "$value": "{color.white}" }
+  },
+  "space": {
+    "layout": { "$type": "dimension", "$value": "{space.base}" },
+    "section": { "$type": "dimension", "$value": "{space.lg}" },
+    "inset-compact": { "$type": "dimension", "$value": "{space.sm}" },
+    "inset-inline": { "$type": "dimension", "$value": "{space.md}" },
+    "small": { "$type": "dimension", "$value": "{space.xs}" },
+    "wide": { "$type": "dimension", "$value": "{space.wide}" },
+    "list-indent": { "$type": "dimension", "$value": "{space.xl}" }
+  },
+  "font": {
+    "body": { "$type": "fontFamily", "$value": "{font.body}" },
+    "size": { "$type": "dimension", "$value": "{font.size}" },
+    "display": { "$type": "dimension", "$value": "{font.display}" },
+    "line": { "$type": "number", "$value": "{font.line}" },
+    "tight": { "$type": "number", "$value": "{font.tight}" },
+    "emphasis": { "$type": "fontWeight", "$value": "{font.weight}" }
+  },
+  "radius": { "surface": { "$type": "dimension", "$value": "{radius.soft}" } },
+  "motion": { "normal": { "$type": "duration", "$value": "{motion.normal}" } }
+}
