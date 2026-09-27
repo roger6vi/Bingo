@@ -3,31 +3,36 @@
 <head>
   <meta charset="utf-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; media-src 'self'; img-src 'self' data:; font-src 'self'; object-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'">
-  <title>Operator preview</title>
+  <title>Operator console</title>
 </head>
 <body>
   <bingo-shell>
-  <h1>Operator window</h1>
-  <section aria-labelledby="event-heading">
-    <h2 id="event-heading">Current event</h2>
-    <p>Remaining numbers: <output id="remaining-count" aria-live="polite">90</output></p>
-    <h3>Called numbers (draw order)</h3>
-    <ol id="called-numbers" aria-label="Called numbers in draw order"></ol>
-    <label for="manual-number">Manual number (1–90)</label>
-    <input id="manual-number" type="number" min="1" max="90" step="1" inputmode="numeric" required>
-    <button id="draw-manual" type="button" disabled>Draw manual number</button>
-    <button id="draw-digital" type="button" disabled>Draw digital number</button>
-    <button id="reload-event" type="button">Reload event</button>
-    <p id="stale-warning" role="status" hidden>Event history may be stale. Reload before relying on it.</p>
-    <p id="event-error" role="alert"></p>
-  </section>
-  <section aria-labelledby="public-heading">
-    <h2 id="public-heading">Public window preview</h2>
-    <button id="open-public" type="button">Open / reopen public window</button>
-    <button id="move-public" type="button">Move public window to secondary display</button>
-    <p id="status" role="status" aria-live="polite"></p>
-  </section>
-  <p>Claims and prizes are not implemented.</p>
+  <main>
+    <h1>Operator console</h1>
+    <div class="operator-layout">
+      <bingo-panel heading="Current event">
+        <bingo-status id="event-status"></bingo-status>
+        <bingo-status id="event-error" hidden></bingo-status>
+        <bingo-operator-summary id="event-summary"></bingo-operator-summary>
+        <bingo-call-history id="called-numbers"></bingo-call-history>
+        <div class="draw-controls">
+          <label for="manual-number">Manual number (1–90)</label>
+          <input id="manual-number" type="number" min="1" max="90" step="1" inputmode="numeric" required>
+          <button id="draw-manual" type="button" disabled>Draw manual number</button>
+          <button id="draw-digital" type="button" disabled>Draw digital number</button>
+          <button id="reload-event" type="button">Reload event</button>
+        </div>
+      </bingo-panel>
+      <bingo-panel heading="Public window preview">
+        <div class="public-controls">
+          <button id="open-public" type="button">Open / reopen public window</button>
+          <button id="move-public" type="button">Move public window to secondary display</button>
+        </div>
+        <bingo-status id="public-status" hidden></bingo-status>
+      </bingo-panel>
+    </div>
+    <p>Claims and prizes are not implemented.</p>
+  </main>
   </bingo-shell>
   <script type="module" src="./operator-ui.mjs"></script>
 </body>
