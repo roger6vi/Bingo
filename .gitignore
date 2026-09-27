@@ -5,3 +5,4 @@
 # Desktop build and dependencies
 node_modules/
 dist/
+/src/generated/
