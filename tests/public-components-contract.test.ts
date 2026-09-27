@@ -5,6 +5,15 @@ import test from 'node:test';
 const source = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 const names = ['panel', 'number', 'latest-draw', 'status', 'number-board'];
 
+test('component browser script provisions Playwright Chromium before tokens and WTR', () => {
+  const scripts = JSON.parse(source('package.json')).scripts;
+  assert.equal(scripts['test:components:install'], 'playwright install chromium');
+  assert.equal(
+    scripts['test:components'],
+    'npm run test:components:install && npm run build:tokens && ./node_modules/.bin/web-test-runner --config web-test-runner.config.mjs',
+  );
+});
+
 test('five Lit elements register exactly once and consume only semantic styling', () => {
   for (const name of names) {
     const code = source(`src/components/bingo-${name}.mjs`);

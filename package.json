@@ -5,7 +5,8 @@
   "main": "dist/main.js",
   "scripts": {
     "test": "node --test tests/*.test.ts",
-    "test:components": "npm run build:tokens && ./node_modules/.bin/web-test-runner --config web-test-runner.config.mjs",
+    "test:components:install": "playwright install chromium",
+    "test:components": "npm run test:components:install && npm run build:tokens && ./node_modules/.bin/web-test-runner --config web-test-runner.config.mjs",
     "build:main": "tsc -p tsconfig.json",
     "build:tokens": "node scripts/build-tokens.mjs",
     "test:tokens": "node scripts/token-contract.mjs",
