@@ -9,22 +9,27 @@
   <bingo-shell>
   <main>
     <h1>Current event</h1>
-    <p id="event-status" role="status" aria-live="polite">Waiting for event state</p>
-    <p>Latest draw: <output id="latest-draw" aria-live="polite">Waiting for event</output></p>
-    <p>Called: <output id="called-count">0</output> · Remaining: <output id="remaining-count">90</output></p>
-    <h2>Called numbers (draw order)</h2>
-    <ol id="called-numbers" aria-label="Called numbers in draw order"></ol>
-    <p id="stale-warning" role="status" hidden>Last confirmed history may be stale.</p>
-    <p id="event-error" role="alert"></p>
+    <div class="public-layout">
+      <bingo-panel heading="Latest committed draw">
+        <bingo-latest-draw id="latest-draw">
+          <bingo-number id="latest-number"></bingo-number>
+        </bingo-latest-draw>
+        <bingo-status id="event-status"></bingo-status>
+        <bingo-status id="event-error" hidden></bingo-status>
+        <p>Called: <output id="called-count" aria-live="off">0</output> · Remaining: <output id="remaining-count" aria-live="off">90</output></p>
+      </bingo-panel>
+      <bingo-panel heading="Called numbers (draw order)">
+        <ol id="called-numbers" aria-label="Called numbers in draw order"></ol>
+      </bingo-panel>
+    </div>
   </main>
-  <section aria-labelledby="media-heading">
-    <h2 id="media-heading">Sample media preview (not event state)</h2>
+  <bingo-panel class="sample-panel" heading="Sample media preview (not event state)">
     <video controls width="480" preload="none">
       <source id="sample-video-source" type="video/mp4">
       This browser cannot play the local sample video.
     </video>
     <p>Use the player controls to start playback; sound will not start automatically.</p>
-  </section>
+  </bingo-panel>
   </bingo-shell>
   <script type="module" src="./public-ui.mjs"></script>
 </body>

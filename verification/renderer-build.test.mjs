@@ -44,6 +44,19 @@ for (const page of ['operator', 'public']) {
   });
 }
 
+test('built audience shell bundles four Lit tags under the existing offline CSP', () => {
+  const html = text('dist/renderer/public.html');
+  const js = readdirSync(path.join(renderer, 'assets'))
+    .filter((file) => file.endsWith('.js')).map((file) => text(`dist/renderer/assets/${file}`)).join('\n');
+  for (const name of ['panel', 'number', 'latest-draw', 'status']) {
+    assert.match(html, new RegExp(`<bingo-${name}\\b`));
+    assert.ok(js.includes(`bingo-${name}`), `bundled ${name} registration`);
+  }
+  assert.match(html, /<ol id="called-numbers"[^>]*draw order/);
+  assert.match(html, /Sample media preview \(not event state\)/);
+  assert.doesNotMatch(html, /\b(?:autoplay|unsafe-inline|unsafe-eval)\b/i);
+});
+
 test('public sample is bundled under renderer and remains opt-in', () => {
   const html = text('dist/renderer/public.html');
   assert.match(html, /<video\b[^>]*\bcontrols\b[^>]*preload="none"/i);
