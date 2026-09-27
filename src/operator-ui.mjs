@@ -1,6 +1,7 @@
 import './bingo-shell.mjs';
 import './screen.css';
 import { createOperatorController } from './operator-controller.mjs';
+import { createManualDrawHandler } from './manual-draw.mjs';
 
 function required(id, type) {
   const element = document.getElementById(id);
@@ -30,7 +31,7 @@ window.desktop.onPublicStatus((pauseSuggested) => {
 
 const controller = createOperatorController(window.desktop, {
   bind: ({ manual, digital, reload }) => {
-    manualButton.addEventListener('click', () => manual(manualInput.valueAsNumber));
+    manualButton.addEventListener('click', createManualDrawHandler(manualInput, manual));
     digitalButton.addEventListener('click', digital);
     reloadButton.addEventListener('click', reload);
   },
