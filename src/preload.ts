@@ -6,6 +6,8 @@ contextBridge.exposeInMainWorld('desktop', Object.freeze({
   getCurrentEvent: () => ipcRenderer.invoke('event:get'),
   drawManual: (number: number) => ipcRenderer.invoke('event:draw-manual', number),
   drawDigital: () => ipcRenderer.invoke('event:draw-digital'),
+  getTheme: () => ipcRenderer.invoke('theme:get'),
+  setTheme: (theme: string) => ipcRenderer.invoke('theme:set', theme),
   onPublicStatus: (callback: (pauseSuggested: boolean) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, pauseSuggested: boolean) => callback(pauseSuggested);
     ipcRenderer.on('public-status', listener);

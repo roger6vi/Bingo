@@ -1,6 +1,9 @@
 @import './generated/pixel-classic.css';
 @import './generated/high-contrast.css';
 
+/* Hidden until the committed theme is applied, so no other theme is painted first. */
+html:not([data-theme]) body { visibility: hidden; }
+
 body {
   box-sizing: border-box;
   margin: 0;
@@ -24,7 +27,7 @@ section {
   background: var(--bingo-color-surface);
 }
 
-button, input { font: inherit; color: var(--bingo-color-text); background: var(--bingo-color-surface); border-color: var(--bingo-color-border); }
+button, input, select { font: inherit; color: var(--bingo-color-text); background: var(--bingo-color-surface); border-color: var(--bingo-color-border); }
 button { margin: var(--bingo-space-small); padding: var(--bingo-space-inset-compact) var(--bingo-space-inset-inline); }
 button:not(:disabled) { cursor: pointer; transition: background-color var(--bingo-motion-normal); }
 button:not(:disabled):hover { color: var(--bingo-color-canvas); background: var(--bingo-color-accent); }
@@ -34,6 +37,7 @@ button:disabled { color: var(--bingo-color-muted); background: var(--bingo-color
 .operator-layout { display: grid; gap: var(--bingo-space-section); }
 .operator-layout bingo-panel { min-width: 0; }
 .operator-layout bingo-status { margin-block: var(--bingo-space-section); }
+.operator-layout select { margin-inline: var(--bingo-space-small); padding: var(--bingo-space-inset-compact); }
 .public-controls { display: flex; flex-wrap: wrap; gap: var(--bingo-space-small); }
 
 bingo-shell:has(.public-layout) { max-width: none; }

@@ -33,18 +33,25 @@ type Registrar = {
 const invalidRequest = (): EventResult => ({ ok: false, code: 'invalid_request', message: 'Invalid event request.' });
 const committed = (snapshot: PhaseSnapshot): EventResult => ({ ok: true, snapshot: copySnapshot(snapshot) });
 
-export function registerEventIpc(
-  registrar: Registrar, store: EventStore, rules: DrawRules, random: () => number,
+// Only the operator's current main frame at its exact page URL may use operator channels.
+export function createOperatorGuard(
   sender: object, getMainFrame: () => { url: string } | null, expectedUrl: string,
-  notifyCommitted?: (snapshot: PhaseSnapshot) => void,
-): void {
-  function authorized(event: EventRequest): void {
+) {
+  return (event: EventRequest): void => {
     if (event.sender !== sender) throw new Error('Unauthorized event request');
     const mainFrame = getMainFrame();
     if (mainFrame === null || event.senderFrame !== mainFrame || mainFrame.url !== expectedUrl) {
       throw new Error('Unauthorized event request');
     }
-  }
+  };
+}
+
+export function registerEventIpc(
+  registrar: Registrar, store: EventStore, rules: DrawRules, random: () => number,
+  sender: object, getMainFrame: () => { url: string } | null, expectedUrl: string,
+  notifyCommitted?: (snapshot: PhaseSnapshot) => void,
+): void {
+  const authorized = createOperatorGuard(sender, getMainFrame, expectedUrl);
 
   function draw(transition: (current: EventSnapshot) => EventSnapshot, manualNumber?: number): EventResult {
     const domain: { thrown: boolean; error?: unknown; code: 'duplicate' | 'exhausted' | 'invalid_draw' } =

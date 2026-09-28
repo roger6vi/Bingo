@@ -7,6 +7,10 @@ import './components/bingo-number-board.mjs';
 import './screen.css';
 import sampleVideoUrl from '../assets/sample.mp4?url';
 import { createPublicController } from './public-controller.mjs';
+import { applyTheme, revealAfter } from './theme-controller.mjs';
+
+const unsubscribeTheme = window.publicTheme.subscribe((theme) => applyTheme(document.documentElement, theme));
+const revealTimer = revealAfter(document.documentElement, 2000);
 
 const sampleSource = document.getElementById('sample-video-source');
 if (!(sampleSource instanceof HTMLSourceElement)) throw new Error('Missing sample video source');
@@ -53,4 +57,8 @@ const controller = createPublicController(window.publicEvent, {
     eventError.hidden = !state.error;
   },
 });
-window.addEventListener('pagehide', () => controller.cleanup(), { once: true });
+window.addEventListener('pagehide', () => {
+  controller.cleanup();
+  unsubscribeTheme();
+  clearTimeout(revealTimer);
+}, { once: true });
