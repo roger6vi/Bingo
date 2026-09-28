@@ -102,6 +102,11 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
     receiveTheme = callback;
     return () => { unsubscribed++; };
   } };
+  let receiveMeta;
+  window.publicEventMeta = { subscribe: (callback) => {
+    receiveMeta = callback;
+    return () => { unsubscribed++; };
+  } };
   try {
     const entry = new URL('../../src/public-ui.mjs', import.meta.url);
     const response = await fetch(entry);
@@ -127,6 +132,16 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
     expect(document.documentElement.dataset.theme).to.equal('high-contrast');
     receiveTheme('pixel-classic');
     expect(document.documentElement.dataset.theme).to.equal('pixel-classic');
+    const heading = shell.querySelector('h1');
+    const details = shell.querySelector('#event-details');
+    expect([heading.textContent, details.hidden]).to.deep.equal(['Current event', true]);
+    receiveMeta({ name: 'Verbena', date: '2026-08-15', place: 'Plaza Mayor' });
+    expect([heading.textContent, details.textContent, details.hidden]).to.deep.equal(['Verbena', '2026-08-15 · Plaza Mayor', false]);
+    for (const invalid of [null, { name: ' ', date: '2026-08-15', place: 'P' }, { name: 'N', date: 'x', place: 'P' }, 'Verbena']) {
+      receiveMeta(invalid);
+      expect([heading.textContent, details.hidden]).to.deep.equal(['Current event', true]);
+    }
+    receiveMeta({ name: 'Verbena', date: '2026-08-15', place: 'Plaza Mayor' });
     receive({ ok: true, snapshot: { calledNumbers: [9], phase: 'line_declared',
       lastTransitionAt: '2026-01-01T00:00:00.000Z' } });
     expect(phase.message).to.equal('Current phase: Line declared');
@@ -139,11 +154,12 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
     expect(phase.shadowRoot.querySelector('[role="status"]').textContent).to.equal('Current phase: Line declared');
     await expect(phase).to.be.accessible();
     window.dispatchEvent(new Event('pagehide'));
-    expect(unsubscribed).to.equal(2);
+    expect(unsubscribed).to.equal(3);
   } finally {
     shell.remove();
     delete window.publicEvent;
     delete window.publicTheme;
+    delete window.publicEventMeta;
     delete document.documentElement.dataset.theme;
   }
 });

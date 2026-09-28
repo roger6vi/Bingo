@@ -8,8 +8,10 @@ import './screen.css';
 import sampleVideoUrl from '../assets/sample.mp4?url';
 import { createPublicController } from './public-controller.mjs';
 import { applyTheme, revealAfter } from './theme-controller.mjs';
+import { publicBridges, validEventMeta } from './public-bridge.mjs';
 
-const unsubscribeTheme = window.publicTheme.subscribe((theme) => applyTheme(document.documentElement, theme));
+const bridges = publicBridges(window);
+const unsubscribeTheme = bridges.theme.subscribe((theme) => applyTheme(document.documentElement, theme));
 const revealTimer = revealAfter(document.documentElement, 2000);
 
 const sampleSource = document.getElementById('sample-video-source');
@@ -34,8 +36,18 @@ const phaseLabels = {
   checking_bingo: 'Checking bingo', bingo_declared: 'Bingo declared', finished: 'Finished',
 };
 const eventError = required('event-error', HTMLElement);
+const eventName = required('event-name', HTMLHeadingElement);
+const eventDetails = required('event-details', HTMLParagraphElement);
 
-const controller = createPublicController(window.publicEvent, {
+// An unreadable or invalid event description falls back to the generic heading, never a stale one.
+const unsubscribeMeta = bridges.meta.subscribe((meta) => {
+  const valid = validEventMeta(meta);
+  eventName.textContent = valid ? meta.name : 'Current event';
+  eventDetails.textContent = valid ? `${meta.date} · ${meta.place}` : '';
+  eventDetails.hidden = !valid;
+});
+
+const controller = createPublicController(bridges.event, {
   render: (state) => {
     latest.latest = state.latest;
     latest.loaded = state.loaded;
@@ -60,5 +72,6 @@ const controller = createPublicController(window.publicEvent, {
 window.addEventListener('pagehide', () => {
   controller.cleanup();
   unsubscribeTheme();
+  unsubscribeMeta();
   clearTimeout(revealTimer);
 }, { once: true });

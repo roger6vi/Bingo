@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; media-src 'self'; img-src 'self' data:; font-src 'self'; object-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; media-src 'self'; img-src 'self' data:; font-src 'self'; object-src 'none'; frame-src bingo-public:; connect-src 'none'; base-uri 'none'; form-action 'none'">
   <title>Operator console</title>
 </head>
 <body>
@@ -37,7 +37,46 @@
     </div>
     <div role="tabpanel" lang="es" id="panel-settings" aria-labelledby="tab-settings" tabindex="0" hidden>
       <bingo-status class="active-event-banner" lang="es"></bingo-status>
-      <p>La configuración del evento activo llegará en la siguiente entrega.</p>
+      <div class="settings-layout">
+        <form id="settings-form" class="settings-controls" novalidate>
+          <bingo-panel heading="Datos del evento">
+            <div class="event-form">
+              <label for="settings-name">Nombre</label>
+              <input id="settings-name" name="name" required maxlength="120" autocomplete="off" aria-describedby="settings-name-error" disabled>
+              <p id="settings-name-error" class="field-error" hidden></p>
+              <label for="settings-place">Lugar</label>
+              <input id="settings-place" name="place" required maxlength="120" autocomplete="off" aria-describedby="settings-place-error" disabled>
+              <p id="settings-place-error" class="field-error" hidden></p>
+              <label for="settings-date">Fecha</label>
+              <input id="settings-date" name="date" type="date" required aria-describedby="settings-date-error" disabled>
+              <p id="settings-date-error" class="field-error" hidden></p>
+            </div>
+          </bingo-panel>
+          <bingo-panel heading="Tema de las pantallas">
+            <label for="theme-select">Tema para ambas pantallas</label>
+            <select id="theme-select" disabled>
+              <option value="pixel-classic">Pixel classic</option>
+              <option value="high-contrast">High contrast</option>
+            </select>
+            <bingo-status id="theme-status"></bingo-status>
+          </bingo-panel>
+          <bingo-status id="settings-state"></bingo-status>
+          <bingo-status id="settings-error" hidden></bingo-status>
+          <div class="settings-actions">
+            <button type="submit" id="settings-save" disabled>Guardar cambios</button>
+            <button type="button" id="settings-discard" disabled>Descartar cambios</button>
+          </div>
+        </form>
+        <figure class="simulator">
+          <div class="simulator-viewport" id="simulator-viewport">
+            <iframe id="public-simulator" sandbox="allow-scripts" src="bingo-public://simulator/public.html" title="Simulador de la pantalla pública" inert tabindex="-1"></iframe>
+          </div>
+          <figcaption>Simulador de la pantalla pública (16:9). Muestra el historial guardado con la configuración en edición; los cambios sin guardar solo se ven aquí.</figcaption>
+        </figure>
+      </div>
+      <bingo-dialog id="unsaved-dialog" label="Hay cambios sin guardar">
+        <p>La configuración del evento tiene cambios sin guardar. ¿Qué quieres hacer con ellos?</p>
+      </bingo-dialog>
     </div>
     <div role="tabpanel" id="panel-bingo" aria-labelledby="tab-bingo" tabindex="0" hidden>
       <bingo-status class="active-event-banner" lang="es"></bingo-status>
@@ -56,14 +95,6 @@
             <bingo-button id="move-public">Move public window to secondary display</bingo-button>
           </div>
           <bingo-status id="public-status" hidden></bingo-status>
-        </bingo-panel>
-        <bingo-panel heading="Display theme">
-          <label for="theme-select">Theme for both windows</label>
-          <select id="theme-select" disabled>
-            <option value="pixel-classic">Pixel classic</option>
-            <option value="high-contrast">High contrast</option>
-          </select>
-          <bingo-status id="theme-status"></bingo-status>
         </bingo-panel>
       </div>
       <p>Claims and prizes are not implemented.</p>

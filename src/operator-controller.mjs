@@ -17,7 +17,9 @@ export function createOperatorController(api, view) {
     const exhausted = calledNumbers.length === 90;
     view.render({ calledNumbers: [...calledNumbers], remaining: 90 - calledNumbers.length,
       phase, stale, error, pending, manualDisabled: pending || !loaded || exhausted,
-      digitalDisabled: pending || !loaded || exhausted, reloadDisabled: pending });
+      digitalDisabled: pending || !loaded || exhausted, reloadDisabled: pending,
+      // The last acknowledged snapshot, kept through stale and failed states (the simulator shows it).
+      snapshot: loaded ? { calledNumbers: [...calledNumbers], phase, lastTransitionAt } : null });
   }
 
   let inFlight = Promise.resolve();

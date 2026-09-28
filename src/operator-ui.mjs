@@ -12,6 +12,7 @@ import { createManualDrawHandler } from './manual-draw.mjs';
 import { createEventsController, today } from './events-controller.mjs';
 import { bindTabs } from './operator-tabs.mjs';
 import { applyTheme, createThemeController, DEFAULT_THEME, revealAfter, THEME_LABELS } from './theme-controller.mjs';
+import { bindSettings } from './settings-ui.mjs';
 
 function required(id, type) {
   const element = document.getElementById(id);
@@ -34,6 +35,30 @@ const phaseLabels = {
 const eventError = required('event-error', HTMLElement);
 const themeSelect = required('theme-select', HTMLSelectElement);
 
+// Configuración edits a draft that only the simulator shows; Save commits it through the same IPC.
+let committedTheme = null;
+const settings = bindSettings({
+  form: required('settings-form', HTMLFormElement),
+  inputs: { name: required('settings-name', HTMLInputElement), place: required('settings-place', HTMLInputElement),
+    date: required('settings-date', HTMLInputElement) },
+  fieldErrors: { name: required('settings-name-error', HTMLElement), place: required('settings-place-error', HTMLElement),
+    date: required('settings-date-error', HTMLElement) },
+  theme: themeSelect,
+  state: required('settings-state', HTMLElement),
+  error: required('settings-error', HTMLElement),
+  save: required('settings-save', HTMLButtonElement),
+  discard: required('settings-discard', HTMLButtonElement),
+  dialog: required('unsaved-dialog', HTMLElement),
+  frame: required('public-simulator', HTMLIFrameElement),
+  viewport: required('simulator-viewport', HTMLElement),
+}, {
+  saveMeta: (id, meta) => events.update(id, meta),
+  saveTheme: async (theme) => {
+    await themes.select(theme);
+    return committedTheme === theme;
+  },
+});
+
 // From the select request until the dependent panels have re-read the new event,
 // writes could land on the newly active event unnoticed.
 let selecting = false;
@@ -47,7 +72,7 @@ function applyLocks() {
   controls.manualDisabled = locked || drawLocks.manualDisabled;
   controls.digitalDisabled = locked || drawLocks.digitalDisabled;
   controls.reloadDisabled = locked || drawLocks.reloadDisabled;
-  themeSelect.disabled = locked || themePending;
+  settings.setLocked(locked || themePending);
   // A second selection must not start until the first one's dependent panels have re-read.
   if (eventListRef !== null) eventListRef.disabled = eventsPending || activating;
 }
@@ -91,6 +116,10 @@ const controller = createOperatorController(window.desktop, {
     drawLocks = { manualDisabled: state.manualDisabled, digitalDisabled: state.digitalDisabled,
       reloadDisabled: state.reloadDisabled };
     applyLocks();
+    // The simulator shows only committed history; it has no draw path of its own.
+    settings.showCommitted(state.snapshot === null
+      ? { ok: false, code: 'event_unavailable', message: 'No current event is available.' }
+      : { ok: true, snapshot: state.snapshot, eventChanged: true });
   },
 });
 void controller.start();
@@ -101,18 +130,20 @@ const themes = createThemeController(window.desktop, {
     // Only an acknowledged theme is applied; a failed first read reveals the default.
     if (theme !== null) applyTheme(document.documentElement, theme);
     else if (error !== null && !document.documentElement.dataset.theme) applyTheme(document.documentElement, DEFAULT_THEME);
-    themeSelect.value = theme ?? DEFAULT_THEME;
+    committedTheme = theme;
+    if (theme !== null) settings.config.setCommittedTheme(theme);
     themePending = pending;
     applyLocks();
-    themeStatus.message = error ?? (pending ? 'Saving theme' : theme === null ? 'Waiting for theme'
-      : `Current theme: ${THEME_LABELS[theme]}`);
+    themeStatus.message = error ?? (pending ? 'Guardando tema' : theme === null ? 'Esperando el tema guardado'
+      : `Tema guardado: ${THEME_LABELS[theme]}`);
     themeStatus.tone = error ? 'error' : 'info';
   },
 });
-themeSelect.addEventListener('change', () => { if (!selecting && !activating) void themes.select(themeSelect.value); });
 void themes.start();
 
-bindTabs(document.querySelector('[role="tablist"]'));
+bindTabs(document.querySelector('[role="tablist"]'), {
+  canLeave: (current) => (current.id === 'tab-settings' ? settings.confirmLeave() : true),
+});
 const eventList = required('event-list', HTMLElement);
 eventListRef = eventList;
 const eventsStatus = required('events-status', HTMLElement);
@@ -142,6 +173,8 @@ const events = createEventsController(window.desktop, {
     eventsError.message = error ?? '';
     eventsError.tone = 'error';
     eventsError.hidden = !error;
+    // A stale list may predate an acknowledged save; the store rejects a draft for an inactive event anyway.
+    if (!stale) settings.config.setCommittedEvent(active);
     for (const banner of banners) {
       banner.message = active ? `Evento activo: ${active.name} — ${active.date}, ${active.place}`
         : loaded ? 'Ningún evento activo. Elige uno en Eventos.' : 'Cargando evento activo';
@@ -152,6 +185,8 @@ const events = createEventsController(window.desktop, {
 // events.select resolves only after resync() and the theme re-read settle.
 eventList.addEventListener('event-select', async (event) => {
   if (activating) return;
+  // Selecting another event would replace the draft: offer Save, Discard, or Cancel first.
+  if (await settings.confirmLeave() !== true || activating) return;
   activating = true;
   applyLocks();
   try { await events.select(event.detail.id); }

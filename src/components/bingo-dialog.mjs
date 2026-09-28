@@ -2,7 +2,8 @@ import { LitElement, css, html } from 'lit';
 import './bingo-button.mjs';
 
 export class BingoDialog extends LitElement {
-  static properties = { label: { type: String } };
+  // Each action's button dispatches its signal; Escape always dispatches 'dismiss'.
+  static properties = { label: { type: String }, actions: { attribute: false } };
   static styles = css`
     dialog {
       max-width: min(90vw, 40rem); padding: var(--bingo-space-layout);
@@ -13,7 +14,12 @@ export class BingoDialog extends LitElement {
     .actions { display: flex; gap: var(--bingo-space-section); margin-top: var(--bingo-space-section); }
     h2 { font: var(--bingo-font-emphasis) var(--bingo-font-size)/var(--bingo-font-line) var(--bingo-font-body); }
   `;
-  constructor() { super(); this.label = ''; this.opener = null; }
+  constructor() {
+    super();
+    this.label = '';
+    this.opener = null;
+    this.actions = [{ action: 'cancel', label: 'Cancel', signal: 'dismiss' }, { action: 'confirm', label: 'Confirm', signal: 'confirm' }];
+  }
   async show() {
     this.opener = document.activeElement;
     await this.updateComplete;
@@ -29,8 +35,8 @@ export class BingoDialog extends LitElement {
     return html`<dialog aria-labelledby="dialog-heading" @cancel=${this.cancel}>
       <h2 id="dialog-heading">${this.label}</h2><slot></slot>
       <div class="actions">
-        <bingo-button data-action="cancel" @click=${() => this.finish('dismiss')}>Cancel</bingo-button>
-        <bingo-button data-action="confirm" @click=${() => this.finish('confirm')}>Confirm</bingo-button>
+        ${this.actions.map(({ action, label, signal }) => html`<bingo-button data-action=${action}
+          @click=${() => this.finish(signal)}>${label}</bingo-button>`)}
       </div>
     </dialog>`;
   }
