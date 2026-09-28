@@ -2,7 +2,7 @@ import { closeSync, linkSync, openSync, statSync, unlinkSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import type { EventSnapshot } from './event-core';
-import type { GamePhase } from './game-phase';
+import { transitionPhase, type GamePhase, type PhaseTransitionIntent } from './game-phase.ts';
 
 const VERSION = 2;
 const phases = ['drawing', 'checking_line', 'line_declared', 'checking_bingo', 'bingo_declared', 'finished'];
@@ -22,6 +22,19 @@ const auditGuards = [
 ];
 
 type StoredEvent = EventSnapshot & { readonly phase: GamePhase; readonly lastTransitionAt: string | null };
+export type PhaseAuditEntry = {
+  readonly sequence: number;
+  readonly transitionAt: string;
+  readonly kind: PhaseTransitionIntent;
+  readonly from_phase: GamePhase;
+  readonly to_phase: GamePhase;
+};
+
+function canonicalTime(value: unknown): value is string {
+  return typeof value === 'string' && !Number.isNaN(Date.parse(value)) &&
+    new Date(value).toISOString() === value;
+}
+
 
 function existed(path: string): boolean {
   try {
@@ -88,7 +101,8 @@ function validateV2(db: DatabaseSync): void {
   if (fields.length !== 4 || fields[0].name !== 'id' || fields[0].type !== 'INTEGER' ||
       fields[0].pk !== 1 || fields[1].name !== 'history' || fields[1].type !== 'TEXT' ||
       fields[1].notnull !== 1 || fields[2].name !== 'phase' || fields[2].type !== 'TEXT' ||
-      fields[2].notnull !== 1 || fields[3].name !== 'lastTransitionAt' ||
+      fields[2].notnull !== 1 || fields[2].dflt_value !== "'drawing'" ||
+      fields[3].name !== 'lastTransitionAt' ||
       fields[3].type !== 'TEXT' || !/CHECK\(+ID=1\)+(?=[,)])/.test(normalized) ||
       !normalized.includes(expectedCheck)) {
     throw new Error('Invalid event schema: current_event table missing or malformed');
@@ -107,21 +121,46 @@ function validateV2(db: DatabaseSync): void {
   }
 }
 
+function replayAudit(db: DatabaseSync): PhaseAuditEntry[] {
+  const rows = db.prepare('SELECT sequence, transitionAt, kind, from_phase, to_phase FROM phase_audit ORDER BY sequence').all();
+  let phase: GamePhase = 'drawing';
+  let previous: string | null = null;
+  return rows.map((row, index) => {
+    if (row.sequence !== index + 1 || row.from_phase !== phase || !canonicalTime(row.transitionAt) ||
+        (previous !== null && row.transitionAt <= previous)) {
+      throw new Error('Invalid phase audit: sequence, source phase, or timestamp');
+    }
+    let target: GamePhase;
+    try { target = transitionPhase({ phase }, row.kind as PhaseTransitionIntent).phase; }
+    catch { throw new Error('Invalid phase audit: illegal intent'); }
+    if (row.to_phase !== target) throw new Error('Invalid phase audit: target phase mismatch');
+    const entry: PhaseAuditEntry = { sequence: index + 1, transitionAt: row.transitionAt,
+      kind: row.kind as PhaseTransitionIntent, from_phase: phase, to_phase: target };
+    phase = target;
+    previous = row.transitionAt;
+    return entry;
+  });
+}
+
 function readEvent(db: DatabaseSync): StoredEvent | null {
   const rows = db.prepare('SELECT id, history, phase, lastTransitionAt FROM current_event').all();
   if (rows.length > 1 || (rows.length === 1 && rows[0].id !== 1)) {
     throw new Error('Invalid event history: unexpected event rows');
   }
-  const audit = db.prepare('SELECT count(*) AS count FROM phase_audit').get()?.count;
-  // Nonempty replay belongs to the subsequent atomic-transition unit. Until then, reject it.
-  if (audit !== 0) throw new Error('Invalid phase audit: unsupported nonempty history');
-  if (rows.length === 0) return null;
+  const audit = replayAudit(db);
+  if (rows.length === 0) {
+    if (audit.length !== 0) throw new Error('Invalid phase audit: missing current event');
+    return null;
+  }
   const row = rows[0];
   const history = decode(row.history);
-  if (row.phase !== 'drawing' || row.lastTransitionAt !== null) {
-    throw new Error('Invalid phase audit: empty audit requires initial drawing state');
+  const last = audit.at(-1);
+  if (row.phase !== (last?.to_phase ?? 'drawing') ||
+      row.lastTransitionAt !== (last?.transitionAt ?? null)) {
+    throw new Error('Invalid phase audit: current state does not match history');
   }
-  return { calledNumbers: history.calledNumbers, phase: 'drawing', lastTransitionAt: null };
+  return { calledNumbers: history.calledNumbers, phase: row.phase as GamePhase,
+    lastTransitionAt: row.lastTransitionAt as string | null };
 }
 
 export function createEventStore(path: string) {
@@ -212,8 +251,43 @@ export function createEventStore(path: string) {
     }
   }
 
+  function readSnapshot<T>(action: () => T): T {
+    db.exec('BEGIN');
+    try {
+      const result = action();
+      db.exec('COMMIT');
+      return result;
+    } catch (error) {
+      try { db.exec('ROLLBACK'); } catch { /* Preserve the original error. */ }
+      throw error;
+    }
+  }
+
   return {
-    load(): StoredEvent | null { return readEvent(db); },
+    load(): StoredEvent | null { return readSnapshot(() => readEvent(db)); },
+    readAudit(): PhaseAuditEntry[] {
+      return readSnapshot(() => {
+        readEvent(db);
+        return replayAudit(db);
+      });
+    },
+    transitionPhase(intent: PhaseTransitionIntent, transitionAt: string): StoredEvent {
+      return transaction(() => {
+        const current = readEvent(db);
+        if (current === null) throw new Error('Current event does not exist');
+        const phase = transitionPhase(current, intent).phase;
+        if (!canonicalTime(transitionAt) ||
+            (current.lastTransitionAt !== null && transitionAt <= current.lastTransitionAt)) {
+          throw new Error('Invalid phase transition timestamp');
+        }
+        const sequence = replayAudit(db).length + 1;
+        db.prepare('UPDATE current_event SET phase = ?, lastTransitionAt = ? WHERE id = 1')
+          .run(phase, transitionAt);
+        db.prepare(`INSERT INTO phase_audit (sequence, transitionAt, kind, from_phase, to_phase)
+          VALUES (?, ?, ?, ?, ?)`).run(sequence, transitionAt, intent, current.phase, phase);
+        return { ...current, phase, lastTransitionAt: transitionAt };
+      });
+    },
     create(): StoredEvent {
       return transaction(() => {
         if (readEvent(db) !== null) throw new Error('Current event already exists');
@@ -227,7 +301,14 @@ export function createEventStore(path: string) {
         const current = readEvent(db);
         if (current === null) throw new Error('Current event does not exist');
         const baseline = [...current.calledNumbers];
+        const phase = current.phase;
+        const lastTransitionAt = current.lastTransitionAt;
         const proposed = transition(current);
+        if (current.phase !== phase || current.lastTransitionAt !== lastTransitionAt ||
+            ('phase' in proposed && proposed.phase !== phase) ||
+            ('lastTransitionAt' in proposed && proposed.lastTransitionAt !== lastTransitionAt)) {
+          throw new Error('Invalid event transition: phase and timestamp require an audit intent');
+        }
         // Replay through the core's invariants, including ordering and duplicate checks.
         const next = decode(JSON.stringify(proposed.calledNumbers));
         if (next.calledNumbers.length < baseline.length ||
@@ -235,7 +316,7 @@ export function createEventStore(path: string) {
           throw new Error('Invalid event transition: called history cannot be rewritten');
         }
         db.prepare('UPDATE current_event SET history = ? WHERE id = 1').run(JSON.stringify(next.calledNumbers));
-        return { ...current, calledNumbers: next.calledNumbers };
+        return { calledNumbers: next.calledNumbers, phase, lastTransitionAt };
       });
     },
     close(): void { db.close(); },
