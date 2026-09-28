@@ -113,7 +113,7 @@ it('operator page exposes shared panels and interactive components', async () =>
   expect(page.querySelector('main h1')).not.to.equal(null);
   expect([...page.querySelectorAll('main [role="tab"]')].map((tab) => tab.textContent))
     .to.deep.equal(['Eventos', 'Configuración', 'Bingo']);
-  expect(page.querySelectorAll('#panel-bingo bingo-panel')).to.have.length(2);
+  expect(page.querySelectorAll('#panel-bingo bingo-panel')).to.have.length(3);
   expect(page.querySelector('#panel-bingo #theme-select')).to.equal(null, 'the theme selector lives in Configuración');
   expect(page.querySelectorAll('#panel-settings .active-event-banner, #panel-bingo .active-event-banner')).to.have.length(2);
   expect(page.querySelector('#panel-events bingo-event-list#event-list')).not.to.equal(null);

@@ -96,6 +96,12 @@
           </div>
           <bingo-status id="public-status" hidden></bingo-status>
         </bingo-panel>
+        <bingo-panel heading="Sound cues">
+          <p><label><input type="checkbox" id="cue-mute"> Mute cues</label></p>
+          <p><label for="cue-volume">Cue volume</label> <input type="range" id="cue-volume" min="0" max="100" step="5"></p>
+          <p><button type="button" id="cue-test">Test cue sound</button></p>
+          <bingo-status id="cue-status"></bingo-status>
+        </bingo-panel>
       </div>
       <p>Claims and prizes are not implemented.</p>
     </div>

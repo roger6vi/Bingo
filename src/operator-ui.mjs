@@ -13,6 +13,7 @@ import { createEventsController, today } from './events-controller.mjs';
 import { bindTabs } from './operator-tabs.mjs';
 import { applyTheme, createThemeController, DEFAULT_THEME, revealAfter, THEME_LABELS } from './theme-controller.mjs';
 import { bindSettings } from './settings-ui.mjs';
+import { bindCueControls } from './cue-ui.mjs';
 
 function required(id, type) {
   const element = document.getElementById(id);
@@ -87,6 +88,12 @@ window.desktop.onPublicStatus((pauseSuggested) => {
   publicStatus.hidden = !pauseSuggested;
 });
 
+const cues = bindCueControls({ mute: required('cue-mute', HTMLInputElement), volume: required('cue-volume', HTMLInputElement),
+  test: required('cue-test', HTMLButtonElement), status: required('cue-status', HTMLElement) },
+{ createAudio: (url) => new Audio(url),
+  // Resolved per call: a blocked localStorage getter throws, and the player then keeps its defaults.
+  storage: { getItem: (key) => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value) } });
+
 const controller = createOperatorController(window.desktop, {
   bind: ({ manual, digital, reload }) => {
     controls.addEventListener('click', (event) => {
@@ -116,6 +123,7 @@ const controller = createOperatorController(window.desktop, {
     drawLocks = { manualDisabled: state.manualDisabled, digitalDisabled: state.digitalDisabled,
       reloadDisabled: state.reloadDisabled };
     applyLocks();
+    cues.observe(state.snapshot);
     // The simulator shows only committed history; it has no draw path of its own.
     settings.showCommitted(state.snapshot === null
       ? { ok: false, code: 'event_unavailable', message: 'No current event is available.' }
