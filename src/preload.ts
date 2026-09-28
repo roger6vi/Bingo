@@ -9,6 +9,8 @@ contextBridge.exposeInMainWorld('desktop', Object.freeze({
   listEvents: () => ipcRenderer.invoke('events:list'),
   createEvent: (meta: { name: string; date: string; place: string }) => ipcRenderer.invoke('events:create', meta),
   selectEvent: (id: string) => ipcRenderer.invoke('events:select', id),
+  updateEvent: (id: string, meta: { name: string; date: string; place: string }) =>
+    ipcRenderer.invoke('events:update', id, meta),
   getTheme: () => ipcRenderer.invoke('theme:get'),
   setTheme: (theme: string) => ipcRenderer.invoke('theme:set', theme),
   onPublicStatus: (callback: (pauseSuggested: boolean) => void) => {

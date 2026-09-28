@@ -28,11 +28,20 @@ function fixture() {
       events = events.map((event) => ({ ...event, active: event.id === id }));
       return events.find((event) => event.active)!;
     },
+    updateEventMeta(id: string, meta: { name: string; date: string; place: string }) {
+      calls.push(`update:${id}:${JSON.stringify(meta)}`);
+      if (failure === 'update') throw new Error('secret');
+      events = events.map((event) => (event.id === id ? { ...event, ...meta } : event));
+      return events.find((event) => event.id === id)!;
+    },
   };
   registerEventCatalogIpc({ handle: (channel: string, handler: Handler) => { handlers.set(channel, handler); } },
     store, createOperatorGuard(sender, () => frame, frame.url), () => {
       calls.push('notify');
       if (failure === 'notify') throw new Error('display gone');
+    }, () => {
+      calls.push('notify-meta');
+      if (failure === 'notify-meta') throw new Error('display gone');
     });
   const invoke = (channel: string, args: unknown[] = [], from: object = sender) =>
     handlers.get(channel)!({ sender: from, senderFrame: frame }, ...args);
@@ -41,7 +50,7 @@ function fixture() {
 
 const meta = { name: ' Verbena ', date: '2026-09-28', place: 'Plaza' };
 
-test('registers exactly list, create, and select, all operator-only', () => {
+test('registers exactly list, create, select, and update, all operator-only', () => {
   const f = fixture();
   assert.deepEqual([...f.handlers.keys()], Object.values(CATALOG_CHANNELS));
   for (const channel of Object.values(CATALOG_CHANNELS)) {
@@ -102,4 +111,33 @@ test('a committed create whose list cannot be read reports created: true', () =>
   f.setFailure('list');
   assert.deepEqual(f.invoke(CATALOG_CHANNELS.create, [meta]), { ok: false, code: 'storage_failure',
     message: 'The event was created, but the list could not be read. Reload the events.', created: true });
+});
+
+test('update validates id and metadata before the store, then commits before notifying the public window', () => {
+  const f = fixture();
+  const invalid = { ok: false, code: 'invalid_request', message: 'Invalid event request.' };
+  for (const bad of [[], ['a'], [meta], ['', meta], ['x'.repeat(65), meta], [1, meta], ['a', { ...meta, extra: 1 }],
+    ['a', { ...meta, name: ' ' }], ['a', { ...meta, place: 'p'.repeat(121) }], ['a', { ...meta, date: '2026-02-30' }],
+    ['a', meta, 'extra']]) {
+    assert.deepEqual(f.invoke(CATALOG_CHANNELS.update, bad), invalid);
+  }
+  assert.deepEqual(f.calls, []);
+  const updated = f.invoke(CATALOG_CHANNELS.update, ['a', meta]) as { ok: true; events: EventSummary[] };
+  assert.equal(updated.ok, true);
+  assert.deepEqual(updated.events, [{ ...summary('a', true), ...meta }]);
+  assert.deepEqual(f.calls, [`update:a:${JSON.stringify(meta)}`, 'notify-meta', 'list']);
+});
+
+test('a failed update neither notifies nor leaks details; a committed one survives delivery and list failures', () => {
+  const f = fixture();
+  f.setFailure('update');
+  const failed = f.invoke(CATALOG_CHANNELS.update, ['a', meta]);
+  assert.deepEqual(failed, { ok: false, code: 'storage_failure',
+    message: 'Could not save the event details. Reload the events and try again.' });
+  assert.deepEqual(f.calls, [`update:a:${JSON.stringify(meta)}`]);
+  f.setFailure('notify-meta');
+  assert.equal((f.invoke(CATALOG_CHANNELS.update, ['a', meta]) as { ok: boolean }).ok, true);
+  f.setFailure('list');
+  assert.deepEqual(f.invoke(CATALOG_CHANNELS.update, ['a', meta]), { ok: false, code: 'storage_failure',
+    message: 'The event details were saved, but the list could not be read. Reload the events.', updated: true });
 });

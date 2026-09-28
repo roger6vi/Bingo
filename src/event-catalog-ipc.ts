@@ -4,17 +4,20 @@ export const CATALOG_CHANNELS = Object.freeze({
   list: 'events:list',
   create: 'events:create',
   select: 'events:select',
+  update: 'events:update',
 });
 
 export type CatalogResult =
   | { ok: true; events: EventSummary[] }
-  | { ok: false; code: 'invalid_request' | 'storage_failure'; message: string; selected?: true; created?: true };
+  | { ok: false; code: 'invalid_request' | 'storage_failure'; message: string;
+    selected?: true; created?: true; updated?: true };
 
 type CatalogRequest = { sender: unknown; senderFrame: unknown };
 type CatalogStore = {
   listEvents(): EventSummary[];
   createEvent(meta: { name: string; date: string; place: string }): EventSummary;
   selectEvent(id: string): EventSummary;
+  updateEventMeta(id: string, meta: { name: string; date: string; place: string }): EventSummary;
 };
 type Registrar = {
   handle(channel: string, handler: (event: CatalogRequest, ...args: unknown[]) => CatalogResult): void;
@@ -39,9 +42,12 @@ function validMeta(value: unknown): value is { name: string; date: string; place
   return text(meta.name) && text(meta.place) && isoDate(meta.date);
 }
 
+const validId = (value: unknown): value is string =>
+  typeof value === 'string' && value.length > 0 && value.length <= 64;
+
 export function registerEventCatalogIpc(
   registrar: Registrar, store: CatalogStore, authorize: (event: CatalogRequest) => void,
-  notifySelected?: () => void,
+  notifySelected?: () => void, notifyUpdated?: () => void,
 ): void {
   const list = (failure: string): CatalogResult => {
     try { return { ok: true, events: store.listEvents().map((event) => ({ ...event })) }; }
@@ -65,9 +71,7 @@ export function registerEventCatalogIpc(
   });
   registrar.handle(CATALOG_CHANNELS.select, (event, ...args) => {
     authorize(event);
-    if (args.length !== 1 || typeof args[0] !== 'string' || args[0].length === 0 || args[0].length > 64) {
-      return invalidRequest();
-    }
+    if (args.length !== 1 || !validId(args[0])) return invalidRequest();
     try { store.selectEvent(args[0]); }
     catch { return { ok: false, code: 'storage_failure', message: 'Could not select the event. Reload the events and try again.' }; }
     // The pointer has committed; delivery to either window cannot undo the selection.
@@ -76,5 +80,18 @@ export function registerEventCatalogIpc(
     // Tell the operator the selection committed even when the refreshed list cannot be read.
     const result = list('The event was selected, but the list could not be read. Reload the events.');
     return result.ok ? result : { ...result, selected: true };
+  });
+  registrar.handle(CATALOG_CHANNELS.update, (event, ...args) => {
+    authorize(event);
+    if (args.length !== 2 || !validId(args[0]) || !validMeta(args[1])) return invalidRequest();
+    const { name, date, place } = args[1];
+    try { store.updateEventMeta(args[0], { name, date, place }); }
+    catch { return { ok: false, code: 'storage_failure', message: 'Could not save the event details. Reload the events and try again.' }; }
+    // The edit has committed; delivery to the public window cannot undo it.
+    try { notifyUpdated?.(); }
+    catch { /* Delivery is best effort after persistence commits. */ }
+    // Tell the operator the edit committed even when the refreshed list cannot be read.
+    const result = list('The event details were saved, but the list could not be read. Reload the events.');
+    return result.ok ? result : { ...result, updated: true };
   });
 }

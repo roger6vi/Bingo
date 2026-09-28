@@ -41,11 +41,16 @@ if (!app.requestSingleInstanceLock()) {
   const operatorFrame = () => operator.webContents.mainFrame;
   const operatorUrl = pathToFileURL(operatorPath).href;
   // The public window is only attached after theme IPC is registered below.
-  const publicDelivery = createPublicEventDelivery(store, () => theme.current());
+  const activeMeta = () => {
+    const active = store.listEvents().find((event) => event.active);
+    return active === undefined ? null : { name: active.name, date: active.date, place: active.place };
+  };
+  const publicDelivery = createPublicEventDelivery(store, () => theme.current(), activeMeta);
   const operatorOnly = createOperatorGuard(operator.webContents, operatorFrame, operatorUrl);
   const theme = registerThemeIpc(ipcMain, { load: store.loadTheme, save: store.saveTheme },
     operatorOnly, publicDelivery.publishTheme);
-  registerEventCatalogIpc(ipcMain, store, operatorOnly, () => publicDelivery.publishActive(theme.reload()));
+  registerEventCatalogIpc(ipcMain, store, operatorOnly, () => publicDelivery.publishActive(theme.reload()),
+    publicDelivery.publishMeta);
   registerEventIpc(ipcMain, store, { drawManual, drawDigital }, Math.random,
     operator.webContents, operatorFrame, operatorUrl, publicDelivery.publishCommitted);
   void operator.loadFile(operatorPath);

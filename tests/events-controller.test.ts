@@ -16,11 +16,13 @@ function fixture() {
     list: async () => listed(summary('a', true), summary('b')),
     create: async () => listed(summary('a', true), summary('b'), summary('c')),
     select: async () => listed(summary('a'), summary('b', true)),
+    update: async () => listed({ ...summary('a', true), name: 'Verbena' }, summary('b')),
   };
   const controller = createEventsController({
     listEvents: () => { calls.push('list'); return responses.list(); },
     createEvent: (meta: unknown) => { calls.push(`create:${JSON.stringify(meta)}`); return responses.create(); },
     selectEvent: (id: string) => { calls.push(`select:${id}`); return responses.select(); },
+    updateEvent: (id: string, meta: unknown) => { calls.push(`update:${id}:${JSON.stringify(meta)}`); return responses.update(); },
   }, { render: (state: State) => { renders.push(structuredClone(state)); } },
   async () => { calls.push('dependents'); });
   return { controller, renders, calls, responses, last: () => renders.at(-1)! };
@@ -118,4 +120,25 @@ test('a create that committed without a readable list reports success so the for
   assert.equal(await f.controller.create({ name: 'N', place: 'P', date: '2026-09-28' }), true);
   assert.equal(f.last().stale, true);
   assert.equal(f.last().error, 'unreadable');
+});
+
+test('an update resolves true only for an acknowledged commit and refreshes the active event', async () => {
+  const f = fixture();
+  await f.controller.start();
+  const meta = { name: 'Verbena', date: '2026-09-28', place: 'Sala' };
+  const pending = f.controller.update('a', meta);
+  assert.equal(f.last().pending, 'update');
+  assert.equal(await pending, true);
+  assert.deepEqual([f.last().active?.name, f.last().stale, f.last().error], ['Verbena', false, null]);
+  assert.equal(f.calls.includes('dependents'), false, 'metadata edits do not change the active event');
+  f.responses.update = async () => ({ ok: false, code: 'storage_failure', message: 'Could not save.' });
+  assert.equal(await f.controller.update('a', meta), false);
+  assert.deepEqual([f.last().stale, f.last().error, f.last().active?.name], [true, 'Could not save.', 'Verbena']);
+  f.responses.update = async () => { throw new Error('ipc'); };
+  assert.equal(await f.controller.update('a', meta), false, 'an unanswered update is not reported as saved');
+  f.responses.update = async () => ({ ok: false, code: 'storage_failure', message: 'unreadable', updated: true });
+  assert.equal(await f.controller.update('a', meta), true);
+  f.responses.update = async () => ({ ok: true, events: [{ id: 'a' }] });
+  assert.equal(await f.controller.update('a', meta), true, 'ok:true means committed even with an unusable list');
+  assert.equal(f.last().stale, true);
 });

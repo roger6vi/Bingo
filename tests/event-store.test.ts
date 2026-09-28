@@ -1107,3 +1107,62 @@ test('selectEvent refuses an event whose persisted state is corrupt and keeps th
   try { assert.equal(reopened.listEvents().find((e) => e.id === a.id)?.active, true); }
   finally { reopened.close(); }
 });
+
+test('updateEventMeta edits only the active event with createEvent rules and survives reopening', (t) => {
+  const path = fixture(t);
+  const store = createEventStore(path);
+  const a = store.createEvent({ name: 'A', date: '2025-01-01', place: 'X' });
+  const b = store.createEvent({ name: 'B', date: '2025-01-02', place: 'Y' });
+  store.update((event) => drawManual(event, 12));
+  store.transitionPhase('begin_line_check', '2025-01-01T00:00:00.000Z');
+  store.saveTheme('high-contrast');
+  const before = { event: store.load(), audit: store.readAudit(), theme: store.loadTheme() };
+  const updated = store.updateEventMeta(a.id, { name: '  Verbena  ', date: '2026-08-15', place: ' Plaza Mayor ' });
+  const expected = { ...a, phase: 'checking_line', name: 'Verbena', date: '2026-08-15', place: 'Plaza Mayor' };
+  assert.deepEqual({ ...updated }, expected);
+  assert.equal(Object.isFrozen(updated), true);
+  assert.deepEqual({ event: store.load(), audit: store.readAudit(), theme: store.loadTheme() }, before);
+  assert.deepEqual(store.listEvents().find((event) => event.id === b.id), b, 'another event is untouched');
+  store.close();
+  const reopened = createEventStore(path);
+  try {
+    assert.deepEqual(reopened.listEvents().find((event) => event.active), expected);
+  } finally { reopened.close(); }
+});
+
+test('updateEventMeta rejects invalid metadata, ids, and inactive events without writing', (t) => {
+  const path = fixture(t);
+  const store = createEventStore(path);
+  t.after(() => store.close());
+  const a = store.createEvent({ name: 'A', date: '2025-01-01', place: 'X' });
+  const b = store.createEvent({ name: 'B', date: '2025-01-02', place: 'Y' });
+  const before = store.listEvents();
+  const valid = { name: 'N', date: '2025-03-01', place: 'P' };
+  const long = 'a'.repeat(121);
+  for (const meta of [{ ...valid, name: '  ' }, { ...valid, name: long }, { ...valid, place: '' },
+    { ...valid, place: long }, { ...valid, date: '2026-02-30' }, { ...valid, date: '2025-1-1' },
+    { ...valid, name: 1 }, { ...valid, date: null }, null]) {
+    assert.throws(() => store.updateEventMeta(a.id, meta as never), /invalid/i);
+  }
+  for (const id of [b.id, randomUUID(), 42, null, '']) {
+    assert.throws(() => store.updateEventMeta(id as unknown, valid), /invalid|active/i);
+  }
+  assert.equal(store.updateEventMeta(a.id, { ...valid, name: 'a'.repeat(120) }).name.length, 120);
+  store.updateEventMeta(a.id, { name: 'A', date: '2025-01-01', place: 'X' });
+  assert.deepEqual(store.listEvents(), before);
+});
+
+test('updateEventMeta fails atomically under a concurrent writer lock', (t) => {
+  const path = fixture(t);
+  const store = createEventStore(path);
+  t.after(() => store.close());
+  const a = store.createEvent({ name: 'A', date: '2025-01-01', place: 'X' });
+  const before = store.listEvents();
+  withDb(path, (db) => {
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      assert.throws(() => store.updateEventMeta(a.id, { name: 'N', date: '2025-03-01', place: 'P' }), /locked|busy/i);
+    } finally { db.exec('ROLLBACK'); }
+  });
+  assert.deepEqual(store.listEvents(), before);
+});

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createPublicEventDelivery, PUBLIC_EVENT_CHANNEL, PUBLIC_THEME_CHANNEL } from '../src/public-event-delivery.ts';
+import {
+  createPublicEventDelivery, PUBLIC_EVENT_CHANNEL, PUBLIC_META_CHANNEL, PUBLIC_THEME_CHANNEL, type PublicEventMeta,
+} from '../src/public-event-delivery.ts';
 import type { EventSnapshot } from '../src/event-core.ts';
 
 type Message = { channel: string; result: unknown };
@@ -158,4 +160,47 @@ test('publishActive resends theme then the newly active event marked eventChange
   f.delivery.publishActive('pixel-classic');
   assert.deepEqual(window.messages.at(-1)?.result, { ok: false, code: 'storage_failure',
     message: 'Could not read the current event. Try again.' });
+});
+
+test('committed event metadata is sent between theme and state, republished on edits, and never leaks read errors', () => {
+  let meta: PublicEventMeta = { name: 'Verbena', date: '2026-08-15', place: 'Plaza' };
+  let failMeta = false;
+  const delivery = createPublicEventDelivery({ load: () => snapshot([7]) }, () => 'high-contrast', () => {
+    if (failMeta) throw new Error('private storage detail');
+    return meta;
+  });
+  const messages: Message[] = [];
+  const window = { isDestroyed: () => false, send: (channel: string, result: unknown) => { messages.push({ channel, result }); } };
+  delivery.publishMeta();
+  assert.equal(messages.length, 0, 'nothing is sent before a window attaches');
+  delivery.attachAfterLoad(window);
+  assert.deepEqual(messages.map(({ channel }) => channel), [PUBLIC_THEME_CHANNEL, PUBLIC_META_CHANNEL, PUBLIC_EVENT_CHANNEL]);
+  assert.deepEqual(messages[1].result, { name: 'Verbena', date: '2026-08-15', place: 'Plaza' });
+  assert.notEqual(messages[1].result, meta, 'a copy is sent');
+  meta = { name: 'Gran Bingo', date: '2026-08-16', place: 'Club' };
+  delivery.publishMeta();
+  assert.deepEqual(messages.at(-1), { channel: PUBLIC_META_CHANNEL, result: meta });
+  delivery.publishActive('pixel-classic');
+  assert.deepEqual(messages.slice(-3).map(({ channel }) => channel),
+    [PUBLIC_THEME_CHANNEL, PUBLIC_META_CHANNEL, PUBLIC_EVENT_CHANNEL]);
+  failMeta = true;
+  delivery.publishMeta();
+  assert.deepEqual(messages.at(-1), { channel: PUBLIC_META_CHANNEL, result: null });
+  meta = null;
+  failMeta = false;
+  delivery.publishMeta();
+  assert.deepEqual(messages.at(-1), { channel: PUBLIC_META_CHANNEL, result: null });
+  assert.equal(JSON.stringify(messages).includes('private storage detail'), false);
+});
+
+test('a metadata send that closes the window stops the attach before event state', () => {
+  const delivery = createPublicEventDelivery({ load: () => snapshot([7]) }, () => 'pixel-classic',
+    () => ({ name: 'N', date: '2026-08-15', place: 'P' }));
+  const messages: string[] = [];
+  const window = { isDestroyed: () => false, send: (channel: string) => {
+    messages.push(channel);
+    if (channel === PUBLIC_META_CHANNEL) throw new Error('send failed');
+  } };
+  delivery.attachAfterLoad(window);
+  assert.deepEqual(messages, [PUBLIC_THEME_CHANNEL, PUBLIC_META_CHANNEL]);
 });
