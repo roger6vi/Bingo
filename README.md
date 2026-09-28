@@ -32,6 +32,10 @@ npm run test:components
 
 The runner installs Chromium's Linux system dependencies with `npx playwright install-deps chromium`; `npm run test:components` installs Chromium itself before running Web Test Runner. The single job keeps token-generated CSS and build artifacts sequential. To reproduce the checks locally, use Node.js 24, run `npm ci`, provision Playwright's Chromium system dependencies on Linux, then run the commands above in order. CI tests source, token contracts, built artifacts, and browser components; it does not launch Electron, package the application, or validate macOS or Windows runtime/packaging. Hosted CI results require a published branch or PR; required-check branch protection is not configured here.
 
+## Windows package
+
+A separate `Windows package` workflow builds unsigned per-user NSIS installers on `windows-latest`, then installs, upgrades, relaunches and uninstalls the packaged app against a temporary `--user-data-dir`. On Windows, `npm run package:win` writes the installer to ignored `release/windows/`. See [docs/windows-packaging.md](docs/windows-packaging.md) for what is verified, platform differences, and what remains unverified.
+
 ## Next work
 
 The first production steps are tracked as GitHub issues:
