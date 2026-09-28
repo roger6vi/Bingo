@@ -29,6 +29,7 @@ async function loadOperator() {
   const main = document.importNode(page.querySelector('main'), true);
   // Browser-only tests cannot resolve Electron's local simulator protocol; keep its message sink inert.
   main.querySelector('#public-simulator').src = 'about:blank';
+  main.querySelector('#public-simulator').removeAttribute('sandbox');
   document.body.append(main);
   const links = await Promise.all(['pixel-classic', 'high-contrast']
     .map((name) => stylesheet(new URL(`../../src/generated/${name}.css`, import.meta.url).href)));
@@ -77,7 +78,8 @@ async function loadOperator() {
   const moduleUrl = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
   try { await import(moduleUrl); } finally { URL.revokeObjectURL(moduleUrl); }
   const frame = main.querySelector('#public-simulator');
-  if (frame.contentDocument?.readyState !== 'complete' || frame.contentWindow.location.href === 'about:blank') {
+  if (frame.getAttribute('src') !== 'about:blank' &&
+    (frame.contentDocument?.readyState !== 'complete' || frame.contentWindow.location.href === 'about:blank')) {
     await new Promise((resolve) => frame.addEventListener('load', resolve, { once: true }));
   }
   const messages = [];
@@ -447,6 +449,19 @@ it('operator tabs follow WAI-ARIA selection by pointer and keyboard with a rovin
   await expect(root).to.be.accessible();
 });
 
+it('a pointer-vetoed tab switch restores focus to the selected tab', async () => {
+  const root = await fixture(html`<div><div role="tablist">
+    <button role="tab" id="v1" aria-controls="vp1" aria-selected="true">Configuración</button>
+    <button role="tab" id="v2" aria-controls="vp2" aria-selected="false">Bingo</button>
+  </div><div id="vp1"></div><div id="vp2"></div></div>`);
+  const tabs = [...root.querySelectorAll('[role="tab"]')];
+  bindTabs(root.querySelector('[role="tablist"]'), { canLeave: async () => false });
+  tabs[1].focus();
+  tabs[1].click();
+  await settle();
+  expect([tabs[0].getAttribute('aria-selected'), document.activeElement]).to.deep.equal(['true', tabs[0]]);
+});
+
 it('event list marks the committed active event, offers selection for others, and shows an empty state', async () => {
   const list = await fixture(html`<bingo-event-list></bingo-event-list>`);
   expect(list.shadowRoot.textContent).to.include('no disponible todavía');
@@ -547,11 +562,6 @@ it('leaving Configuración with unsaved edits offers Save, Discard, and Cancel w
     await choose('cancel');
     expect([native().open, settingsTab.getAttribute('aria-selected'), document.activeElement, name.value])
       .to.deep.equal([false, 'true', settingsTab, 'Borrador']);
-    bingoTab.click();
-    await settle();
-    await choose('cancel');
-    expect([settingsTab.getAttribute('aria-selected'), document.activeElement])
-      .to.deep.equal(['true', settingsTab], 'pointer cancellation restores the selected tab');
     key(settingsTab, 'ArrowRight');
     await settle();
     native().dispatchEvent(new Event('cancel', { cancelable: true }));
