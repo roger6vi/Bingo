@@ -8,6 +8,8 @@ import { DEFAULT_THEME, isThemeId, THEME_IDS, type ThemeId } from './theme.ts';
 const VERSION = 3;
 const phases = ['drawing', 'checking_line', 'line_declared', 'checking_bingo', 'bingo_declared', 'finished'];
 const phaseCheck = `CHECK (phase IN (${phases.map((phase) => `'${phase}'`).join(', ')}))`;
+// Existing databases are validated against this exact list: adding or renaming a theme id
+// requires a schema version bump with a migration that rebuilds this CHECK.
 const themeCheck = `CHECK (theme IN (${THEME_IDS.map((theme) => `'${theme}'`).join(', ')}))`;
 const auditTable = `CREATE TABLE phase_audit (
   sequence INTEGER PRIMARY KEY,

@@ -8,7 +8,7 @@ import './components/bingo-dialog.mjs';
 import './screen.css';
 import { createOperatorController } from './operator-controller.mjs';
 import { createManualDrawHandler } from './manual-draw.mjs';
-import { applyTheme, createThemeController, DEFAULT_THEME, THEME_LABELS } from './theme-controller.mjs';
+import { applyTheme, createThemeController, DEFAULT_THEME, revealAfter, THEME_LABELS } from './theme-controller.mjs';
 
 function required(id, type) {
   const element = document.getElementById(id);
@@ -88,3 +88,5 @@ const themes = createThemeController(window.desktop, {
 });
 themeSelect.addEventListener('change', () => { void themes.select(themeSelect.value); });
 void themes.start();
+// If getTheme() never settles, reveal the default without marking it as the saved theme.
+revealAfter(document.documentElement, 2000);
