@@ -5,9 +5,12 @@ import './components/bingo-operator-summary.mjs';
 import './components/bingo-call-history.mjs';
 import './components/bingo-draw-controls.mjs';
 import './components/bingo-dialog.mjs';
+import './components/bingo-event-list.mjs';
 import './screen.css';
 import { createOperatorController } from './operator-controller.mjs';
 import { createManualDrawHandler } from './manual-draw.mjs';
+import { createEventsController, today } from './events-controller.mjs';
+import { bindTabs } from './operator-tabs.mjs';
 import { applyTheme, createThemeController, DEFAULT_THEME, revealAfter, THEME_LABELS } from './theme-controller.mjs';
 
 function required(id, type) {
@@ -88,5 +91,50 @@ const themes = createThemeController(window.desktop, {
 });
 themeSelect.addEventListener('change', () => { void themes.select(themeSelect.value); });
 void themes.start();
+
+bindTabs(document.querySelector('[role="tablist"]'));
+const eventList = required('event-list', HTMLElement);
+const eventsStatus = required('events-status', HTMLElement);
+const eventsError = required('events-error', HTMLElement);
+const reloadEvents = required('reload-events', HTMLElement);
+const createForm = required('create-event', HTMLFormElement);
+const createSubmit = required('create-event-submit', HTMLButtonElement);
+const eventDate = required('event-date', HTMLInputElement);
+const banners = [...document.querySelectorAll('.active-event-banner')];
+eventDate.value = today();
+
+// Both dependent panels re-read the newly committed event and its theme.
+const events = createEventsController(window.desktop, {
+  render: ({ events: list, loaded, pending, stale, error, active }) => {
+    eventList.events = list;
+    eventList.disabled = pending !== null;
+    reloadEvents.disabled = pending !== null;
+    createSubmit.disabled = pending !== null;
+    eventsStatus.message = pending === 'select' ? 'Activando evento' : pending === 'create' ? 'Creando evento'
+      : !loaded ? (pending ? 'Cargando eventos' : 'No se pudieron cargar los eventos')
+        : stale ? 'La lista de eventos puede estar desactualizada. Recárgala antes de continuar.'
+          : `${list.length} evento${list.length === 1 ? '' : 's'}`;
+    eventsStatus.tone = stale ? 'warning' : 'info';
+    eventsError.message = error ?? '';
+    eventsError.tone = 'error';
+    eventsError.hidden = !error;
+    for (const banner of banners) {
+      banner.message = active ? `Evento activo: ${active.name} — ${active.date}, ${active.place}`
+        : loaded ? 'Ningún evento activo. Elige uno en Eventos.' : 'Cargando evento activo';
+      banner.tone = active && !stale ? 'info' : 'warning';
+    }
+  },
+}, () => Promise.all([controller.resync(), themes.start()]));
+eventList.addEventListener('event-select', (event) => { void events.select(event.detail.id); });
+reloadEvents.addEventListener('click', () => { void events.start(); });
+createForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const meta = { name: createForm.elements.name.value, place: createForm.elements.place.value, date: eventDate.value };
+  if (await events.create(meta)) {
+    createForm.reset();
+    eventDate.value = today();
+  }
+});
+void events.start();
 // If getTheme() never settles, reveal the default without marking it as the saved theme.
 revealAfter(document.documentElement, 2000);

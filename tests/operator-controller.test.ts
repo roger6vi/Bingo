@@ -207,3 +207,17 @@ test('exhaustion disables draws but still allows reload', async () => {
   await new Promise(setImmediate);
   assert.deepEqual(f.calls, ['get', 'get']);
 });
+
+test('resync after an event switch replaces the old history instead of flagging it stale', async () => {
+  const f = fixture();
+  await f.controller.start();
+  let release!: (value: EventResult) => void;
+  f.responses.digital = () => new Promise((resolve) => { release = resolve; });
+  f.handlers.digital!();
+  f.responses.get = async () => success(7);
+  const resync = f.controller.resync();
+  release(success(90, 1, 2));
+  await resync;
+  assert.deepEqual(f.calls, ['get', 'digital', 'get']);
+  assert.deepEqual([f.last().calledNumbers, f.last().stale, f.last().error], [[7], false, null]);
+});

@@ -6,6 +6,9 @@ contextBridge.exposeInMainWorld('desktop', Object.freeze({
   getCurrentEvent: () => ipcRenderer.invoke('event:get'),
   drawManual: (number: number) => ipcRenderer.invoke('event:draw-manual', number),
   drawDigital: () => ipcRenderer.invoke('event:draw-digital'),
+  listEvents: () => ipcRenderer.invoke('events:list'),
+  createEvent: (meta: { name: string; date: string; place: string }) => ipcRenderer.invoke('events:create', meta),
+  selectEvent: (id: string) => ipcRenderer.invoke('events:select', id),
   getTheme: () => ipcRenderer.invoke('theme:get'),
   setTheme: (theme: string) => ipcRenderer.invoke('theme:set', theme),
   onPublicStatus: (callback: (pauseSuggested: boolean) => void) => {

@@ -39,6 +39,13 @@ button:disabled { color: var(--bingo-color-muted); background: var(--bingo-color
 .operator-layout bingo-status { margin-block: var(--bingo-space-section); }
 .operator-layout select { margin-inline: var(--bingo-space-small); padding: var(--bingo-space-inset-compact); }
 .public-controls { display: flex; flex-wrap: wrap; gap: var(--bingo-space-small); }
+.operator-tabs { display: flex; flex-wrap: wrap; border-bottom: 2px solid var(--bingo-color-border); }
+.operator-tabs [role="tab"] { margin: 0 var(--bingo-space-small) 0 0; }
+.operator-tabs [role="tab"][aria-selected="true"] { color: var(--bingo-color-canvas); background: var(--bingo-color-accent); }
+[role="tabpanel"] { margin-top: var(--bingo-space-section); }
+.active-event-banner { margin-block-end: var(--bingo-space-section); }
+.event-form { display: grid; gap: var(--bingo-space-small); justify-items: start; }
+.event-form input { padding: var(--bingo-space-inset-compact); }
 
 bingo-shell:has(.public-layout) { max-width: none; }
 bingo-shell:has(.public-layout) h1 {

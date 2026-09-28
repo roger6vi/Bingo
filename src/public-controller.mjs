@@ -64,7 +64,8 @@ export function createPublicController(api, view) {
       reject(result.code === 'event_unavailable' ? unavailable : readFailure);
       return;
     }
-    if (result.ok !== true || !validSnapshot(result.snapshot, loaded
+    // eventChanged marks a newly selected active event: its history starts a new baseline.
+    if (result.ok !== true || !validSnapshot(result.snapshot, loaded && result.eventChanged !== true
       ? { calledNumbers, phase, lastTransitionAt } : null)) {
       reject(invalidUpdate);
       return;
