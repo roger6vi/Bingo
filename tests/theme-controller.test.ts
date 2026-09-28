@@ -49,3 +49,38 @@ test('connection failure keeps the last committed theme', async () => {
   await f.controller.start();
   assert.deepEqual(f.last(), { theme: null, pending: false, error: 'Could not connect to theme settings. Try again.' });
 });
+
+function manualTimer() {
+  let fire = () => {};
+  return { schedule: (callback: () => void) => { fire = callback; }, fire: () => fire() };
+}
+
+test('public window: a committed theme arriving after the fallback replaces the default', () => {
+  const root = { dataset: {} as Record<string, string> };
+  const timer = manualTimer();
+  revealAfter(root, 2000, timer.schedule);
+  timer.fire();
+  assert.equal(root.dataset.theme, 'pixel-classic');
+  applyTheme(root, 'high-contrast');
+  assert.equal(root.dataset.theme, 'high-contrast');
+});
+
+test('operator window: a never-settling getTheme reveals the default without reporting it saved', async () => {
+  const root = { dataset: {} as Record<string, string> };
+  const states: { theme: string | null; pending: boolean; error: string | null }[] = [];
+  let settle: (value: unknown) => void = () => {};
+  const controller = createThemeController(
+    { getTheme: () => new Promise((resolve) => { settle = resolve; }), setTheme: async () => ({}) },
+    { render: (state: typeof states[number]) => { states.push(state); if (state.theme !== null) applyTheme(root, state.theme); } },
+  );
+  const started = controller.start();
+  const timer = manualTimer();
+  revealAfter(root, 2000, timer.schedule);
+  timer.fire();
+  assert.equal(root.dataset.theme, 'pixel-classic');
+  assert.deepEqual(states.at(-1), { theme: null, pending: true, error: null });
+  settle({ ok: true, theme: 'high-contrast' });
+  await started;
+  assert.equal(root.dataset.theme, 'high-contrast');
+  assert.deepEqual(states.at(-1), { theme: 'high-contrast', pending: false, error: null });
+});

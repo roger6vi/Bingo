@@ -774,3 +774,15 @@ test('a tampered stored theme value is rejected rather than applied', (t) => {
   try { assert.throws(() => reopened.loadTheme(), /invalid|theme/i); }
   finally { reopened.close(); }
 });
+
+test('theme allow-list changes require a schema version bump', (t) => {
+  // The v3 CHECK is built from THEME_IDS; when adding a theme, bump the schema version,
+  // add a migration that rebuilds the CHECK, and update this pairing.
+  const path = fixture(t);
+  createEventStore(path).close();
+  withDb(path, (db) => assert.deepEqual(
+    { version: db.prepare('PRAGMA user_version').get()?.user_version, themes: [...THEME_IDS] },
+    { version: 3, themes: ['pixel-classic', 'high-contrast'] },
+    'THEME_IDS changed without a matching event schema migration',
+  ));
+});
