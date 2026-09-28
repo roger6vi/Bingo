@@ -1,4 +1,4 @@
-// Isolated Electron smoke for the Configuración workspace (#59). Run after `npm run build`, under a
+// Isolated Electron smoke for the operator workspace (#59, #77). Run after `npm run build`, under a
 // display (e.g. `xvfb-run -a node verification/electron-smoke.mjs`). It always uses a fresh temporary
 // --user-data-dir, never the real profile, and deletes it afterwards.
 import assert from 'node:assert/strict';
@@ -15,7 +15,7 @@ const profile = mkdtempSync(path.join(tmpdir(), 'bingo-smoke-'));
 const rootArgs = process.getuid?.() === 0 ? ['--no-sandbox'] : [];
 
 const launch = () => electron.launch({ executablePath, args: [root, `--user-data-dir=${profile}`, ...rootArgs] });
-const banner = (page) => page.locator('#panel-settings .active-event-banner').evaluate((element) => element.message);
+const banner = (page) => page.locator('#active-event-banner').evaluate((element) => element.message);
 const step = (name) => console.log(`✓ ${name}`);
 
 async function simulatorFrame(page) {
@@ -32,6 +32,19 @@ try {
   await operator.waitForFunction(() => document.querySelector('#settings-name')?.value !== '');
   assert.ok(existsSync(path.join(profile, 'current-event.sqlite')), 'the database lives in the temporary profile');
   step('isolated profile');
+
+  // The operator is a full-viewport application: no document scroll on any tab at desktop sizes.
+  for (const [width, height] of [[1280, 720], [1920, 1080]]) {
+    await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setContentSize(...size), [width, height]);
+    await operator.waitForFunction((size) => innerWidth === size[0] && innerHeight === size[1], [width, height]);
+    for (const tab of ['events', 'settings', 'bingo']) {
+      await operator.click(`#tab-${tab}`);
+      const scroll = await operator.evaluate(() => [document.scrollingElement.scrollWidth, document.scrollingElement.scrollHeight]);
+      assert.deepEqual(scroll, [width, height], `${tab} at ${width}×${height}`);
+    }
+  }
+  await operator.click('#tab-events');
+  step('full-viewport tabs without document scroll');
 
   // Commit one draw, then open the public window.
   await operator.click('#tab-bingo');
