@@ -332,10 +332,11 @@ test('v2 rejects missing and wrong phase defaults before creating a current even
     const fresh = createEventStore(file);
     fresh.close();
     withDb(file, (db) => {
-      db.exec('PRAGMA writable_schema = ON');
-      db.prepare(`UPDATE sqlite_schema SET sql = replace(sql, ?, ?)
-        WHERE type = 'table' AND name = 'current_event'`).run("DEFAULT 'drawing'", defaultSql);
-      db.exec('PRAGMA writable_schema = OFF');
+      const schema = db.prepare("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'current_event'").get()?.sql;
+      assert.ok(typeof schema === 'string');
+      assert.match(schema, /DEFAULT 'drawing'/);
+      db.exec('DROP TABLE current_event');
+      db.exec(schema.replace("DEFAULT 'drawing'", defaultSql));
     });
     assert.throws(() => createEventStore(file), /invalid event schema/i, name);
     withDb(file, (db) => {
