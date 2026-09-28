@@ -1,4 +1,4 @@
-// Isolated Electron smoke for the Configuración workspace (#59). Run after `npm run build`, under a
+// Isolated Electron smoke for the Configuración workspace (#59) and event prizes (#71). Run after `npm run build`, under a
 // display (e.g. `xvfb-run -a node verification/electron-smoke.mjs`). It always uses a fresh temporary
 // --user-data-dir, never the real profile, and deletes it afterwards.
 import assert from 'node:assert/strict';
@@ -50,10 +50,18 @@ try {
   await operator.fill('#settings-name', 'Verbena de prueba');
   await operator.fill('#settings-place', 'Plaza Mayor');
   await operator.selectOption('#theme-select', 'high-contrast');
+  await operator.fill('#settings-line-amount', '150');
+  await operator.fill('#settings-bingo-amount', '1500');
+  await operator.fill('#settings-bingo-lot', 'Jamón ibérico');
+  await simulator.waitForFunction(() => document.querySelector('#prize-line-amount').textContent === '150 €' &&
+    document.querySelector('#prize-bingo-amount').textContent === '1.500 €' &&
+    document.querySelector('#prize-bingo-lot').textContent === 'Jamón ibérico');
   await simulator.waitForFunction(() => document.querySelector('#event-name').textContent === 'Verbena de prueba' &&
     document.querySelector('#event-details').textContent.endsWith('· Plaza Mayor') &&
     document.documentElement.dataset.theme === 'high-contrast' && document.querySelector('#called-count').value === '1');
   assert.equal(await publicWindow.locator('#event-name').textContent(), 'Evento actual');
+  assert.equal(await publicWindow.locator('#prize-line-empty').textContent(), 'Sin premio');
+  assert.equal(await publicWindow.locator('#prize-bingo-amount').isHidden(), true);
   assert.equal(await publicWindow.evaluate(() => document.documentElement.dataset.theme), 'pixel-classic');
   assert.equal(await operator.evaluate(() => document.documentElement.dataset.theme), 'pixel-classic');
   assert.match(await banner(operator), /^Evento activo: Evento actual/);
@@ -61,14 +69,18 @@ try {
 
   // The simulator is the production public page with no privileged bridge at all.
   assert.deepEqual(await simulator.evaluate(() => ({
-    own: ['desktop', 'publicEvent', 'publicTheme', 'publicEventMeta'].filter((name) => name in window),
+    own: ['desktop', 'publicEvent', 'publicTheme', 'publicEventMeta', 'publicEventPrizes'].filter((name) => name in window),
     parentDesktop: (() => { try { return 'desktop' in window.parent; } catch { return 'blocked'; } })(),
   })), { own: [], parentDesktop: 'blocked' });
   // The public window can only subscribe.
   assert.deepEqual(await publicWindow.evaluate(() => ({
     desktop: 'desktop' in window, require: typeof require,
-    bridges: ['publicEvent', 'publicTheme', 'publicEventMeta'].map((name) => Object.keys(window[name])),
-  })), { desktop: false, require: 'undefined', bridges: [['subscribe'], ['subscribe'], ['subscribe']] });
+    bridges: ['publicEvent', 'publicTheme', 'publicEventMeta', 'publicEventPrizes'].map((name) => Object.keys(window[name])),
+  })), { desktop: false, require: 'undefined', bridges: [['subscribe'], ['subscribe'], ['subscribe'], ['subscribe']] });
+  // The prize channel validates in the main process too: a malformed write never reaches storage.
+  const rejected = await operator.evaluate(() => window.desktop.getPrizes().then(({ eventId }) =>
+    window.desktop.updatePrizes(eventId, { line: { amount: 1.5, lot: '' }, bingo: { amount: 0, lot: '' } })));
+  assert.equal(rejected.code, 'invalid_request');
   step('receive-only public boundary and bridge-free simulator');
 
   // Unsaved-changes guard: Cancel stays, Save commits and then leaves.
@@ -85,7 +97,10 @@ try {
 
   // Both windows and banners reflect the committed values; history is untouched.
   await publicWindow.waitForFunction(() => document.querySelector('#event-name').textContent === 'Verbena de prueba' &&
-    document.documentElement.dataset.theme === 'high-contrast');
+    document.documentElement.dataset.theme === 'high-contrast' &&
+    document.querySelector('#prize-line-amount').textContent === '150 €' &&
+    document.querySelector('#prize-bingo-amount').textContent === '1.500 €' &&
+    document.querySelector('#prize-bingo-lot').textContent === 'Jamón ibérico');
   assert.equal(await publicWindow.locator('#called-count').evaluate((output) => output.value), '1');
   assert.equal(await operator.evaluate(() => document.documentElement.dataset.theme), 'high-contrast');
   assert.match(await banner(operator), /^Evento activo: Verbena de prueba — \d{4}-\d{2}-\d{2}, Plaza Mayor$/);
@@ -99,8 +114,11 @@ try {
     document.documentElement.dataset.theme === 'high-contrast');
   assert.equal(await operator.inputValue('#settings-place'), 'Plaza Mayor');
   assert.equal(await operator.inputValue('#theme-select'), 'high-contrast');
+  await operator.waitForFunction(() => document.querySelector('#settings-bingo-lot').value === 'Jamón ibérico');
+  assert.deepEqual(await Promise.all(['line-amount', 'line-lot', 'bingo-amount'].map((id) => operator.inputValue(`#settings-${id}`))),
+    ['150', '', '1500']);
   assert.equal(await operator.locator('#event-summary').evaluate((summary) => summary.count), 1);
-  step('saved configuration and history survive restart');
+  step('saved configuration, prizes, and history survive restart');
   await app.close();
 } finally {
   rmSync(profile, { recursive: true, force: true });

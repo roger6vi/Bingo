@@ -9,6 +9,7 @@ import sampleVideoUrl from '../assets/sample.mp4?url';
 import { createPublicController } from './public-controller.mjs';
 import { applyTheme, revealAfter } from './theme-controller.mjs';
 import { publicBridges, validEventMeta } from './public-bridge.mjs';
+import { formatEuros, validPrizes } from './prize-format.mjs';
 
 const bridges = publicBridges(window);
 const unsubscribeTheme = bridges.theme.subscribe((theme) => applyTheme(document.documentElement, theme));
@@ -47,6 +48,23 @@ const unsubscribeMeta = bridges.meta.subscribe((meta) => {
   eventDetails.hidden = !valid;
 });
 
+// Committed (or, in the simulator, drafted) prizes. Unreadable or invalid ones never leave a stale prize
+// on screen: both show as pending confirmation.
+const prizeSlots = ['line', 'bingo'].map((kind) => ({ kind, amount: required(`prize-${kind}-amount`, HTMLElement),
+  lot: required(`prize-${kind}-lot`, HTMLElement), empty: required(`prize-${kind}-empty`, HTMLElement) }));
+const unsubscribePrizes = bridges.prizes.subscribe((prizes) => {
+  const valid = validPrizes(prizes);
+  for (const { kind, amount, lot, empty } of prizeSlots) {
+    const prize = valid ? prizes[kind] : { amount: 0, lot: '' };
+    amount.textContent = prize.amount > 0 ? formatEuros(prize.amount) : '';
+    amount.hidden = prize.amount === 0;
+    lot.textContent = prize.lot;
+    lot.hidden = prize.lot === '';
+    empty.textContent = valid ? 'Sin premio' : 'Premio por confirmar';
+    empty.hidden = !amount.hidden || !lot.hidden;
+  }
+});
+
 const controller = createPublicController(bridges.event, {
   render: (state) => {
     latest.latest = state.latest;
@@ -73,5 +91,6 @@ window.addEventListener('pagehide', () => {
   controller.cleanup();
   unsubscribeTheme();
   unsubscribeMeta();
+  unsubscribePrizes();
   clearTimeout(revealTimer);
 }, { once: true });

@@ -11,6 +11,7 @@
     <h1 id="event-name">Current event</h1>
     <p id="event-details" class="event-details" hidden></p>
     <div class="public-layout">
+      <div class="public-side">
       <bingo-panel heading="Latest committed draw">
         <bingo-latest-draw id="latest-draw">
           <bingo-number id="latest-number"></bingo-number>
@@ -20,6 +21,20 @@
         <bingo-status id="event-error" hidden></bingo-status>
         <p>Called: <output id="called-count" aria-live="off">0</output> · Remaining: <output id="remaining-count" aria-live="off">90</output></p>
       </bingo-panel>
+      <!-- Prizes share the draw column so the number board keeps its full width and height. -->
+      <bingo-panel heading="Premios" lang="es" class="prize-panel">
+        <dl id="prizes" class="prize-list">
+          <div class="prize">
+            <dt>Línea</dt>
+            <dd id="prize-line"><span id="prize-line-amount" class="prize-amount" hidden></span><span id="prize-line-lot" class="prize-lot" hidden></span><span id="prize-line-empty" class="prize-empty">Premio por confirmar</span></dd>
+          </div>
+          <div class="prize">
+            <dt>Bingo</dt>
+            <dd id="prize-bingo"><span id="prize-bingo-amount" class="prize-amount" hidden></span><span id="prize-bingo-lot" class="prize-lot" hidden></span><span id="prize-bingo-empty" class="prize-empty">Premio por confirmar</span></dd>
+          </div>
+        </dl>
+      </bingo-panel>
+      </div>
       <bingo-panel heading="Called numbers (draw order)">
         <bingo-number-board id="called-numbers"></bingo-number-board>
       </bingo-panel>

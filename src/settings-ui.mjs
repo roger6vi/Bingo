@@ -1,12 +1,12 @@
 // Configuración workspace: form ⇄ draft, visible dirty state, the unsaved-changes guard, and the
 // simulator feed. Only the draft reaches the simulator; committed values come from acknowledged IPC.
-import { createConfigurationController } from './configuration-controller.mjs';
+import { createConfigurationController, previewPrizes, PRIZE_FIELDS } from './configuration-controller.mjs';
 import { createSimulatorFeed } from './public-bridge.mjs';
 
 const SIMULATOR_WIDTH = 1920;
 const TEXT_FIELDS = ['name', 'place', 'date'];
 
-export function bindSettings(elements, { saveMeta, saveTheme }) {
+export function bindSettings(elements, { saveMeta, saveTheme, savePrizes }) {
   const { form, inputs, fieldErrors, theme, state, error, save, discard, dialog, frame, viewport } = elements;
   const feed = createSimulatorFeed(frame);
   let locked = false;
@@ -20,12 +20,15 @@ export function bindSettings(elements, { saveMeta, saveTheme }) {
 
   function render(next) {
     last = next;
-    const { draft, dirty, pending, errors, canSave } = next;
+    const { committed, draft, dirty, pending, errors, canSave } = next;
     const editable = draft !== null && !pending && !locked;
-    for (const field of TEXT_FIELDS) {
+    for (const field of [...TEXT_FIELDS, ...PRIZE_FIELDS]) {
       const input = inputs[field];
-      if (draft !== null && input.value !== draft[field]) input.value = draft[field];
-      input.disabled = !editable;
+      // Prizes that could not be read (null) stay blank and locked rather than inviting an overwrite.
+      const value = draft?.[field] ?? null;
+      if (value !== null && input.value !== value) input.value = value;
+      if (draft !== null && value === null) input.value = '';
+      input.disabled = !editable || value === null;
       const message = errors[field] ?? '';
       input.setAttribute('aria-invalid', String(message !== ''));
       fieldErrors[field].textContent = message;
@@ -46,12 +49,13 @@ export function bindSettings(elements, { saveMeta, saveTheme }) {
     if (draft !== null) {
       feed.update({ meta: { name: draft.name.trim(), date: draft.date, place: draft.place.trim() } });
       if (draft.theme) feed.update({ theme: draft.theme });
-    } else feed.update({ meta: null });
+      feed.update({ prizes: previewPrizes(draft, committed) });
+    } else feed.update({ meta: null, prizes: null });
   }
 
-  const config = createConfigurationController({ saveMeta, saveTheme }, { render });
+  const config = createConfigurationController({ saveMeta, saveTheme, savePrizes }, { render });
 
-  for (const field of TEXT_FIELDS) {
+  for (const field of [...TEXT_FIELDS, ...PRIZE_FIELDS]) {
     inputs[field].addEventListener('input', () => config.edit(field, inputs[field].value));
   }
   theme.addEventListener('change', () => config.edit('theme', theme.value));

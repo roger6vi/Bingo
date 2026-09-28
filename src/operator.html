@@ -60,6 +60,32 @@
             </select>
             <bingo-status id="theme-status"></bingo-status>
           </bingo-panel>
+          <bingo-panel heading="Premios">
+            <p id="prizes-hint" class="field-hint">Cada premio puede tener dinero, un lote indivisible o ambos. Deja vacío lo que no haya.</p>
+            <fieldset class="prize-fieldset">
+              <legend>Línea</legend>
+              <div class="event-form">
+                <label for="settings-line-amount">Dinero (euros enteros)</label>
+                <input id="settings-line-amount" name="lineAmount" inputmode="numeric" autocomplete="off" aria-describedby="settings-line-amount-error prizes-hint" disabled>
+                <p id="settings-line-amount-error" class="field-error" hidden></p>
+                <label for="settings-line-lot">Lote</label>
+                <input id="settings-line-lot" name="lineLot" maxlength="120" autocomplete="off" aria-describedby="settings-line-lot-error prizes-hint" disabled>
+                <p id="settings-line-lot-error" class="field-error" hidden></p>
+              </div>
+            </fieldset>
+            <fieldset class="prize-fieldset">
+              <legend>Bingo</legend>
+              <div class="event-form">
+                <label for="settings-bingo-amount">Dinero (euros enteros)</label>
+                <input id="settings-bingo-amount" name="bingoAmount" inputmode="numeric" autocomplete="off" aria-describedby="settings-bingo-amount-error prizes-hint" disabled>
+                <p id="settings-bingo-amount-error" class="field-error" hidden></p>
+                <label for="settings-bingo-lot">Lote</label>
+                <input id="settings-bingo-lot" name="bingoLot" maxlength="120" autocomplete="off" aria-describedby="settings-bingo-lot-error prizes-hint" disabled>
+                <p id="settings-bingo-lot-error" class="field-error" hidden></p>
+              </div>
+            </fieldset>
+            <bingo-status id="prizes-status" hidden></bingo-status>
+          </bingo-panel>
           <bingo-status id="settings-state"></bingo-status>
           <bingo-status id="settings-error" hidden></bingo-status>
           <div class="settings-actions">
@@ -97,7 +123,7 @@
           <bingo-status id="public-status" hidden></bingo-status>
         </bingo-panel>
       </div>
-      <p>Claims and prizes are not implemented.</p>
+      <p>Claims are not implemented.</p>
     </div>
   </main>
   </bingo-shell>

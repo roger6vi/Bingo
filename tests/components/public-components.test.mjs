@@ -107,6 +107,11 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
     receiveMeta = callback;
     return () => { unsubscribed++; };
   } };
+  let receivePrizes;
+  window.publicEventPrizes = { subscribe: (callback) => {
+    receivePrizes = callback;
+    return () => { unsubscribed++; };
+  } };
   try {
     const entry = new URL('../../src/public-ui.mjs', import.meta.url);
     const response = await fetch(entry);
@@ -142,6 +147,24 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
       expect([heading.textContent, details.hidden]).to.deep.equal(['Current event', true]);
     }
     receiveMeta({ name: 'Verbena', date: '2026-08-15', place: 'Plaza Mayor' });
+    // The prize zone: pending until committed prizes arrive, then money and/or lot, and never a stale prize.
+    const prize = (kind) => ['amount', 'lot', 'empty'].map((part) => {
+      const element = shell.querySelector(`#prize-${kind}-${part}`);
+      return element.hidden ? null : element.textContent;
+    });
+    expect([prize('line'), prize('bingo')]).to.deep.equal([[null, null, 'Premio por confirmar'], [null, null, 'Premio por confirmar']]);
+    receivePrizes({ line: { amount: 1500, lot: 'Jamón ibérico' }, bingo: { amount: 0, lot: '' } });
+    expect([prize('line'), prize('bingo')]).to.deep.equal([['1.500 €', 'Jamón ibérico', null], [null, null, 'Sin premio']]);
+    receivePrizes({ line: { amount: 0, lot: 'Cesta' }, bingo: { amount: 100000, lot: '' } });
+    expect([prize('line'), prize('bingo')]).to.deep.equal([[null, 'Cesta', null], ['100.000 €', null, null]]);
+    for (const invalid of [null, 'x', { line: { amount: -5, lot: '' }, bingo: { amount: 0, lot: '' } },
+      { line: { amount: 1, lot: '<img src=x onerror=alert(1)>'.repeat(10) }, bingo: { amount: 0, lot: '' } }]) {
+      receivePrizes(invalid);
+      expect([prize('line'), prize('bingo')]).to.deep.equal([[null, null, 'Premio por confirmar'], [null, null, 'Premio por confirmar']]);
+    }
+    receivePrizes({ line: { amount: 5, lot: '<b>no markup</b>' }, bingo: { amount: 0, lot: '' } });
+    expect(shell.querySelector('#prize-line-lot').children.length).to.equal(0, 'lots are text, never markup');
+    await expect(shell.querySelector('.prize-panel')).to.be.accessible();
     receive({ ok: true, snapshot: { calledNumbers: [9], phase: 'line_declared',
       lastTransitionAt: '2026-01-01T00:00:00.000Z' } });
     expect(phase.message).to.equal('Current phase: Line declared');
@@ -154,12 +177,13 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
     expect(phase.shadowRoot.querySelector('[role="status"]').textContent).to.equal('Current phase: Line declared');
     await expect(phase).to.be.accessible();
     window.dispatchEvent(new Event('pagehide'));
-    expect(unsubscribed).to.equal(3);
+    expect(unsubscribed).to.equal(4);
   } finally {
     shell.remove();
     delete window.publicEvent;
     delete window.publicTheme;
     delete window.publicEventMeta;
+    delete window.publicEventPrizes;
     delete document.documentElement.dataset.theme;
   }
 });
@@ -216,5 +240,54 @@ it('uses both generated themes, wraps at narrow widths, and computes reduced mot
     delete document.documentElement.dataset.theme;
     stylesheet.remove();
     themeSheets.forEach((link) => link.remove());
+  }
+});
+
+it('the prize zone stays beside the latest draw in both themes without narrowing or covering the board', async () => {
+  const page = new DOMParser().parseFromString(await (await fetch(new URL('../../src/public.html', import.meta.url))).text(), 'text/html');
+  const shell = document.importNode(page.querySelector('bingo-shell'), true);
+  const screenCss = document.createElement('style');
+  screenCss.textContent = (await (await fetch(new URL('../../src/screen.css', import.meta.url))).text()).replace(/@import [^;]+;/g, '');
+  const themeSheets = await Promise.all(['pixel-classic', 'high-contrast'].map((name) => new Promise((resolve, reject) => {
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = new URL(`../../src/generated/${name}.css`, import.meta.url).href;
+    link.onload = () => resolve(link);
+    link.onerror = reject;
+    document.head.append(link);
+  })));
+  document.head.append(screenCss);
+  shell.style.width = '1600px';
+  document.body.append(shell);
+  try {
+    shell.querySelector('#prize-line-amount').textContent = '100.000 €';
+    shell.querySelector('#prize-line-amount').hidden = false;
+    shell.querySelector('#prize-line-lot').textContent = 'L'.repeat(120);
+    shell.querySelector('#prize-line-lot').hidden = false;
+    shell.querySelector('#prize-line-empty').hidden = true;
+    await Promise.all([...shell.querySelectorAll('bingo-panel')].map((panel) => panel.updateComplete));
+    const prizes = shell.querySelector('.prize-panel').getBoundingClientRect();
+    const draw = shell.querySelector('#latest-draw').closest('bingo-panel').getBoundingClientRect();
+    const board = shell.querySelector('#called-numbers').closest('bingo-panel').getBoundingClientRect();
+    const layout = shell.querySelector('.public-layout').getBoundingClientRect();
+    expect(prizes.top).to.be.at.least(draw.bottom, 'prizes sit below the latest draw');
+    expect(prizes.right).to.be.at.most(board.left, 'prizes never overlap the board');
+    expect(board.width).to.be.greaterThan(layout.width * 0.6, 'the board keeps its two-thirds column');
+    expect(shell.querySelector('#prize-line-lot').getBoundingClientRect().right).to.be.at.most(prizes.right, 'long lots wrap');
+    for (const theme of ['pixel-classic', 'high-contrast']) {
+      document.documentElement.dataset.theme = theme;
+      const lot = shell.querySelector('#prize-line-lot');
+      const probe = document.createElement('span');
+      probe.style.color = getComputedStyle(lot).getPropertyValue('--bingo-color-text').trim();
+      document.body.append(probe);
+      expect(getComputedStyle(lot).color).to.equal(getComputedStyle(probe).color, theme);
+      probe.remove();
+      await expect(shell.querySelector('.prize-panel')).to.be.accessible();
+    }
+  } finally {
+    shell.remove();
+    screenCss.remove();
+    themeSheets.forEach((link) => link.remove());
+    delete document.documentElement.dataset.theme;
   }
 });

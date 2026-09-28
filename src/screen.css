@@ -66,6 +66,14 @@ bingo-shell:has(#panel-settings:not([hidden])) { max-width: none; }
 .settings-controls select { margin-inline: var(--bingo-space-small); padding: var(--bingo-space-inset-compact); }
 .settings-actions { display: flex; flex-wrap: wrap; gap: var(--bingo-space-small); }
 .field-error { margin: 0; color: var(--bingo-color-danger); font-weight: var(--bingo-font-emphasis); }
+.field-hint { margin: 0 0 var(--bingo-space-small); color: var(--bingo-color-muted); }
+.prize-fieldset {
+  margin: 0 0 var(--bingo-space-small);
+  padding: var(--bingo-space-small) var(--bingo-space-inset-inline);
+  border: 1px solid var(--bingo-color-border);
+  border-radius: var(--bingo-radius-surface);
+}
+.prize-fieldset legend { font-weight: var(--bingo-font-emphasis); }
 .field-error[hidden] { display: none; }
 input[aria-invalid="true"] { border-color: var(--bingo-color-danger); }
 .simulator { position: sticky; top: var(--bingo-space-section); min-width: 0; margin: 0; }
@@ -111,6 +119,15 @@ bingo-shell:has(.public-layout) h1 {
   align-items: stretch;
 }
 .public-layout bingo-panel { min-width: 0; }
+.public-side { display: grid; gap: var(--bingo-space-section); align-content: start; min-width: 0; }
+/* Prizes: always visible beside the latest draw, never over or inside the number board. */
+.prize-list { display: grid; gap: var(--bingo-space-small); margin: 0; }
+.prize { display: grid; grid-template-columns: minmax(0, auto) minmax(0, 1fr); gap: var(--bingo-space-inset-inline); align-items: baseline; }
+.prize dt { font-weight: var(--bingo-font-emphasis); text-transform: uppercase; letter-spacing: 0.06em; }
+.prize dd { display: grid; margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.prize-amount { font-size: calc(var(--bingo-font-size) * 1.5); font-weight: var(--bingo-font-emphasis); line-height: var(--bingo-font-tight); }
+.prize-empty { color: var(--bingo-color-muted); }
+.prize dd [hidden] { display: none; }
 .public-layout bingo-status { margin-top: var(--bingo-space-section); }
 bingo-status[hidden] { display: none; }
 .sample-panel { display: block; margin-top: var(--bingo-space-section); }

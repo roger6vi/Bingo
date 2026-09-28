@@ -37,8 +37,12 @@ async function loadOperator() {
   screen.textContent = (await (await fetch(new URL('../../src/screen.css', import.meta.url))).text()).replace(/@import [^;]+;/g, '');
   document.head.append(screen);
   const requests = [];
-  const replies = { setTheme: null, updateEvent: null };
+  const replies = { setTheme: null, updateEvent: null, getPrizes: null, updatePrizes: null };
+  const reads = { prizes: 0 };
   let theme = 'pixel-classic';
+  const prizes = { a: { line: { amount: 150, lot: 'Jamón' }, bingo: { amount: 0, lot: '' } } };
+  const activeId = () => events.find((event) => event.active).id;
+  const none = { line: { amount: 0, lot: '' }, bingo: { amount: 0, lot: '' } };
   let events = [
     { id: 'a', name: 'Verbena', date: '2026-08-15', place: 'Plaza', phase: 'drawing', createdAt: '2026-01-01T00:00:00.000Z', active: true },
     { id: 'b', name: 'Fiesta', date: '2026-10-01', place: 'Sala', phase: 'drawing', createdAt: '2026-01-02T00:00:00.000Z', active: false },
@@ -62,6 +66,18 @@ async function loadOperator() {
       requests.push(`select:${id}`);
       events = events.map((event) => ({ ...event, active: event.id === id }));
       return list();
+    },
+    // Reads are counted apart from writes, so write-only request assertions stay unchanged.
+    getPrizes: async () => {
+      reads.prizes++;
+      if (replies.getPrizes) return replies.getPrizes;
+      return { ok: true, eventId: activeId(), prizes: structuredClone(prizes[activeId()] ?? none) };
+    },
+    updatePrizes: async (id, next) => {
+      requests.push(`prizes:update:${id}:${JSON.stringify(next)}`);
+      if (replies.updatePrizes) return replies.updatePrizes;
+      prizes[id] = structuredClone(next);
+      return { ok: true, eventId: id, prizes: structuredClone(next) };
     },
     updateEvent: async (id, meta) => {
       requests.push(`update:${id}:${JSON.stringify(meta)}`);
@@ -98,7 +114,7 @@ async function loadOperator() {
     delete window.desktop;
     delete document.documentElement.dataset.theme;
   };
-  return { main, requests, replies, simulator, cleanup };
+  return { main, requests, replies, reads, simulator, cleanup };
 }
 
 function type(input, value) {
@@ -653,4 +669,87 @@ it('Configuración keeps a scrollable control column beside a 16:9 simulator and
     op.cleanup();
     await setViewport({ width: 800, height: 600 });
   }
+});
+
+it('prizes draft into the simulator, validate like the store, and save only the active event through the operator IPC', async () => {
+  const op = await loadOperator();
+  try {
+    const { main, requests, simulator } = op;
+    const field = (id) => main.querySelector(`#settings-${id}`);
+    const save = main.querySelector('#settings-save');
+    expect(['line-amount', 'line-lot', 'bingo-amount', 'bingo-lot'].map((id) => [field(id).value, field(id).disabled]))
+      .to.deep.equal([['150', false], ['Jamón', false], ['', false], ['', false]]);
+    expect(simulator.last('prizes')).to.deep.equal({ line: { amount: 150, lot: 'Jamón' }, bingo: { amount: 0, lot: '' } });
+    type(field('bingo-amount'), '12,50');
+    const error = main.querySelector('#settings-bingo-amount-error');
+    expect([field('bingo-amount').getAttribute('aria-invalid'), error.hidden, error.textContent, save.disabled])
+      .to.deep.equal(['true', false, 'Escribe un importe en euros enteros, de 0 a 100 000.', true]);
+    expect(simulator.last('prizes').bingo).to.deep.equal({ amount: 0, lot: '' }, 'an invalid prize previews its committed value');
+    type(field('bingo-amount'), '500');
+    type(field('bingo-lot'), '  Cesta de Navidad ');
+    await settle();
+    expect(simulator.last('prizes')).to.deep.equal({ line: { amount: 150, lot: 'Jamón' }, bingo: { amount: 500, lot: 'Cesta de Navidad' } });
+    expect(main.querySelector('#settings-state').message).to.equal('Cambios sin guardar: solo se ven en el simulador.');
+    op.replies.updatePrizes = { ok: false, code: 'storage_failure', message: 'x' };
+    save.click();
+    await settle();
+    const request = `prizes:update:a:${JSON.stringify({ line: { amount: 150, lot: 'Jamón' }, bingo: { amount: 500, lot: 'Cesta de Navidad' } })}`;
+    expect(requests).to.deep.equal([request]);
+    expect([field('bingo-amount').value, main.querySelector('#settings-error').message])
+      .to.deep.equal(['500', 'No se guardaron los premios. Los cambios siguen en el borrador; inténtalo de nuevo.']);
+    op.replies.updatePrizes = null;
+    save.click();
+    await settle();
+    expect(requests).to.deep.equal([request, request]);
+    expect([field('bingo-lot').value, main.querySelector('#settings-state').message, main.querySelector('#settings-error').hidden])
+      .to.deep.equal(['Cesta de Navidad', 'Sin cambios pendientes.', true]);
+    await expect(main.querySelector('#settings-form')).to.be.accessible();
+  } finally { op.cleanup(); }
+});
+
+it('an unsaved prize edit is guarded like any other and the next event brings its own prizes', async () => {
+  const op = await loadOperator();
+  try {
+    const { main, requests } = op;
+    const dialog = main.querySelector('#unsaved-dialog');
+    const lineAmount = main.querySelector('#settings-line-amount');
+    main.querySelector('#tab-settings').click();
+    type(lineAmount, '300');
+    main.querySelector('#tab-bingo').click();
+    await settle();
+    expect(dialog.shadowRoot.querySelector('dialog').open).to.equal(true);
+    dialog.shadowRoot.querySelector('[data-action="save"]').button.click();
+    await settle();
+    expect(main.querySelector('#tab-bingo').getAttribute('aria-selected')).to.equal('true');
+    expect(requests.at(-1)).to.equal(`prizes:update:a:${JSON.stringify({ line: { amount: 300, lot: 'Jamón' }, bingo: { amount: 0, lot: '' } })}`);
+    main.querySelector('#tab-settings').click();
+    type(lineAmount, '999');
+    main.querySelector('#event-list').dispatchEvent(new CustomEvent('event-select', { detail: { id: 'b' } }));
+    await settle();
+    dialog.shadowRoot.querySelector('[data-action="discard"]').button.click();
+    await settle();
+    expect([lineAmount.value, main.querySelector('#settings-line-lot').value, op.simulator.last('prizes')])
+      .to.deep.equal(['', '', { line: { amount: 0, lot: '' } , bingo: { amount: 0, lot: '' } }]);
+    expect(requests.filter((request) => request.startsWith('prizes:update'))).to.have.length(1, 'the discarded 999 was never sent');
+  } finally { op.cleanup(); }
+});
+
+it('prizes that cannot be read stay locked with an actionable message while the rest stays editable', async () => {
+  const op = await loadOperator();
+  try {
+    const { main } = op;
+    op.replies.getPrizes = { ok: false, code: 'storage_failure', message: 'Could not read the prizes. Try again.' };
+    main.querySelector('#event-list').dispatchEvent(new CustomEvent('event-select', { detail: { id: 'b' } }));
+    await settle();
+    const status = main.querySelector('#prizes-status');
+    expect([status.hidden, status.message, status.tone]).to.deep.equal([false,
+      'No se pudieron leer los premios guardados. Pulsa «Recargar eventos» en Eventos para reintentarlo.', 'error']);
+    expect(['line-amount', 'line-lot', 'bingo-amount', 'bingo-lot'].map((id) => main.querySelector(`#settings-${id}`).disabled))
+      .to.deep.equal([true, true, true, true]);
+    expect([main.querySelector('#settings-name').disabled, op.simulator.last('prizes')]).to.deep.equal([false, null]);
+    op.replies.getPrizes = null;
+    main.querySelector('#reload-events').click();
+    await settle();
+    expect([status.hidden, main.querySelector('#settings-line-amount').disabled]).to.deep.equal([true, false]);
+  } finally { op.cleanup(); }
 });
