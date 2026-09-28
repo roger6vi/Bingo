@@ -85,6 +85,20 @@ function reexecUnderXvfbIfNeeded() {
   return true;
 }
 
+// Playwright's first main-process evaluate after launch sometimes fails with "Resulting promise was
+// garbage collected" (seen on Linux in CI and locally, never on a later call). The read is side-effect
+// free, so retry only that error a bounded number of times.
+async function readMainPaths(app, attempts = 3) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await app.evaluate(({ app: electronApp }) => ({ userData: electronApp.getPath('userData'),
+        appData: electronApp.getPath('appData'), name: electronApp.getName() }));
+    } catch (error) {
+      if (attempt >= attempts || !/Resulting promise was garbage collected/.test(error.message)) throw error;
+    }
+  }
+}
+
 function snapshot(file) {
   if (!existsSync(file)) return null;
   const { mtimeMs, size } = statSync(file);
@@ -121,8 +135,7 @@ async function smoke() {
     app.on('close', () => apps.delete(app));
     const operator = await app.firstWindow();
     // Once the operator window exists the main process is ready; confirm it really runs on the temp profile.
-    const paths = await app.evaluate(({ app: electronApp }) => ({ userData: electronApp.getPath('userData'),
-      appData: electronApp.getPath('appData'), name: electronApp.getName() }));
+    const paths = await readMainPaths(app);
     assert.equal(realpathSync(paths.userData), profile, 'Electron must run on the temporary --user-data-dir');
     assert.equal(path.join(paths.appData, paths.name), realProfile, 'the protected real profile path matches Electron');
     return { app, operator };
