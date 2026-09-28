@@ -3,6 +3,8 @@ import './components/bingo-panel.mjs';
 import './components/bingo-status.mjs';
 import './components/bingo-operator-summary.mjs';
 import './components/bingo-call-history.mjs';
+import './components/bingo-draw-controls.mjs';
+import './components/bingo-dialog.mjs';
 import './screen.css';
 import { createOperatorController } from './operator-controller.mjs';
 import { createManualDrawHandler } from './manual-draw.mjs';
@@ -13,13 +15,10 @@ function required(id, type) {
   return element;
 }
 
-const openPublic = required('open-public', HTMLButtonElement);
-const movePublic = required('move-public', HTMLButtonElement);
+const openPublic = required('open-public', HTMLElement);
+const movePublic = required('move-public', HTMLElement);
 const publicStatus = required('public-status', HTMLElement);
-const manualInput = required('manual-number', HTMLInputElement);
-const manualButton = required('draw-manual', HTMLButtonElement);
-const digitalButton = required('draw-digital', HTMLButtonElement);
-const reloadButton = required('reload-event', HTMLButtonElement);
+const controls = required('draw-controls', HTMLElement);
 const history = required('called-numbers', HTMLElement);
 const summary = required('event-summary', HTMLElement);
 const eventStatus = required('event-status', HTMLElement);
@@ -37,11 +36,14 @@ window.desktop.onPublicStatus((pauseSuggested) => {
 
 const controller = createOperatorController(window.desktop, {
   bind: ({ manual, digital, reload }) => {
-    manualButton.addEventListener('click', createManualDrawHandler(manualInput, manual));
-    digitalButton.addEventListener('click', digital);
-    reloadButton.addEventListener('click', reload);
+    controls.addEventListener('click', (event) => {
+      const action = event.composedPath().find((node) => node?.id === 'draw-manual' || node?.id === 'draw-digital' || node?.id === 'reload-event');
+      if (action?.id === 'draw-manual') createManualDrawHandler(controls.manualInput, manual)();
+      else if (action?.id === 'draw-digital') digital();
+      else if (action?.id === 'reload-event') reload();
+    });
   },
-  clearManual: () => { manualInput.value = ''; },
+  clearManual: () => { controls.manualInput.value = ''; },
   render: (state) => {
     history.calledNumbers = state.calledNumbers;
     summary.latest = state.calledNumbers.at(-1) ?? null;
@@ -54,10 +56,9 @@ const controller = createOperatorController(window.desktop, {
     eventError.message = state.error ?? '';
     eventError.tone = 'error';
     eventError.hidden = !state.error;
-    manualInput.disabled = state.manualDisabled;
-    manualButton.disabled = state.manualDisabled;
-    digitalButton.disabled = state.digitalDisabled;
-    reloadButton.disabled = state.reloadDisabled;
+    controls.manualDisabled = state.manualDisabled;
+    controls.digitalDisabled = state.digitalDisabled;
+    controls.reloadDisabled = state.reloadDisabled;
   },
 });
 void controller.start();

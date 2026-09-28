@@ -34,9 +34,6 @@ button:disabled { color: var(--bingo-color-muted); background: var(--bingo-color
 .operator-layout { display: grid; gap: var(--bingo-space-section); }
 .operator-layout bingo-panel { min-width: 0; }
 .operator-layout bingo-status { margin-block: var(--bingo-space-section); }
-.draw-controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--bingo-space-small); margin-top: var(--bingo-space-section); }
-.draw-controls label { flex-basis: 100%; }
-.draw-controls input { width: 6ch; padding: var(--bingo-space-inset-compact); }
 .public-controls { display: flex; flex-wrap: wrap; gap: var(--bingo-space-small); }
 
 bingo-shell:has(.public-layout) { max-width: none; }
