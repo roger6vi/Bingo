@@ -65,9 +65,9 @@ bingo-shell:has(#panel-settings:not([hidden])) { max-width: none; }
 }
 .settings-controls select { margin-inline: var(--bingo-space-small); padding: var(--bingo-space-inset-compact); }
 .settings-actions { display: flex; flex-wrap: wrap; gap: var(--bingo-space-small); }
-.field-error { margin: 0; color: var(--bingo-color-danger); font-weight: var(--bingo-font-emphasis); }
+.field-error { margin: 0; color: var(--bingo-color-error); font-weight: var(--bingo-font-emphasis); }
 .field-error[hidden] { display: none; }
-input[aria-invalid="true"] { border-color: var(--bingo-color-danger); }
+input[aria-invalid="true"] { border-color: var(--bingo-color-error); }
 .simulator { position: sticky; top: var(--bingo-space-section); min-width: 0; margin: 0; }
 .simulator-viewport {
   position: relative;

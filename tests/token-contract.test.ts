@@ -1,18 +1,17 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { semanticVariable, validateTokenContracts } from '../scripts/token-contract.mjs';
+import { contrastPairs, semanticVariable, sourcePaths, validateTokenContracts } from '../scripts/token-contract.mjs';
 type Token = { $type: string; $value: string };
 type Theme = Record<string, Record<string, Token>>;
-const themeNames = ['pixel-classic', 'high-contrast'] as const;
-const token = ($type = 'color', $value = '{color.ink}'): Token => ({ $type, $value });
+const defaultTheme = sourcePaths.defaultTheme;
+const otherTheme = sourcePaths.themes.find((theme) => theme !== defaultTheme)!;
+const themeNames = sourcePaths.themes;
+const token = ($type = 'color', $value = '{color.neutral-900}'): Token => ({ $type, $value });
 const load = <T>(path: string): T => JSON.parse(readFileSync(new URL(`../${path}`, import.meta.url), 'utf8'));
 const sources = () => ({
   reference: load<Theme>('tokens/reference.json'),
-  themes: {
-    'pixel-classic': load<Theme>('tokens/semantic/pixel-classic.json'),
-    'high-contrast': load<Theme>('tokens/semantic/high-contrast.json'),
-  },
+  themes: Object.fromEntries(themeNames.map((theme) => [theme, load<Theme>(`tokens/semantic/${theme}.json`)])),
   css: readFileSync(new URL('../src/screen.css', import.meta.url), 'utf8'),
 });
 const reject = (change: (fixture: ReturnType<typeof sources>) => void, pattern: RegExp) => {
@@ -24,8 +23,12 @@ const rejectCss = (declaration: string, pattern: RegExp) =>
   reject((f) => { f.css += `\nbody { ${declaration} }`; }, pattern);
 test('repository contracts expose stable semantic keys and generated variable names', () => {
   const { keys } = validateTokenContracts(sources());
-  for (const key of ['color.canvas', 'color.surface', 'color.text', 'color.muted', 'color.accent',
-    'color.danger', 'color.focus', 'color.border', 'space.layout', 'font.body', 'radius.surface', 'motion.normal']) {
+  for (const key of ['color.canvas', 'color.surface', 'color.text', 'color.muted', 'color.accent', 'color.on-accent',
+    'color.accent-hover', 'color.accent-active', 'color.disabled', 'color.focus', 'color.border', 'color.overlay',
+    'color.info', 'color.success', 'color.warning', 'color.error', 'color.call-uncalled', 'color.call-called',
+    'color.call-latest', 'color.celebration', 'color.prize', 'color.tie-1', 'color.tie-8', 'space.layout', 'font.body',
+    'font.tracking', 'radius.surface', 'border-width.default', 'elevation.raised', 'motion.normal', 'motion.easing',
+    'layer.modal', 'opacity.scrim', 'rendering.image']) {
     assert.ok(keys.includes(key), key);
     assert.equal(semanticVariable(key), `--bingo-${key.replaceAll('.', '-')}`);
   }
@@ -37,16 +40,16 @@ test('missing and extra keys in either theme are rejected', () => {
   }
 });
 test('semantic type mismatch is rejected', () =>
-  reject((f) => { f.themes['high-contrast'].color.canvas.$type = 'dimension'; }, /type/i));
+  reject((f) => { f.themes[otherTheme].color.canvas.$type = 'dimension'; }, /type/i));
 test('missing, invalid and raw reference values are rejected', () => {
-  reject((f) => { f.themes['pixel-classic'].color.canvas.$value = '{color.missing}'; }, /reference/i);
-  reject((f) => { f.themes['pixel-classic'].color.canvas.$value = '{color.ink}'; delete f.reference.color.ink; }, /reference/i);
-  reject((f) => { f.themes['pixel-classic'].color.canvas.$value = '#fff'; }, /alias/i);
+  reject((f) => { f.themes[defaultTheme].color.canvas.$value = '{color.missing}'; }, /reference/i);
+  reject((f) => { delete f.reference.color[f.themes[defaultTheme].color.canvas.$value.slice(7, -1)]; }, /reference/i);
+  reject((f) => { f.themes[defaultTheme].color.canvas.$value = '#fff'; }, /alias/i);
 });
 test('component layers, semantic paths and CSS aliases are rejected', () => {
   reject((f) => { Object.assign(f, { component: {} }); }, /component/i);
-  reject((f) => { f.themes['pixel-classic'].component = {}; }, /component/i);
-  reject((f) => { f.themes['pixel-classic'].color['button-component'] = token(); }, /component/i);
+  reject((f) => { f.themes[defaultTheme].component = {}; }, /component/i);
+  reject((f) => { f.themes[defaultTheme].color['button-component'] = token(); }, /component/i);
   for (const name of ['button', 'panel', 'dialog', 'status', 'number', 'icon', 'shell',
     'board', 'controls', 'checking-state', 'prize-banner', 'event-summary', 'component']) {
     reject((f) => {
@@ -78,8 +81,45 @@ test('component layers, semantic paths and CSS aliases are rejected', () => {
   }
   rejectCss('color: var(--bingo-component-button);', /component/i);
 });
-test('identical themes cannot masquerade as two visual shells', () =>
-  reject((f) => { f.themes['high-contrast'] = structuredClone(f.themes['pixel-classic']); }, /differ/i));
+test('identical themes cannot masquerade as two visual shells', () => {
+  for (const theme of themeNames.filter((name) => name !== defaultTheme)) {
+    reject((f) => { f.themes[theme] = structuredClone(f.themes[defaultTheme]); }, /differ/i);
+  }
+});
+
+test('every theme keeps identical semantic keys, including a newly added theme', () => {
+  reject((f) => {
+    f.themes.extra = structuredClone(f.themes[defaultTheme]);
+    f.themes.extra.color.canvas.$value = '{color.neutral-1000}';
+    delete f.themes.extra.color.prize;
+  }, /semantic keys differ between themes: extra/i);
+});
+
+test('declared contrast pairs meet their per-theme minimum ratio', () => {
+  assert.ok(contrastPairs.length >= 30, 'text, status, call-state, celebration and tie pairs are declared');
+  for (const role of ['text', 'ui']) assert.ok(contrastPairs.some((pair) => pair.role === role), role);
+  // Collapsing text onto its own background fails in every theme.
+  for (const theme of themeNames) {
+    reject((f) => { f.themes[theme].color.text.$value = f.themes[theme].color.surface.$value; },
+      new RegExp(`below [\\d.]+:1 in ${theme}: color\\.text on color\\.`));
+  }
+  // high-contrast requires AAA text: a pair that passes AA (4.5:1) but not 7:1 is rejected there only.
+  const hc = 'high-contrast';
+  const aaOnly = '#767676';
+  reject((f) => {
+    f.reference.color['aa-only'] = { $type: 'color', $value: aaOnly };
+    f.reference.color['aa-only-surface'] = { $type: 'color', $value: '#ffffff' };
+    f.themes[hc].color['call-called'].$value = '{color.aa-only}';
+    f.themes[hc].color['call-called-surface'].$value = '{color.aa-only-surface}';
+  }, /below 7:1 in high-contrast: color\.call-called on color\.call-called-surface/);
+  // Translucent backgrounds are composited over the canvas rather than skipped.
+  reject((f) => {
+    f.reference.color.clear = { $type: 'color', $value: '#ffffff00' };
+    for (const theme of themeNames) f.themes[theme].color['call-latest-surface'].$value = '{color.clear}';
+    for (const theme of themeNames) f.themes[theme].color['call-latest'].$value = f.themes[theme].color.canvas.$value;
+  }, /below [\d.]+:1 in [\w-]+: color\.call-latest on color\.call-latest-surface/);
+  reject((f) => { f.reference.color[f.themes[defaultTheme].color.text.$value.slice(7, -1)].$value = 'navy'; }, /#rrggbb/);
+});
 test('screen cannot consume reference variables or literal color values', () => {
   rejectCss('color: var(--bingo-reference-ink);', /reference/i);
   const literals = ['gray', 'red', 'transparent', 'currentColor', 'CanvasText', '#abc',
@@ -105,12 +145,17 @@ test('screen cannot consume reference variables or literal color values', () => 
     'border-image-source: linear-gradient(red, blue);',
     'box-shadow: 0 1px 2px;',
     'text-shadow: 1px 2px;',
-  ]) rejectCss(declaration, /raw color/i);
+    'border: var(--bingo-color-border) solid var(--bingo-color-border);',
+    'border: var(--bingo-font-size) solid var(--bingo-color-border);',
+    'border: var(--bingo-reference-border-width-thin) solid var(--bingo-color-border);',
+  ]) rejectCss(declaration, /raw color|reference/i);
   for (const declaration of [
     'border-radius: var(--bingo-radius-surface);',
     'transition: background-color var(--bingo-motion-normal);',
     'border: 1px solid var(--bingo-color-border);',
     'box-shadow: 0 1px var(--bingo-color-border);',
+    'border: var(--bingo-border-width-default) solid var(--bingo-color-border);',
+    'box-shadow: var(--bingo-elevation-raised) var(--bingo-elevation-raised) 0 var(--bingo-color-shadow);',
   ]) {
     const fixture = sources();
     fixture.css += `\nbody { ${declaration} }`;

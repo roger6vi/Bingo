@@ -5,7 +5,8 @@ class BingoStatus extends LitElement {
   static styles = css`
     :host { display: block; }
     p { margin: 0; font-weight: var(--bingo-font-emphasis); }
-    .warning, .error { color: var(--bingo-color-danger); }
+    .warning { color: var(--bingo-color-warning); }
+    .error { color: var(--bingo-color-error); }
   `;
   constructor() { super(); this.message = 'Waiting for event state'; this.tone = 'info'; }
   render() {

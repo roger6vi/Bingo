@@ -92,10 +92,11 @@ test('both pages bundle both generated theme shells and semantic contracts', () 
   assert.match(css, /:root,\s*\[data-theme=["']?pixel-classic["']?\]/);
   assert.match(css, /\[data-theme=["']?high-contrast["']?\]/);
   for (const key of ['color-canvas', 'color-surface', 'color-text', 'color-muted',
-    'color-accent', 'color-danger', 'color-focus', 'color-border', 'space-layout',
-    'font-body', 'radius-surface', 'motion-normal']) {
+    'color-accent', 'color-error', 'color-focus', 'color-border', 'space-layout',
+    'font-body', 'radius-surface', 'motion-normal', 'motion-easing', 'color-tie-1']) {
     assert.ok(css.includes(`--bingo-${key}:`), key);
   }
+  assert.match(css, /--bingo-reference-motion-ease-standard:\s*cubic-bezier\(0?\.2,\s*0,\s*0,\s*1\)/, 'DTCG cubicBezier arrays become CSS');
   for (const page of ['operator', 'public']) {
     const html = text(`dist/renderer/${page}.html`);
     const styles = [...html.matchAll(/href="(\.\/[^\"]+\.css)"/g)]
