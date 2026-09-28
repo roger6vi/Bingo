@@ -129,7 +129,7 @@ it('operator page exposes shared panels and interactive components', async () =>
   expect(page.querySelector('#settings-save[type="submit"]')).not.to.equal(null);
   const simulator = page.querySelector('#panel-settings figure.simulator iframe#public-simulator');
   expect([simulator.getAttribute('src'), simulator.hasAttribute('inert'), simulator.title])
-    .to.deep.equal(['./public.html', true, 'Simulador de la pantalla pública']);
+    .to.deep.equal(['bingo-public://simulator/public.html', true, 'Simulador de la pantalla pública']);
   expect([...page.querySelectorAll('select#theme-select option')].map((option) => option.value))
     .to.deep.equal(['pixel-classic', 'high-contrast']);
   expect(page.querySelector('bingo-status#theme-status')).not.to.equal(null);
