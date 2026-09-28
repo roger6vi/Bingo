@@ -15,9 +15,10 @@ function fakeWindow(parent?: object) {
 test('the public window uses its preload subscriptions and never listens to frame messages', () => {
   const { win, listeners } = fakeWindow();
   Object.assign(win, { publicEvent: { subscribe: () => () => {} }, publicTheme: { subscribe: () => () => {} },
-    publicEventMeta: { subscribe: () => () => {} } });
+    publicEventMeta: { subscribe: () => () => {} }, publicPresentation: { subscribe: () => () => {} } });
   const bridges = publicBridges(win);
-  assert.deepEqual([bridges.event, bridges.theme, bridges.meta], [win.publicEvent, win.publicTheme, win.publicEventMeta]);
+  assert.deepEqual([bridges.event, bridges.theme, bridges.meta, bridges.presentation],
+    [win.publicEvent, win.publicTheme, win.publicEventMeta, win.publicPresentation]);
   assert.equal(listeners.length, 0);
   assert.throws(() => publicBridges(fakeWindow().win), /Missing public display bridge/);
 });
@@ -34,6 +35,8 @@ test('framed as the simulator, the page accepts only well-formed messages from i
   dispatch({}, { type: SIMULATOR_MESSAGE, channel: 'meta', payload: 'other source' });
   dispatch(parent, { type: 'other', channel: 'meta', payload: 'wrong type' });
   dispatch(parent, { type: SIMULATOR_MESSAGE, channel: 'draw', payload: 'unknown channel' });
+  bridges.presentation.subscribe((payload: unknown) => received.push(payload));
+  dispatch(parent, { type: SIMULATOR_MESSAGE, channel: 'presentation', payload: { kind: 'tongo', id: 1, durationMs: 3000 } });
   dispatch(parent, null);
   unsubscribe();
   dispatch(parent, { type: SIMULATOR_MESSAGE, channel: 'meta', payload: 'after unsubscribe' });

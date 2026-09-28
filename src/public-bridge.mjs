@@ -16,12 +16,14 @@ function frameBridges(win) {
     listeners[name].add(callback);
     return () => listeners[name].delete(callback);
   } });
-  return { event: channel('event'), theme: channel('theme'), meta: channel('meta') };
+  // Tongo plays only on the public window; the simulator's presentation input never fires.
+  const inert = Object.freeze({ subscribe: () => () => {} });
+  return { event: channel('event'), theme: channel('theme'), meta: channel('meta'), presentation: inert };
 }
 
 export function publicBridges(win = window) {
-  if (win.publicEvent && win.publicTheme && win.publicEventMeta) {
-    return { event: win.publicEvent, theme: win.publicTheme, meta: win.publicEventMeta };
+  if (win.publicEvent && win.publicTheme && win.publicEventMeta && win.publicPresentation) {
+    return { event: win.publicEvent, theme: win.publicTheme, meta: win.publicEventMeta, presentation: win.publicPresentation };
   }
   if (win.parent !== win) return frameBridges(win);
   throw new Error('Missing public display bridge');
