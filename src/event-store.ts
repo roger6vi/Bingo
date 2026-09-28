@@ -5,12 +5,17 @@ import type { EventSnapshot } from './event-core';
 import { transitionPhase, type GamePhase, type PhaseTransitionIntent } from './game-phase.ts';
 import { DEFAULT_THEME, isThemeId, THEME_IDS, type ThemeId } from './theme.ts';
 
-const VERSION = 4;
+const VERSION = 5;
 const phases = ['drawing', 'checking_line', 'line_declared', 'checking_bingo', 'bingo_declared', 'finished'];
 const phaseCheck = `CHECK (phase IN (${phases.map((phase) => `'${phase}'`).join(', ')}))`;
 // Existing databases are validated against this exact list: adding or renaming a theme id
 // requires a schema version bump with a migration that rebuilds this CHECK.
-const themeCheck = `CHECK (theme IN (${THEME_IDS.map((theme) => `'${theme}'`).join(', ')}))`;
+const themeCheckFor = (ids: readonly string[]) => `CHECK (theme IN (${ids.map((theme) => `'${theme}'`).join(', ')}))`;
+const themeCheck = themeCheckFor(THEME_IDS);
+// Frozen theme allow-list and default of the v2–v4 schemas; only migrations read these.
+const LEGACY_THEME_IDS = ['pixel-classic', 'high-contrast'] as const;
+const LEGACY_DEFAULT_THEME = 'pixel-classic';
+const legacyThemeCheck = themeCheckFor(LEGACY_THEME_IDS);
 const auditTable = `CREATE TABLE phase_audit (
   sequence INTEGER PRIMARY KEY,
   transitionAt TEXT NOT NULL,
@@ -25,8 +30,9 @@ const auditGuards = [
     BEGIN SELECT RAISE(ABORT, 'phase audit is immutable'); END`,
 ];
 
-// v4 event-scoped schema: many independent events, one persisted active pointer.
-const eventsTable = `CREATE TABLE events (
+// Event-scoped schema (v4+): many independent events, one persisted active pointer.
+function eventsTableSql(name: string, defaultTheme: string, check: string): string {
+  return `CREATE TABLE ${name} (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL CHECK (length(trim(name)) > 0),
   date TEXT NOT NULL CHECK (date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
@@ -34,9 +40,12 @@ const eventsTable = `CREATE TABLE events (
   history TEXT NOT NULL,
   phase TEXT NOT NULL DEFAULT 'drawing' ${phaseCheck},
   lastTransitionAt TEXT,
-  theme TEXT NOT NULL DEFAULT '${DEFAULT_THEME}' ${themeCheck},
+  theme TEXT NOT NULL DEFAULT '${defaultTheme}' ${check},
   createdAt TEXT NOT NULL
 )`;
+}
+const eventsTable = eventsTableSql('events', DEFAULT_THEME, themeCheck);
+const legacyEventsTable = eventsTableSql('events', LEGACY_DEFAULT_THEME, legacyThemeCheck);
 const activeEventTable = `CREATE TABLE active_event (
   slot INTEGER PRIMARY KEY CHECK (slot = 1),
   event_id TEXT NOT NULL REFERENCES events(id)
@@ -179,7 +188,7 @@ function validateV2(db: DatabaseSync): void {
 }
 
 function extendV3Schema(db: DatabaseSync): void {
-  db.exec(`ALTER TABLE current_event ADD COLUMN theme TEXT NOT NULL DEFAULT '${DEFAULT_THEME}' ${themeCheck}`);
+  db.exec(`ALTER TABLE current_event ADD COLUMN theme TEXT NOT NULL DEFAULT '${LEGACY_DEFAULT_THEME}' ${legacyThemeCheck}`);
 }
 
 function validateV3(db: DatabaseSync): void {
@@ -189,14 +198,14 @@ function validateV3(db: DatabaseSync): void {
   const normalized = typeof definition === 'string'
     ? definition.replace(/[\s"`\[\]]/g, '').toUpperCase() : '';
   const expectedPhaseCheck = phaseCheck.replace(/\s/g, '').toUpperCase();
-  const expectedThemeCheck = themeCheck.replace(/\s/g, '').toUpperCase();
+  const expectedThemeCheck = legacyThemeCheck.replace(/\s/g, '').toUpperCase();
   if (fields.length !== 5 || fields[0].name !== 'id' || fields[0].type !== 'INTEGER' ||
       fields[0].pk !== 1 || fields[1].name !== 'history' || fields[1].type !== 'TEXT' ||
       fields[1].notnull !== 1 || fields[2].name !== 'phase' || fields[2].type !== 'TEXT' ||
       fields[2].notnull !== 1 || fields[2].dflt_value !== "'drawing'" ||
       fields[3].name !== 'lastTransitionAt' || fields[3].type !== 'TEXT' ||
       fields[4].name !== 'theme' || fields[4].type !== 'TEXT' || fields[4].notnull !== 1 ||
-      fields[4].dflt_value !== `'${DEFAULT_THEME}'` ||
+      fields[4].dflt_value !== `'${LEGACY_DEFAULT_THEME}'` ||
       !/CHECK\(+ID=1\)+(?=[,)])/.test(normalized) ||
       !normalized.includes(expectedPhaseCheck) || !normalized.includes(expectedThemeCheck)) {
     throw new Error('Invalid event schema: current_event table missing or malformed');
@@ -215,10 +224,11 @@ function validateV3(db: DatabaseSync): void {
   }
 }
 
-function validateV4(db: DatabaseSync): void {
+// v4 and v5 share every table; they differ only in the events theme DEFAULT and CHECK.
+function validateV4(db: DatabaseSync, expectedEvents = eventsTable): void {
   const normalize = (sql: string) => sql.replace(/[\s"`\[\]]/g, '').toUpperCase();
   const eventsSql = db.prepare("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'events'").get()?.sql;
-  if (typeof eventsSql !== 'string' || normalize(eventsSql) !== normalize(eventsTable)) {
+  if (typeof eventsSql !== 'string' || normalize(eventsSql) !== normalize(expectedEvents)) {
     throw new Error('Invalid event schema: events table missing or malformed');
   }
   const activeSql = db.prepare("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'active_event'")
@@ -409,7 +419,7 @@ function readLegacyEvent(db: DatabaseSync): LegacyEvent | null {
 // placeholder metadata) and its audit trail, point active_event at it, then drop the old tables.
 function migrateV3ToV4(db: DatabaseSync): void {
   const legacy = readLegacyEvent(db);
-  db.exec(eventsTable);
+  db.exec(legacyEventsTable);
   db.exec(activeEventTable);
   db.exec(auditTableV4Sql('phase_audit_new'));
   if (legacy !== null) {
@@ -434,6 +444,37 @@ function migrateV3ToV4(db: DatabaseSync): void {
   db.exec(auditGuards.join(';'));
 }
 
+// Theme allow-list migration (v4 → v5), kept self-contained so its schema version can be
+// renumbered when merged with other migrations: it reads only the legacy v4 shape and writes the
+// current one. Retired ids are rewritten; any other value the new CHECK rejects aborts the
+// surrounding transaction, so unknown stored themes still fail closed. SQLite cannot alter a CHECK,
+// so events is rebuilt; its children are set aside first so foreign keys stay enforced throughout.
+const RETIRED_THEMES: Readonly<Record<string, ThemeId>> = { 'pixel-classic': 'jules' };
+function migrateThemeAllowList(db: DatabaseSync): void {
+  validateV4(db, legacyEventsTable);
+  const rewrite = Object.entries(RETIRED_THEMES).map(([from, to]) => `WHEN '${from}' THEN '${to}'`).join(' ');
+  db.exec('CREATE TEMP TABLE theme_migration_active AS SELECT slot, event_id FROM active_event');
+  db.exec(`CREATE TEMP TABLE theme_migration_audit AS
+    SELECT event_id, sequence, transitionAt, kind, from_phase, to_phase FROM phase_audit`);
+  db.exec('DROP TABLE phase_audit'); // Also drops its immutability guards; recreated below.
+  db.exec('DROP TABLE active_event');
+  db.exec(eventsTableSql('events_themes', DEFAULT_THEME, themeCheck));
+  db.exec(`INSERT INTO events_themes (id, name, date, place, history, phase, lastTransitionAt, theme, createdAt)
+    SELECT id, name, date, place, history, phase, lastTransitionAt, CASE theme ${rewrite} ELSE theme END, createdAt
+    FROM events ORDER BY rowid`);
+  db.exec('DROP TABLE events');
+  db.exec('ALTER TABLE events_themes RENAME TO events');
+  db.exec(activeEventTable);
+  db.exec(auditTableV4);
+  db.exec('INSERT INTO active_event (slot, event_id) SELECT slot, event_id FROM theme_migration_active');
+  db.exec(`INSERT INTO phase_audit (event_id, sequence, transitionAt, kind, from_phase, to_phase)
+    SELECT event_id, sequence, transitionAt, kind, from_phase, to_phase FROM theme_migration_audit
+    ORDER BY event_id, sequence`);
+  db.exec('DROP TABLE theme_migration_active');
+  db.exec('DROP TABLE theme_migration_audit');
+  db.exec(auditGuards.join(';'));
+}
+
 export function createEventStore(path: string) {
   if (!existed(path)) {
     // Initialize off-path: the target must never expose SQLite's transient version-0 file.
@@ -448,7 +489,7 @@ export function createEventStore(path: string) {
           candidate.exec(activeEventTable);
           candidate.exec(auditTableV4);
           candidate.exec(auditGuards.join(';'));
-          candidate.exec('PRAGMA user_version = 4; COMMIT');
+          candidate.exec(`PRAGMA user_version = ${VERSION}; COMMIT`);
         } catch (error) {
           try { candidate.exec('ROLLBACK'); } catch { /* Preserve the original error. */ }
           throw error;
@@ -470,7 +511,7 @@ export function createEventStore(path: string) {
     db.exec('BEGIN');
     try {
       const observed = db.prepare('PRAGMA user_version').get()?.user_version;
-      if (observed !== 1 && observed !== 2 && observed !== 3 && observed !== VERSION) {
+      if (observed !== 1 && observed !== 2 && observed !== 3 && observed !== 4 && observed !== VERSION) {
         throw new Error(`Unsupported event schema version: ${String(observed)}`);
       }
       if (observed === VERSION) {
@@ -507,8 +548,12 @@ export function createEventStore(path: string) {
           validateV3(db);
           migrateV3ToV4(db);
           db.exec('PRAGMA user_version = 4');
-        } else if (version !== VERSION) {
+        } else if (version !== 4 && version !== VERSION) {
           throw new Error(`Unsupported event schema version: ${String(version)}`);
+        }
+        if (version !== VERSION) {
+          migrateThemeAllowList(db);
+          db.exec(`PRAGMA user_version = ${VERSION}`);
         }
         validateV4(db);
         readEvent(db);

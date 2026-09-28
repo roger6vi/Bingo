@@ -5,10 +5,9 @@ semantic CSS custom properties. Themes change token values, never components. Th
 contract future UI work follows: token architecture, naming rules, the three themes, the contrast
 contract, and a catalog of every component (implemented or specified).
 
-> **Status.** Tokens, the contrast contract and this document land first (#70, part 1). Until part 2
-> registers `light` and `jules`, the runtime still exposes the legacy `pixel-classic` id, whose
-> semantic values are the future `light` theme; part 2 renames it, adds `jules` as the default and
-> migrates stored `pixel-classic` values to `jules`.
+Stored theme ids are persisted per event. The retired `pixel-classic` id is migrated to `jules` by a
+self-contained event-schema migration (`migrateThemeAllowList` in `src/event-store.ts`); unknown
+stored values still fail closed.
 
 ## Token architecture
 
@@ -154,8 +153,8 @@ committed persistence snapshots (presentation never acknowledges its own intent)
 - **Properties:** `calledNumbers` (array), `loaded` (board). **States:** loading ("Waiting for draw"),
   empty ("No draws yet"), populated, latest, stale (owner keeps the last committed list).
 - **Accessibility:** named list; no live region, no focusable content.
-- **Tokens:** `color.call-latest-surface`, `color.accent`, `border-width.strong`, `space.inset-compact`,
-  `space.section`, `space.list-indent`, `space.small`, `font.size`.
+- **Tokens:** `color.accent`, `border-width.strong`, `space.inset-compact`, `space.section`,
+  `space.list-indent`, `space.small`, `font.size`; chips pass `latest` to `bingo-number`.
 
 ### `bingo-latest-draw`
 - **Purpose:** polite announcement of each new committed draw. **Anatomy:** slot + visually hidden
@@ -173,7 +172,7 @@ committed persistence snapshots (presentation never acknowledges its own intent)
 - **Properties:** `message`, `tone` (`info`, `success`, `warning`, `error`). **States:** info, success,
   warning (stale data), error.
 - **Accessibility:** tone is conveyed by text as well as colour.
-- **Tokens:** `color.text`, `color.info`, `color.success`, `color.warning`, `color.error`, `font.emphasis`.
+- **Tokens:** `color.text` (info), `color.success`, `color.warning`, `color.error`, `font.emphasis`.
 
 ### `bingo-draw-controls`
 - **Purpose:** manual number entry plus draw/reload actions. **Anatomy:** label, `input[type=number]`,
@@ -197,7 +196,7 @@ committed persistence snapshots (presentation never acknowledges its own intent)
 - **Properties:** `label`, `actions` (`{ action, label, signal }[]`). **States:** closed, open, focus
   (returns to opener), dismissed (Escape).
 - **Accessibility:** modal `dialog` named by its heading; Escape always dismisses.
-- **Tokens:** `color.text`, `color.surface-raised`, `color.border-strong`, `color.overlay`,
+- **Tokens:** `color.text`, `color.surface-raised`, `color.border-strong`, `color.overlay`, `color.shadow`,
   `opacity.scrim`, `border-width.strong`, `radius.surface`, `elevation.raised`, `space.layout`,
   `space.section`, `font.body`, `font.size`, `font.line`, `font.emphasis`.
 

@@ -10,10 +10,10 @@ export class BingoEventList extends LitElement {
     li {
       display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
       gap: var(--bingo-space-small); padding: var(--bingo-space-inset-compact) 0;
-      border-bottom: 1px solid var(--bingo-color-border);
+      border-bottom: var(--bingo-border-width-default) solid var(--bingo-color-border);
     }
     li[aria-current="true"] { font-weight: var(--bingo-font-emphasis); }
-    .marker { text-transform: uppercase; letter-spacing: 0.06em; }
+    .marker { color: var(--bingo-color-accent); text-transform: uppercase; letter-spacing: var(--bingo-font-tracking); }
     p { margin: 0; }
   `;
   constructor() { super(); this.events = []; this.disabled = false; this.loaded = false; }

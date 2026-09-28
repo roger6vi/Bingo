@@ -7,15 +7,15 @@ class BingoPanel extends LitElement {
     section {
       height: 100%; box-sizing: border-box;
       padding: var(--bingo-space-layout);
-      border: 2px solid var(--bingo-color-border);
+      border: var(--bingo-border-width-strong) solid var(--bingo-color-border);
       border-radius: var(--bingo-radius-surface);
-      box-shadow: var(--bingo-space-small) var(--bingo-space-small) 0 var(--bingo-color-border);
+      box-shadow: var(--bingo-elevation-raised) var(--bingo-elevation-raised) 0 var(--bingo-color-shadow);
       background: var(--bingo-color-surface);
     }
     h2 {
       margin: 0 0 var(--bingo-space-section);
       font: var(--bingo-font-emphasis) var(--bingo-font-size)/var(--bingo-font-line) var(--bingo-font-body);
-      letter-spacing: 0.06em;
+      letter-spacing: var(--bingo-font-tracking);
       text-transform: uppercase;
     }
   `;

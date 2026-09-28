@@ -1,4 +1,6 @@
-@import './generated/pixel-classic.css';
+@import '@fontsource-variable/roboto-mono/wght.css';
+@import './generated/jules.css';
+@import './generated/light.css';
 @import './generated/high-contrast.css';
 
 /* Hidden until the committed theme is applied, so no other theme is painted first. */
@@ -22,26 +24,40 @@ bingo-shell {
 section {
   margin-block: var(--bingo-space-section);
   padding: var(--bingo-space-layout);
-  border: 1px solid var(--bingo-color-border);
+  border: var(--bingo-border-width-default) solid var(--bingo-color-border);
   border-radius: var(--bingo-radius-surface);
   background: var(--bingo-color-surface);
 }
 
-button, input, select { font: inherit; color: var(--bingo-color-text); background: var(--bingo-color-surface); border-color: var(--bingo-color-border); }
+button, input, select {
+  font: inherit;
+  color: var(--bingo-color-text);
+  background: var(--bingo-color-surface);
+  border: var(--bingo-border-width-default) solid var(--bingo-color-border-strong);
+  border-radius: var(--bingo-radius-control);
+}
+input, select { background: var(--bingo-color-surface-sunken); }
 button { margin: var(--bingo-space-small); padding: var(--bingo-space-inset-compact) var(--bingo-space-inset-inline); }
-button:not(:disabled) { cursor: pointer; transition: background-color var(--bingo-motion-normal); }
-button:not(:disabled):hover { color: var(--bingo-color-canvas); background: var(--bingo-color-accent); }
-button:disabled { color: var(--bingo-color-muted); background: var(--bingo-color-canvas); border-color: var(--bingo-color-border); cursor: not-allowed; opacity: 0.65; }
-:focus-visible { outline: 2px solid var(--bingo-color-focus); outline-offset: var(--bingo-space-small); }
+button:not(:disabled) { cursor: pointer; transition: background-color var(--bingo-motion-normal) var(--bingo-motion-easing); }
+button:not(:disabled):hover { color: var(--bingo-color-on-accent); background: var(--bingo-color-accent-hover); }
+button:not(:disabled):active { color: var(--bingo-color-on-accent); background: var(--bingo-color-accent-active); }
+button:disabled, input:disabled, select:disabled {
+  color: var(--bingo-color-disabled);
+  background: var(--bingo-color-disabled-surface);
+  cursor: not-allowed;
+  opacity: var(--bingo-opacity-disabled);
+}
+:focus-visible { outline: var(--bingo-border-width-focus) solid var(--bingo-color-focus); outline-offset: var(--bingo-space-small); }
+img, video, canvas { image-rendering: var(--bingo-rendering-image); }
 
 .operator-layout { display: grid; gap: var(--bingo-space-section); }
 .operator-layout bingo-panel { min-width: 0; }
 .operator-layout bingo-status { margin-block: var(--bingo-space-section); }
 .operator-layout select { margin-inline: var(--bingo-space-small); padding: var(--bingo-space-inset-compact); }
 .public-controls { display: flex; flex-wrap: wrap; gap: var(--bingo-space-small); }
-.operator-tabs { display: flex; flex-wrap: wrap; border-bottom: 2px solid var(--bingo-color-border); }
+.operator-tabs { display: flex; flex-wrap: wrap; border-bottom: var(--bingo-border-width-strong) solid var(--bingo-color-border); }
 .operator-tabs [role="tab"] { margin: 0 var(--bingo-space-small) 0 0; }
-.operator-tabs [role="tab"][aria-selected="true"] { color: var(--bingo-color-canvas); background: var(--bingo-color-accent); }
+.operator-tabs [role="tab"][aria-selected="true"] { color: var(--bingo-color-on-accent); background: var(--bingo-color-accent); }
 [role="tabpanel"] { margin-top: var(--bingo-space-section); }
 .active-event-banner { margin-block-end: var(--bingo-space-section); }
 .event-form { display: grid; gap: var(--bingo-space-small); justify-items: start; }
@@ -73,7 +89,7 @@ input[aria-invalid="true"] { border-color: var(--bingo-color-error); }
   position: relative;
   aspect-ratio: 16 / 9;
   overflow: hidden;
-  border: 2px solid var(--bingo-color-border);
+  border: var(--bingo-border-width-strong) solid var(--bingo-color-border);
   border-radius: var(--bingo-radius-surface);
   background: var(--bingo-color-canvas);
 }
@@ -100,7 +116,7 @@ bingo-shell:has(.public-layout) h1 {
   font-size: var(--bingo-font-display);
   line-height: var(--bingo-font-tight);
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: var(--bingo-font-tracking);
 }
 .event-details { margin-top: var(--bingo-space-small); font-weight: var(--bingo-font-emphasis); }
 .event-details[hidden] { display: none; }

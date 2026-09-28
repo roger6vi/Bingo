@@ -14,7 +14,7 @@ class BingoNumberBoard extends LitElement {
       margin: 0; padding-inline-start: var(--bingo-space-list-indent);
     }
     li { padding-inline-end: var(--bingo-space-inset-compact); }
-    li[aria-current] { outline: var(--bingo-space-small) solid var(--bingo-color-accent); outline-offset: var(--bingo-space-small); }
+    li[aria-current] { outline: var(--bingo-border-width-strong) solid var(--bingo-color-accent); outline-offset: var(--bingo-space-small); }
   `;
   constructor() { super(); this.calledNumbers = []; this.loaded = false; }
   render() {
@@ -22,7 +22,7 @@ class BingoNumberBoard extends LitElement {
       this.calledNumbers.length === 0 ? html`<p>No draws yet</p>` : ''}
       <ol aria-label="Called numbers in draw order">
         ${this.calledNumbers.map((number, index) => html`<li aria-current=${index === this.calledNumbers.length - 1 ? 'true' : nothing}>
-          <bingo-number .value=${number} .compact=${true}></bingo-number>
+          <bingo-number .value=${number} .compact=${true} ?latest=${index === this.calledNumbers.length - 1}></bingo-number>
         </li>`)}
       </ol>`;
   }

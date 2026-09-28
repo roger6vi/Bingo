@@ -228,11 +228,19 @@ test('screen keeps enabled-only pointer, hover and transition with semantic disa
   const enabled = rules.find(({ selector, body }) => selector === 'button:not(:disabled)' && /cursor:\s*pointer/.test(body));
   assert.ok(enabled, 'enabled-only pointer rule');
   assert.ok(rules.some(({ selector }) => selector === 'button:not(:disabled):hover'), 'enabled-only hover rule');
-  const disabled = rules.find(({ selector }) => selector === 'button:disabled');
+  const disabled = rules.find(({ selector }) => selector.split(',').map((part) => part.trim()).includes('button:disabled'));
   assert.ok(disabled, 'explicit disabled rule');
   assert.match(disabled.body, /cursor:\s*(?:not-allowed|default)/);
   assert.match(disabled.body, /(?:color|background|border-color):\s*var\(--bingo-color-[\w-]+\)/);
-  const opacity = /(?:^|;)\s*opacity:\s*(\d*\.?\d+)\s*(?:;|$)/.exec(disabled.body);
+  const opacity = /(?:^|;)\s*opacity:\s*var\(--bingo-opacity-disabled\)\s*(?:;|$)/.exec(disabled.body);
   assert.ok(opacity, 'disabled buttons need an explicit, theme-independent visual difference');
-  assert.ok(Number(opacity[1]) > 0 && Number(opacity[1]) < 1, 'disabled opacity must be between 0 and 1');
+  // The semantic opacity must resolve to the same partial value in every theme.
+  const { reference, themes } = sources();
+  const values = new Set(themeNames.map((theme) => {
+    const alias = themes[theme].opacity.disabled.$value.slice(1, -1).split('.');
+    return Number((reference as Record<string, Record<string, { $value: unknown }>>)[alias[0]][alias[1]].$value);
+  }));
+  assert.equal(values.size, 1, 'disabled opacity is theme-independent');
+  const [value] = values;
+  assert.ok(value > 0 && value < 1, 'disabled opacity must be between 0 and 1');
 });

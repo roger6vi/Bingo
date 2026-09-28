@@ -86,11 +86,12 @@ test('public sample is bundled under renderer and remains opt-in', () => {
   assert.doesNotMatch(html, /\bautoplay\b/i);
 });
 
-test('both pages bundle both generated theme shells and semantic contracts', () => {
+test('both pages bundle the three generated themes and semantic contracts', () => {
   const css = readdirSync(path.join(renderer, 'assets'))
     .filter((file) => file.endsWith('.css')).map((file) => text(`dist/renderer/assets/${file}`)).join('\n');
-  assert.match(css, /:root,\s*\[data-theme=["']?pixel-classic["']?\]/);
-  assert.match(css, /\[data-theme=["']?high-contrast["']?\]/);
+  assert.match(css, /:root,\s*\[data-theme=["']?jules["']?\]/);
+  for (const theme of ['light', 'high-contrast']) assert.match(css, new RegExp(`\\[data-theme=["']?${theme}["']?\\]`));
+  assert.doesNotMatch(css, /pixel-classic/);
   for (const key of ['color-canvas', 'color-surface', 'color-text', 'color-muted',
     'color-accent', 'color-error', 'color-focus', 'color-border', 'space-layout',
     'font-body', 'radius-surface', 'motion-normal', 'motion-easing', 'color-tie-1']) {
@@ -101,13 +102,29 @@ test('both pages bundle both generated theme shells and semantic contracts', () 
     const html = text(`dist/renderer/${page}.html`);
     const styles = [...html.matchAll(/href="(\.\/[^\"]+\.css)"/g)]
       .map((match) => text(`dist/renderer/${match[1].slice(2)}`)).join('\n');
-    assert.match(styles, /\[data-theme=["']?high-contrast["']?\]/, `${page} includes theme CSS`);
+    for (const theme of ['jules', 'light', 'high-contrast']) {
+      assert.match(styles, new RegExp(`\\[data-theme=["']?${theme}["']?\\]`), `${page} includes ${theme} CSS`);
+    }
     assert.match(styles, /--bingo-color-canvas:/, `${page} includes semantic CSS`);
   }
 });
 
+test('Roboto Mono is bundled as local font files, never fetched or inlined', () => {
+  const assets = readdirSync(path.join(renderer, 'assets'));
+  const css = assets.filter((file) => file.endsWith('.css')).map((file) => text(`dist/renderer/assets/${file}`)).join('\n');
+  const faces = [...css.matchAll(/@font-face\s*\{([^}]*)\}/g)].map((match) => match[1]);
+  assert.ok(faces.some((face) => /font-family:\s*["']?Roboto Mono Variable/.test(face)), 'Roboto Mono @font-face');
+  for (const face of faces) {
+    for (const [, url] of face.matchAll(/url\(["']?([^"')]+)["']?\)/g)) {
+      assert.match(url, /^\.\/[\w.-]+\.woff2$/, `relative local font: ${url}`);
+      assert.ok(statSync(path.join(renderer, 'assets', url.slice(2))).size > 0, `emitted font: ${url}`);
+    }
+  }
+  assert.ok(assets.some((file) => /^roboto-mono-latin-wght-normal-[\w-]+\.woff2$/.test(file)), 'latin subset emitted');
+});
+
 test('generated token outputs remain ignored and untracked', () => {
-  for (const file of ['src/generated/pixel-classic.css', 'src/generated/high-contrast.css']) {
+  for (const file of ['src/generated/jules.css', 'src/generated/light.css', 'src/generated/high-contrast.css']) {
     assert.ok(statSync(path.join(root, file)).size > 0);
     assert.equal(execFileSync('git', ['check-ignore', file], { cwd: root, encoding: 'utf8' }).trim(), file);
     assert.equal(execFileSync('git', ['ls-files', file], { cwd: root, encoding: 'utf8' }).trim(), '');

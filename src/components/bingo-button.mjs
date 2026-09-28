@@ -6,13 +6,20 @@ export class BingoButton extends LitElement {
     :host { display: inline-block; }
     button {
       font: inherit; color: var(--bingo-color-text); background: var(--bingo-color-surface);
-      border: 1px solid var(--bingo-color-border); cursor: pointer;
+      border: var(--bingo-border-width-default) solid var(--bingo-color-border-strong);
+      border-radius: var(--bingo-radius-control); cursor: pointer;
       padding: var(--bingo-space-inset-compact) var(--bingo-space-inset-inline);
-      transition: background-color var(--bingo-motion-normal);
+      transition: background-color var(--bingo-motion-normal) var(--bingo-motion-easing);
     }
-    button:not(:disabled):hover { color: var(--bingo-color-canvas); background: var(--bingo-color-accent); }
-    button:disabled { color: var(--bingo-color-muted); background: var(--bingo-color-canvas); cursor: not-allowed; opacity: 0.65; }
-    button:focus-visible { outline: 2px solid var(--bingo-color-focus); outline-offset: var(--bingo-space-small); }
+    button:not(:disabled):hover { color: var(--bingo-color-on-accent); background: var(--bingo-color-accent-hover); }
+    button:not(:disabled):active { color: var(--bingo-color-on-accent); background: var(--bingo-color-accent-active); }
+    button:disabled {
+      color: var(--bingo-color-disabled); background: var(--bingo-color-disabled-surface);
+      cursor: not-allowed; opacity: var(--bingo-opacity-disabled);
+    }
+    button:focus-visible {
+      outline: var(--bingo-border-width-focus) solid var(--bingo-color-focus); outline-offset: var(--bingo-space-small);
+    }
     @media (prefers-reduced-motion: reduce) { button { transition: none; } }
   `;
   constructor() { super(); this.disabled = false; }

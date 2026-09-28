@@ -4,9 +4,9 @@ export const semanticVariable = (key) => `--bingo-${key.replaceAll('.', '-')}`;
 
 export const sourcePaths = {
   reference: 'tokens/reference.json',
-  themes: ['pixel-classic', 'high-contrast'],
+  themes: ['jules', 'light', 'high-contrast'],
   // The default theme also carries the reference variables and the :root fallback.
-  defaultTheme: 'pixel-classic',
+  defaultTheme: 'jules',
 };
 
 // Declared text/background pairs, checked in every theme. Minimums follow WCAG 2.2:

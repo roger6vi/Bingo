@@ -7,7 +7,7 @@ class BingoCallHistory extends LitElement {
     :host { display: block; min-width: 0; }
     h3 { font-size: var(--bingo-font-size); }
     ol { display: flex; flex-wrap: wrap; gap: var(--bingo-space-inset-compact) var(--bingo-space-section); padding-inline-start: var(--bingo-space-list-indent); }
-    li[aria-current] { outline: var(--bingo-space-small) solid var(--bingo-color-accent); outline-offset: var(--bingo-space-small); }
+    li[aria-current] { outline: var(--bingo-border-width-strong) solid var(--bingo-color-accent); outline-offset: var(--bingo-space-small); }
   `;
   constructor() { super(); this.calledNumbers = []; }
   render() {
@@ -15,7 +15,7 @@ class BingoCallHistory extends LitElement {
       ${this.calledNumbers.length ? '' : html`<p>No draws yet</p>`}
       <ol aria-labelledby="history-heading">${this.calledNumbers.map((number, index) => html`
         <li aria-current=${index === this.calledNumbers.length - 1 ? 'true' : nothing}>
-          <bingo-number .value=${number} .compact=${true}></bingo-number>
+          <bingo-number .value=${number} .compact=${true} ?latest=${index === this.calledNumbers.length - 1}></bingo-number>
         </li>`)}</ol>`;
   }
 }

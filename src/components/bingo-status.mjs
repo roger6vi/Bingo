@@ -4,7 +4,8 @@ class BingoStatus extends LitElement {
   static properties = { message: { type: String }, tone: { type: String } };
   static styles = css`
     :host { display: block; }
-    p { margin: 0; font-weight: var(--bingo-font-emphasis); }
+    p { margin: 0; color: var(--bingo-color-text); font-weight: var(--bingo-font-emphasis); }
+    .success { color: var(--bingo-color-success); }
     .warning { color: var(--bingo-color-warning); }
     .error { color: var(--bingo-color-error); }
   `;

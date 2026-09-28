@@ -10,10 +10,13 @@ export class BingoDrawControls extends LitElement {
     label { flex-basis: 100%; }
     input {
       width: 6ch; padding: var(--bingo-space-inset-compact); font: inherit;
-      color: var(--bingo-color-text); background: var(--bingo-color-surface);
-      border: 1px solid var(--bingo-color-border);
+      color: var(--bingo-color-text); background: var(--bingo-color-surface-sunken);
+      border: var(--bingo-border-width-default) solid var(--bingo-color-border-strong);
+      border-radius: var(--bingo-radius-control);
     }
-    input:focus-visible { outline: 2px solid var(--bingo-color-focus); outline-offset: var(--bingo-space-small); }
+    input:focus-visible {
+      outline: var(--bingo-border-width-focus) solid var(--bingo-color-focus); outline-offset: var(--bingo-space-small);
+    }
   `;
   constructor() {
     super(); this.manualDisabled = true; this.digitalDisabled = true; this.reloadDisabled = false;
