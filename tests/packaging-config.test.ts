@@ -46,5 +46,6 @@ test('macOS workflow packages unsigned, smokes the package, and uploads it witho
   const steps = ['npm ci', 'npm test', 'npm run package:mac', 'npm run test:build', 'codesign --verify',
     'npm run test:package', 'actions/upload-artifact'].map((step) => workflow.indexOf(step));
   assert.ok(steps.every((index, i) => index > 0 && (i === 0 || index > steps[i - 1])), 'steps in order');
-  assert.doesNotMatch(workflow, /secrets\.|CSC_|APPLE_/);
+  assert.match(workflow, /run: npm run package:mac\n {6}env:\n(?: {8}#.*\n)* {8}CSC_FOR_PULL_REQUEST: 'true'\n/);
+  assert.doesNotMatch(workflow, /secrets\.|CSC_(?!FOR_PULL_REQUEST)|APPLE_/);
 });
