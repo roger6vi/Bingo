@@ -123,6 +123,14 @@ test('Roboto Mono is bundled as local font files, never fetched or inlined', () 
   assert.ok(assets.some((file) => /^roboto-mono-latin-wght-normal-[\w-]+\.woff2$/.test(file)), 'latin subset emitted');
 });
 
+test('the development-only gallery is never packaged', () => {
+  const files = readdirSync(renderer, { recursive: true }).map(String);
+  assert.deepEqual(files.filter((file) => /gallery/i.test(file)), []);
+  for (const file of files.filter((name) => /\.(?:html|js)$/.test(name))) {
+    assert.doesNotMatch(text(`dist/renderer/${file}`), /gallery/i, file);
+  }
+});
+
 test('generated token outputs remain ignored and untracked', () => {
   for (const file of ['src/generated/jules.css', 'src/generated/light.css', 'src/generated/high-contrast.css']) {
     assert.ok(statSync(path.join(root, file)).size > 0);

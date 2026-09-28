@@ -15,13 +15,14 @@ test('the gallery is a development-only Vite entry excluded from packaged pages'
 
 test('the gallery page keeps the offline CSP and renders from its entry module only', () => {
   const page = source('src/gallery.html');
+  // Same offline CSP as the packaged pages; only the local dev server's HMR socket may connect.
   const csp = /content="([^"]+)"/.exec(source('src/public.html'))?.[1];
-  assert.ok(csp && page.includes(`content="${csp}"`));
+  assert.ok(csp && page.includes(`content="${csp.replace("connect-src 'none'", 'connect-src ws://localhost:*')}"`));
+  assert.match(page, /<link rel="stylesheet" href="\.\/screen\.css">/);
   assert.match(page, /<html lang="en" data-theme="jules">/);
   assert.match(page, /<script type="module" src="\.\/gallery\.mjs"><\/script>/);
   assert.doesNotMatch(page, /<(?:style|script)\b[^>]*>\s*[^<\s]/i);
   const entry = source('src/gallery.mjs');
-  assert.match(entry, /import '\.\/screen\.css';/);
   assert.match(entry, /renderGallery\(document\.getElementById\('gallery'\)\)/);
   assert.doesNotMatch(source('src/gallery-view.mjs'), /\b(?:desktop|publicEvent|publicTheme|ipcRenderer|localStorage)\b/);
 });
