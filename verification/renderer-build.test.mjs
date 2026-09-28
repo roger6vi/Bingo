@@ -8,8 +8,8 @@ const root = path.resolve(import.meta.dirname, '..');
 const dist = path.join(root, 'dist');
 const renderer = path.join(dist, 'renderer');
 const csp = "default-src 'none'; script-src 'self'; style-src 'self'; media-src 'self'; img-src 'self' data:; font-src 'self'; object-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'";
-// Only the operator page may frame, and only the bundled public page, for the Configuración simulator.
-const pageCsp = { public: csp, operator: csp.replace("object-src 'none';", "object-src 'none'; frame-src 'self';") };
+// Only the operator page may frame, and only the isolated local simulator protocol.
+const pageCsp = { public: csp, operator: csp.replace("object-src 'none';", "object-src 'none'; frame-src bingo-public:;") };
 const text = (file) => readFileSync(path.join(root, file), 'utf8');
 
 for (const name of ['main', 'preload', 'public-preload']) {
@@ -139,11 +139,16 @@ test('the Configuración simulator frames the bundled public page without any pr
   const html = text('dist/renderer/operator.html');
   const frames = [...html.matchAll(/<iframe\b[^>]*>/g)].map(([tag]) => tag);
   assert.equal(frames.length, 1);
-  assert.match(frames[0], /src="\.\/public\.html"/);
+  assert.match(frames[0], /src="bingo-public:\/\/simulator\/public\.html"/);
+  assert.match(frames[0], /sandbox="allow-scripts"/);
+  assert.doesNotMatch(frames[0], /allow-same-origin/);
   assert.match(frames[0], /\binert\b/);
   assert.match(frames[0], /title="Simulador de la pantalla pública"/);
   assert.ok(statSync(path.join(renderer, 'public.html')).size > 0);
-  // Subframes get no preload: the simulator can only receive display messages from its parent.
-  assert.doesNotMatch(text('dist/main.js'), /nodeIntegrationInSubFrames/);
+  // A standard, secure local protocol lets sandboxed modules load without sharing the file:// operator origin.
+  const main = text('dist/main.js');
+  assert.match(main, /scheme: ['"]bingo-public['"]/);
+  assert.match(main, /protocol\.handle\(['"]bingo-public['"]/);
+  assert.doesNotMatch(main, /nodeIntegrationInSubFrames/);
   assert.doesNotMatch(text('dist/renderer/public.html'), /<iframe\b/);
 });

@@ -2,7 +2,7 @@
 // display (e.g. `xvfb-run -a node verification/electron-smoke.mjs`). It always uses a fresh temporary
 // --user-data-dir, never the real profile, and deletes it afterwards.
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -27,7 +27,7 @@ async function simulatorFrame(page) {
 
 try {
   let app = await launch();
-  assert.equal(await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData')), profile);
+  assert.equal(realpathSync(await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'))), realpathSync(profile));
   let operator = await app.firstWindow();
   await operator.waitForFunction(() => document.querySelector('#settings-name')?.value !== '');
   assert.ok(existsSync(path.join(profile, 'current-event.sqlite')), 'the database lives in the temporary profile');
@@ -60,8 +60,10 @@ try {
   step('draft preview reaches only the simulator');
 
   // The simulator is the production public page with no privileged bridge at all.
-  assert.deepEqual(await simulator.evaluate(() => ['desktop', 'publicEvent', 'publicTheme', 'publicEventMeta']
-    .filter((name) => name in window)), []);
+  assert.deepEqual(await simulator.evaluate(() => ({
+    own: ['desktop', 'publicEvent', 'publicTheme', 'publicEventMeta'].filter((name) => name in window),
+    parentDesktop: (() => { try { return 'desktop' in window.parent; } catch { return 'blocked'; } })(),
+  })), { own: [], parentDesktop: 'blocked' });
   // The public window can only subscribe.
   assert.deepEqual(await publicWindow.evaluate(() => ({
     desktop: 'desktop' in window, require: typeof require,

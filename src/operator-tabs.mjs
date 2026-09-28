@@ -29,7 +29,7 @@ export function bindTabs(tablist, { canLeave } = {}) {
     Promise.resolve(allowed).catch(() => false).then((ok) => {
       deciding = false;
       if (ok === true) select(next, focus);
-      else if (focus) current.focus();
+      else current.focus();
     });
   }
 

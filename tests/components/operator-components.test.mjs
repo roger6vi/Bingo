@@ -545,6 +545,11 @@ it('leaving Configuración with unsaved edits offers Save, Discard, and Cancel w
     await choose('cancel');
     expect([native().open, settingsTab.getAttribute('aria-selected'), document.activeElement, name.value])
       .to.deep.equal([false, 'true', settingsTab, 'Borrador']);
+    bingoTab.click();
+    await settle();
+    await choose('cancel');
+    expect([settingsTab.getAttribute('aria-selected'), document.activeElement])
+      .to.deep.equal(['true', settingsTab], 'pointer cancellation restores the selected tab');
     key(settingsTab, 'ArrowRight');
     await settle();
     native().dispatchEvent(new Event('cancel', { cancelable: true }));

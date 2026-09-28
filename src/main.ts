@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, screen } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, net, protocol, screen } from 'electron';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createEventStore } from './event-store';
@@ -16,9 +16,25 @@ const htmlPath = (name: 'operator.html' | 'public.html') => path.join(__dirname,
 const preload = path.join(__dirname, 'preload.js');
 const publicPreload = path.join(__dirname, 'public-preload.js');
 
+// The sandboxed simulator needs a standard origin to load its bundled modules. A distinct local-only
+// scheme keeps it cross-origin from the operator, so framed public code cannot reach the operator bridge.
+protocol.registerSchemesAsPrivileged([{ scheme: 'bingo-public', privileges: { standard: true, secure: true,
+  supportFetchAPI: true, corsEnabled: true } }]);
+
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else app.whenReady().then(() => {
+  const rendererRoot = path.join(__dirname, 'renderer');
+  protocol.handle('bingo-public', (request) => {
+    const url = new URL(request.url);
+    const relative = decodeURIComponent(url.pathname).replace(/^\/+/, '');
+    const target = path.resolve(rendererRoot, relative);
+    if (url.hostname !== 'simulator' || (!target.startsWith(`${rendererRoot}${path.sep}`) && target !== rendererRoot)) {
+      return new Response('Not found', { status: 404 });
+    }
+    return net.fetch(pathToFileURL(target).href);
+  });
+
   let store: ReturnType<typeof createEventStore>;
   try {
     const databasePath = path.join(app.getPath('userData'), 'current-event.sqlite');
