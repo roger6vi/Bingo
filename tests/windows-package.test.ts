@@ -25,7 +25,7 @@ test('the workflow installs, upgrades and uninstalls against one temporary profi
     'windows-installed.ps1 -Uninstall', 'current-event.sqlite', 'Remove-Item -Recurse -Force'];
   const positions = order.map((text) => workflow.indexOf(text));
   assert.ok(positions.every((position, index) => position > (positions[index - 1] ?? -1)), 'steps in order');
-  assert.match(workflow, /BINGO_DATA: \$\{\{ runner\.temp \}\}\\bingo-user-data/);
+  assert.match(workflow, /run: Add-Content \$env:GITHUB_ENV "BINGO_DATA=\$env:RUNNER_TEMP\\bingo-user-data"/);
   assert.match(workflow, /- name: Remove temporary profile\n      if: always\(\)/);
   assert.match(workflow, /path: release\/windows\/Bingo-Setup-\*\.exe\n\s+if-no-files-found: error/);
 });

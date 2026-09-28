@@ -21,14 +21,14 @@ jobs:
     defaults:
       run:
         shell: pwsh
-    env:
-      BINGO_DATA: ${{ runner.temp }}\bingo-user-data
     steps:
     - uses: actions/checkout@v4
     - uses: actions/setup-node@v4
       with:
         node-version: '24'
         cache: npm
+    - name: Choose a temporary user-data directory
+      run: Add-Content $env:GITHUB_ENV "BINGO_DATA=$env:RUNNER_TEMP\bingo-user-data"
     - name: Install dependencies
       run: npm ci
     - name: Test source
@@ -59,7 +59,7 @@ jobs:
         if (-not (Test-Path "$env:BINGO_DATA\current-event.sqlite")) { throw 'uninstall removed event data' }
     - name: Remove temporary profile
       if: always()
-      run: Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $env:BINGO_DATA
+      run: if ($env:BINGO_DATA) { Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $env:BINGO_DATA }
     - uses: actions/upload-artifact@v4
       with:
         name: bingo-windows-unsigned
