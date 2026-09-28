@@ -930,3 +930,159 @@ test('theme allow-list changes require a schema version bump', (t) => {
     'THEME_IDS changed without a matching event schema migration',
   ));
 });
+
+test('createEvent validates metadata, trims name and place, and never writes on failure', (t) => {
+  const path = fixture(t);
+  const store = createEventStore(path);
+  t.after(() => store.close());
+  const before = store.listEvents();
+  const long = 'a'.repeat(121);
+  const invalid = [
+    { name: '', date: '2025-01-01', place: 'Club' },
+    { name: '   ', date: '2025-01-01', place: 'Club' },
+    { name: long, date: '2025-01-01', place: 'Club' },
+    { name: 'Bingo', date: '2025-01-01', place: '' },
+    { name: 'Bingo', date: '2025-01-01', place: '   ' },
+    { name: 'Bingo', date: '2025-01-01', place: long },
+    { name: 1, date: '2025-01-01', place: 'Club' },
+    { name: 'Bingo', date: '2025-01-01', place: 1 },
+    { name: 'Bingo', date: '2026-02-30', place: 'Club' },
+    { name: 'Bingo', date: '2025-1-1', place: 'Club' },
+    { name: 'Bingo', date: '01-01-2025', place: 'Club' },
+    { name: 'Bingo', date: 20250101, place: 'Club' },
+    { name: 'Bingo', date: null, place: 'Club' },
+  ] as const;
+  for (const meta of invalid) {
+    assert.throws(() => store.createEvent(meta as { name: unknown; date: unknown; place: unknown }), /invalid|event/i);
+  }
+  assert.deepEqual(store.listEvents(), before);
+  const created = store.createEvent({ name: '  Gran Bingo  ', date: '2025-06-15', place: '  Club Central  ' });
+  assert.equal(created.name, 'Gran Bingo');
+  assert.equal(created.place, 'Club Central');
+  assert.equal(created.date, '2025-06-15');
+  assert.equal(created.phase, 'drawing');
+  assert.match(created.id, /^[0-9a-f-]{36}$/);
+  assert.equal(store.listEvents().length, before.length + 1);
+});
+
+test('the first createEvent on an empty v4 store becomes active; later ones do not', (t) => {
+  const path = fixture(t);
+  const store = createEventStore(path);
+  t.after(() => store.close());
+  const first = store.createEvent({ name: 'First', date: '2025-01-01', place: 'A' });
+  assert.equal(first.active, true);
+  const second = store.createEvent({ name: 'Second', date: '2025-01-02', place: 'B' });
+  assert.equal(second.active, false);
+  const summaries = store.listEvents();
+  assert.equal(summaries.find((event) => event.id === first.id)?.active, true);
+  assert.equal(summaries.find((event) => event.id === second.id)?.active, false);
+});
+
+test('listEvents orders by createdAt then id and returns frozen copies', (t) => {
+  const path = fixture(t);
+  const store = createEventStore(path);
+  t.after(() => store.close());
+  const a = store.createEvent({ name: 'A', date: '2025-01-01', place: 'X' });
+  const b = store.createEvent({ name: 'B', date: '2025-01-02', place: 'Y' });
+  const list = store.listEvents();
+  assert.deepEqual(list.map((event) => event.id), [a, b].sort((x, y) =>
+    x.createdAt === y.createdAt ? (x.id < y.id ? -1 : 1) : (x.createdAt < y.createdAt ? -1 : 1)).map((e) => e.id));
+  assert.throws(() => { (list[0] as { name: string }).name = 'tampered'; });
+  assert.notEqual(store.listEvents()[0], list[0]);
+});
+
+test('selectEvent switches the active event and rejects unknown or non-string ids without changing state', (t) => {
+  const path = fixture(t);
+  const store = createEventStore(path);
+  t.after(() => store.close());
+  const a = store.createEvent({ name: 'A', date: '2025-01-01', place: 'X' });
+  const b = store.createEvent({ name: 'B', date: '2025-01-02', place: 'Y' });
+  assert.equal(store.listEvents().find((e) => e.id === a.id)?.active, true);
+  const selected = store.selectEvent(b.id);
+  assert.equal(selected.id, b.id);
+  assert.equal(selected.active, true);
+  assert.equal(store.listEvents().find((e) => e.id === a.id)?.active, false);
+  assert.equal(store.listEvents().find((e) => e.id === b.id)?.active, true);
+  const noop = store.selectEvent(b.id);
+  assert.equal(noop.active, true);
+  for (const bad of [randomUUID(), 42, null, undefined, {}, '']) {
+    assert.throws(() => store.selectEvent(bad as unknown), /invalid|unknown|event/i);
+  }
+  assert.equal(store.listEvents().find((e) => e.id === b.id)?.active, true);
+});
+
+test('events are fully isolated: history, phase, theme, and audit never bleed across selection', (t) => {
+  const path = fixture(t);
+  const store = createEventStore(path);
+  t.after(() => store.close());
+  const a = store.createEvent({ name: 'A', date: '2025-01-01', place: 'X' });
+  store.update((event) => drawManual(event, 5));
+  store.transitionPhase('begin_line_check', '2025-01-01T00:00:00.000Z');
+  store.saveTheme('high-contrast');
+  const b = store.createEvent({ name: 'B', date: '2025-01-02', place: 'Y' });
+  store.selectEvent(b.id);
+  assert.deepEqual(store.load(), { calledNumbers: [], phase: 'drawing', lastTransitionAt: null });
+  assert.equal(store.loadTheme(), DEFAULT_THEME);
+  assert.deepEqual(store.readAudit(), []);
+  store.selectEvent(a.id);
+  assert.deepEqual(store.load(), { calledNumbers: [5], phase: 'checking_line', lastTransitionAt: '2025-01-01T00:00:00.000Z' });
+  assert.equal(store.loadTheme(), 'high-contrast');
+  assert.equal(store.readAudit().length, 1);
+});
+
+test('the selected event survives closing and reopening the store, including a fresh process', (t) => {
+  const path = fixture(t);
+  const store = createEventStore(path);
+  const a = store.createEvent({ name: 'A', date: '2025-01-01', place: 'X' });
+  const b = store.createEvent({ name: 'B', date: '2025-01-02', place: 'Y' });
+  store.selectEvent(b.id);
+  store.close();
+  const reopened = createEventStore(path);
+  try { assert.equal(reopened.listEvents().find((e) => e.id === b.id)?.active, true); }
+  finally { reopened.close(); }
+  const script = `
+    const { createEventStore } = await import(process.argv[2]);
+    const store = createEventStore(process.argv[1]);
+    try { process.stdout.write(JSON.stringify(store.listEvents().find((e) => e.active)?.id)); }
+    finally { store.close(); }
+  `;
+  const output = execFileSync(process.execPath, [
+    '--input-type=module', '--eval', script, path,
+    new URL('../src/event-store.ts', import.meta.url).href,
+  ], { encoding: 'utf8' });
+  assert.equal(JSON.parse(output), b.id);
+  void a;
+});
+
+test('a second connection observes selection made by another connection on its next transaction', (t) => {
+  const path = fixture(t);
+  const conn1 = createEventStore(path);
+  const conn2 = createEventStore(path);
+  t.after(() => { conn1.close(); conn2.close(); });
+  const a = conn1.createEvent({ name: 'A', date: '2025-01-01', place: 'X' });
+  const b = conn1.createEvent({ name: 'B', date: '2025-01-02', place: 'Y' });
+  assert.deepEqual(conn2.load(), { calledNumbers: [], phase: 'drawing', lastTransitionAt: null });
+  conn1.selectEvent(b.id);
+  conn2.update((event) => drawManual(event, 33));
+  assert.deepEqual(conn2.load()?.calledNumbers, [33]);
+  assert.deepEqual(conn1.load()?.calledNumbers, [33]);
+  const reopenedA = conn1.selectEvent(a.id);
+  assert.deepEqual(reopenedA, { ...reopenedA, id: a.id });
+  assert.deepEqual(conn2.load()?.calledNumbers, []);
+});
+
+test('createEvent and selectEvent fail atomically under a concurrent writer lock, leaving state unchanged', (t) => {
+  const path = fixture(t);
+  const store = createEventStore(path);
+  t.after(() => store.close());
+  const a = store.createEvent({ name: 'A', date: '2025-01-01', place: 'X' });
+  const before = store.listEvents();
+  withDb(path, (db) => {
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      assert.throws(() => store.createEvent({ name: 'C', date: '2025-01-03', place: 'Z' }), /locked|busy/i);
+      assert.throws(() => store.selectEvent(a.id), /locked|busy/i);
+    } finally { db.exec('ROLLBACK'); }
+  });
+  assert.deepEqual(store.listEvents(), before);
+});

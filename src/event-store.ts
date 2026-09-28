@@ -57,6 +57,15 @@ const PLACEHOLDER_NAME = 'Evento actual';
 const PLACEHOLDER_PLACE = 'Sin especificar';
 
 type StoredEvent = EventSnapshot & { readonly phase: GamePhase; readonly lastTransitionAt: string | null };
+export type EventSummary = {
+  readonly id: string;
+  readonly name: string;
+  readonly date: string;
+  readonly place: string;
+  readonly phase: GamePhase;
+  readonly createdAt: string;
+  readonly active: boolean;
+};
 export type PhaseAuditEntry = {
   readonly sequence: number;
   readonly transitionAt: string;
@@ -263,6 +272,41 @@ function readEventRow(db: DatabaseSync, id: string) {
   if (typeof row.name !== 'string' || row.name.trim() === '') throw new Error('Invalid event metadata: name');
   if (typeof row.place !== 'string' || row.place.trim() === '') throw new Error('Invalid event metadata: place');
   return row;
+}
+
+const MAX_META_LENGTH = 120;
+
+function validateEventMeta(meta: { name: unknown; date: unknown; place: unknown }):
+    { name: string; date: string; place: string } {
+  const rawName = meta?.name;
+  const name = typeof rawName === 'string' ? rawName.trim() : null;
+  if (name === null || name === '' || name.length > MAX_META_LENGTH) throw new Error('Invalid event name');
+  const rawPlace = meta?.place;
+  const place = typeof rawPlace === 'string' ? rawPlace.trim() : null;
+  if (place === null || place === '' || place.length > MAX_META_LENGTH) throw new Error('Invalid event place');
+  if (!canonicalDate(meta?.date)) throw new Error('Invalid event date');
+  return { name, date: meta.date, place };
+}
+
+type EventSummaryRow = { id: string; name: string; date: string; place: string; phase: GamePhase; createdAt: string };
+
+function toSummary(row: EventSummaryRow, activeId: string | null): EventSummary {
+  return Object.freeze({
+    id: row.id, name: row.name, date: row.date, place: row.place,
+    phase: row.phase, createdAt: row.createdAt, active: activeId !== null && row.id === activeId,
+  });
+}
+
+function readEventSummaryRows(db: DatabaseSync): EventSummaryRow[] {
+  const rows = db.prepare('SELECT id, name, date, place, phase, createdAt FROM events ORDER BY createdAt, id').all();
+  return rows.map((row) => {
+    if (!canonicalDate(row.date)) throw new Error('Invalid event metadata: date');
+    if (!canonicalTime(row.createdAt)) throw new Error('Invalid event metadata: createdAt');
+    if (typeof row.name !== 'string' || row.name.trim() === '') throw new Error('Invalid event metadata: name');
+    if (typeof row.place !== 'string' || row.place.trim() === '') throw new Error('Invalid event metadata: place');
+    return { id: row.id as string, name: row.name as string, date: row.date as string,
+      place: row.place as string, phase: row.phase as GamePhase, createdAt: row.createdAt as string };
+  });
 }
 
 function readTheme(db: DatabaseSync): ThemeId {
@@ -576,6 +620,44 @@ export function createEventStore(path: string) {
         }
         db.prepare('UPDATE events SET history = ? WHERE id = ?').run(JSON.stringify(next.calledNumbers), id);
         return { calledNumbers: next.calledNumbers, phase, lastTransitionAt };
+      });
+    },
+    listEvents(): EventSummary[] {
+      return readSnapshot(() => {
+        const activeId = readActiveEventId(db);
+        return readEventSummaryRows(db).map((row) => toSummary(row, activeId));
+      });
+    },
+    createEvent(meta: { name: unknown; date: unknown; place: unknown }): EventSummary {
+      const { name, date, place } = validateEventMeta(meta);
+      return transaction(() => {
+        const activeId = readActiveEventId(db);
+        const id = randomUUID();
+        const now = new Date().toISOString();
+        db.prepare(`INSERT INTO events (id, name, date, place, history, createdAt)
+          VALUES (?, ?, ?, ?, '[]', ?)`).run(id, name, date, place, now);
+        const resultingActiveId = activeId === null ? id : activeId;
+        if (activeId === null) {
+          db.prepare('INSERT INTO active_event (slot, event_id) VALUES (1, ?)').run(id);
+        }
+        return toSummary({ id, name, date, place, phase: 'drawing', createdAt: now }, resultingActiveId);
+      });
+    },
+    selectEvent(id: unknown): EventSummary {
+      if (typeof id !== 'string') throw new Error('Invalid event id');
+      return transaction(() => {
+        const rows = db.prepare('SELECT id, name, date, place, phase, createdAt FROM events WHERE id = ?').all(id);
+        if (rows.length !== 1) throw new Error('Unknown event id');
+        if (!canonicalDate(rows[0].date)) throw new Error('Invalid event metadata: date');
+        if (!canonicalTime(rows[0].createdAt)) throw new Error('Invalid event metadata: createdAt');
+        if (typeof rows[0].name !== 'string' || rows[0].name.trim() === '') throw new Error('Invalid event metadata: name');
+        if (typeof rows[0].place !== 'string' || rows[0].place.trim() === '') throw new Error('Invalid event metadata: place');
+        const row = rows[0] as EventSummaryRow;
+        const currentActive = readActiveEventId(db);
+        if (currentActive !== id) {
+          db.prepare('UPDATE active_event SET event_id = ? WHERE slot = 1').run(id);
+        }
+        return toSummary(row, id);
       });
     },
     close(): void { db.close(); },
