@@ -324,6 +324,27 @@ test('fresh v2 starts in drawing with null timestamp and guarded empty audit', (
   finally { reopened.close(); }
 });
 
+test('v2 rejects missing and wrong phase defaults before creating a current event', (t) => {
+  const path = fixture(t);
+  const directory = fs.realpathSync(join(path, '..'));
+  for (const [name, defaultSql] of [['missing', ''], ['wrong', "DEFAULT 'finished'"]] as const) {
+    const file = join(directory, `${name}.sqlite`);
+    const fresh = createEventStore(file);
+    fresh.close();
+    withDb(file, (db) => {
+      db.exec('PRAGMA writable_schema = ON');
+      db.prepare(`UPDATE sqlite_schema SET sql = replace(sql, ?, ?)
+        WHERE type = 'table' AND name = 'current_event'`).run("DEFAULT 'drawing'", defaultSql);
+      db.exec('PRAGMA writable_schema = OFF');
+    });
+    assert.throws(() => createEventStore(file), /invalid event schema/i, name);
+    withDb(file, (db) => {
+      assert.equal(db.prepare('SELECT count(*) AS count FROM current_event').get()?.count, 0);
+      assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 2);
+    });
+  }
+});
+
 test('invalid v1 history and failed migration leave version and row unchanged', (t) => {
   const path = fixture(t);
   v1(path, '[90,90]');
@@ -403,6 +424,167 @@ test('malformed v2 phase, missing audit guards, and inconsistent empty audit fai
     db.exec('DROP TRIGGER phase_audit_no_delete');
   });
   assert.throws(() => createEventStore(path), /invalid|audit|schema/i);
+});
+
+test('legal intent transitions append one ordered audit row each and draws preserve phase', (t) => {
+  const path = fixture(t);
+  const store = createEventStore(path);
+  try {
+    store.create();
+    const steps = [
+      ['begin_line_check', 'checking_line'], ['reject_line_claim', 'drawing'],
+      ['begin_line_check', 'checking_line'], ['declare_line', 'line_declared'],
+      ['begin_bingo_check', 'checking_bingo'], ['reject_bingo_claim', 'line_declared'],
+      ['begin_bingo_check', 'checking_bingo'], ['declare_bingo', 'bingo_declared'],
+      ['correct_bingo_declaration', 'line_declared'], ['correct_line_declaration', 'drawing'],
+      ['begin_line_check', 'checking_line'], ['declare_line', 'line_declared'],
+      ['begin_bingo_check', 'checking_bingo'], ['declare_bingo', 'bingo_declared'],
+      ['finish', 'finished'],
+    ] as const;
+    let from = 'drawing';
+    for (const [index, [kind, to]] of steps.entries()) {
+      const at = new Date(Date.UTC(2025, 0, 1, 0, 0, index)).toISOString();
+      assert.equal(store.transitionPhase(kind, at).phase, to);
+      assert.deepEqual(store.readAudit()[index], {
+        sequence: index + 1, transitionAt: at, kind, from_phase: from, to_phase: to,
+      });
+      from = to;
+      if (to === 'line_declared') {
+        const count = store.readAudit().length;
+        assert.equal(store.update((event) => drawManual(event, index + 1)).phase, to);
+        assert.equal(store.readAudit().length, count);
+      }
+    }
+    assert.equal(store.load()?.lastTransitionAt, new Date(Date.UTC(2025, 0, 1, 0, 0, 14)).toISOString());
+    assert.throws(() => store.transitionPhase('finish', '2025-01-01T00:01:00.000Z'), /invalid phase transition/i);
+  } finally { store.close(); }
+  const reopened = createEventStore(path);
+  try {
+    assert.equal(reopened.load()?.phase, 'finished');
+    assert.equal(reopened.readAudit().length, 15);
+  } finally { reopened.close(); }
+});
+
+test('illegal intents, noncanonical or regressive clocks and callback phase forgery never change state', (t) => {
+  const path = fixture(t);
+  const store = createEventStore(path);
+  try {
+    store.create();
+    for (const kind of ['declare_line', 'finish', 'begin_bingo_check'] as const) {
+      assert.throws(() => store.transitionPhase(kind, '2025-01-01T00:00:00.000Z'), /invalid phase transition/i);
+    }
+    const at = '2025-01-01T00:00:00.000Z';
+    assert.throws(() => store.transitionPhase('begin_line_check', '2025-01-01'), /timestamp|time/i);
+    store.transitionPhase('begin_line_check', at);
+    const before = store.load();
+    const audit = store.readAudit();
+    for (const time of [at, '2024-12-31T23:59:59.999Z', 'garbage', '2025-01-01T01:00:00+01:00']) {
+      assert.throws(() => store.transitionPhase('declare_line', time), /timestamp|time/i);
+    }
+    assert.throws(() => store.transitionPhase('begin_line_check', '2025-01-01T00:00:01.000Z'), /invalid phase transition/i);
+    assert.throws(() => store.update(() => ({ calledNumbers: [1], phase: 'drawing', lastTransitionAt: null })), /phase|transition/i);
+    assert.throws(() => store.update((event) => {
+      (event as { phase: string }).phase = 'drawing';
+      return { calledNumbers: [1] };
+    }), /phase|transition/i);
+    assert.deepEqual(store.load(), before);
+    assert.deepEqual(store.readAudit(), audit);
+    assert.throws(() => store.update((event) => drawManual(event, 1)), /draw not allowed/i);
+    assert.deepEqual(store.readAudit(), audit);
+  } finally { store.close(); }
+});
+
+test('phase audit reads are defensive and fresh process recovers state and next sequence', (t) => {
+  const path = fixture(t);
+  const store = createEventStore(path);
+  try {
+    store.create();
+    store.transitionPhase('begin_line_check', '2025-01-01T00:00:00.000Z');
+    const entries = store.readAudit();
+    (entries[0] as { kind: string }).kind = 'finish';
+    (entries as unknown[]).push({});
+    assert.equal(store.readAudit()[0].kind, 'begin_line_check');
+    assert.equal(store.readAudit().length, 1);
+  } finally { store.close(); }
+  const script = `
+    const { createEventStore } = await import(process.argv[2]);
+    const store = createEventStore(process.argv[1]);
+    try {
+      const before = { state: store.load(), audit: store.readAudit() };
+      store.transitionPhase('declare_line', '2025-01-01T00:00:01.000Z');
+      process.stdout.write(JSON.stringify({ before, after: store.readAudit() }));
+    } finally { store.close(); }
+  `;
+  const output = JSON.parse(execFileSync(process.execPath, ['--input-type=module', '--eval', script,
+    path, new URL('../src/event-store.ts', import.meta.url).href], { encoding: 'utf8' }));
+  assert.equal(output.before.state.phase, 'checking_line');
+  assert.equal(output.before.audit.length, 1);
+  assert.deepEqual(output.after.map((entry: { sequence: number }) => entry.sequence), [1, 2]);
+  const reopened = createEventStore(path);
+  try { assert.equal(reopened.load()?.phase, 'line_declared'); }
+  finally { reopened.close(); }
+});
+
+test('audit replay rejects gaps, illegal edges, malformed timestamps, and mismatched current state', (t) => {
+  const path = fixture(t);
+  const directory = fs.realpathSync(join(path, '..'));
+  const cases = [
+    ['gap', "UPDATE phase_audit SET sequence = 3"],
+    ['illegal', "UPDATE phase_audit SET kind = 'finish'"],
+    ['source', "UPDATE phase_audit SET from_phase = 'line_declared'"],
+    ['target', "UPDATE phase_audit SET to_phase = 'finished'"],
+    ['time', "UPDATE phase_audit SET transitionAt = '2025-01-01'"],
+    ['phase', "UPDATE current_event SET phase = 'drawing'"],
+    ['last-time', "UPDATE current_event SET lastTransitionAt = NULL"],
+  ] as const;
+  for (const [name, tamper] of cases) {
+    const file = join(directory, `${name}.sqlite`);
+    const store = createEventStore(file);
+    try {
+      store.create();
+      store.transitionPhase('begin_line_check', '2025-01-01T00:00:00.000Z');
+    } finally { store.close(); }
+    withDb(file, (db) => {
+      if (tamper.startsWith('UPDATE phase_audit')) db.exec('DROP TRIGGER phase_audit_no_update');
+      db.exec(tamper);
+      if (tamper.startsWith('UPDATE phase_audit')) db.exec(`CREATE TRIGGER phase_audit_no_update BEFORE UPDATE ON phase_audit
+        BEGIN SELECT RAISE(ABORT, 'phase audit is immutable'); END`);
+    });
+    assert.throws(() => createEventStore(file), /invalid phase audit/i, name);
+  }
+});
+
+test('phase writes roll back state and audit on either SQL failure and under a writer lock', (t) => {
+  const path = fixture(t);
+  const store = createEventStore(path);
+  const other = createEventStore(path);
+  try {
+    store.create();
+    for (const [name, trigger] of [
+      ['state', `CREATE TRIGGER fail_phase BEFORE UPDATE OF phase ON current_event
+        BEGIN SELECT RAISE(ABORT, 'state failed'); END`],
+      ['audit', `CREATE TRIGGER fail_phase BEFORE INSERT ON phase_audit
+        BEGIN SELECT RAISE(ABORT, 'audit failed'); END`],
+    ] as const) {
+      withDb(path, (db) => db.exec(trigger));
+      assert.throws(() => store.transitionPhase('begin_line_check', '2025-01-01T00:00:00.000Z'),
+        new RegExp(`${name} failed`));
+      assert.equal(store.load()?.phase, 'drawing');
+      assert.deepEqual(store.readAudit(), []);
+      withDb(path, (db) => db.exec('DROP TRIGGER fail_phase'));
+    }
+    withDb(path, (db) => {
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        assert.throws(() => store.transitionPhase('begin_line_check', '2025-01-01T00:00:00.000Z'), /locked|busy/i);
+      } finally { db.exec('ROLLBACK'); }
+    });
+    other.transitionPhase('begin_line_check', '2025-01-01T00:00:01.000Z');
+    assert.throws(() => store.transitionPhase('begin_line_check', '2025-01-01T00:00:02.000Z'),
+      /invalid phase transition/i);
+    assert.equal(store.load()?.phase, 'checking_line');
+    assert.equal(store.readAudit().length, 1);
+  } finally { store.close(); other.close(); }
 });
 
 test('contention fails without overwriting a newer state, and stale store reads inside transaction', (t) => {
