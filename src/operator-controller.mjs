@@ -1,8 +1,13 @@
-// Only IPC acknowledgement may replace the displayed event history.
+// Only a validated IPC acknowledgement may replace the displayed event history.
+import { validSnapshot } from './public-controller.mjs';
+
 const connectionError = 'Could not connect to the event. Reload and try again.';
+const invalidUpdate = 'Invalid event update. Reload and try again.';
 
 export function createOperatorController(api, view) {
   let calledNumbers = [];
+  let phase = null;
+  let lastTransitionAt = null;
   let pending = false;
   let stale = false;
   let error = null;
@@ -11,7 +16,7 @@ export function createOperatorController(api, view) {
   function render() {
     const exhausted = calledNumbers.length === 90;
     view.render({ calledNumbers: [...calledNumbers], remaining: 90 - calledNumbers.length,
-      stale, error, pending, manualDisabled: pending || !loaded || exhausted,
+      phase, stale, error, pending, manualDisabled: pending || !loaded || exhausted,
       digitalDisabled: pending || !loaded || exhausted, reloadDisabled: pending });
   }
 
@@ -21,15 +26,23 @@ export function createOperatorController(api, view) {
     render();
     try {
       const result = await operation();
-      if (result.ok) {
-        calledNumbers = [...result.snapshot.calledNumbers];
-        loaded = true;
-        stale = false;
-        error = null;
-        if (manual) view.clearManual();
+      if (result?.ok === true) {
+        if (validSnapshot(result.snapshot, loaded ? { calledNumbers, phase, lastTransitionAt } : null)) {
+          calledNumbers = [...result.snapshot.calledNumbers];
+          phase = result.snapshot.phase;
+          lastTransitionAt = result.snapshot.lastTransitionAt;
+          loaded = true;
+          stale = false;
+          error = null;
+          if (manual) view.clearManual();
+        } else {
+          stale = true;
+          error = invalidUpdate;
+        }
       } else {
         stale = true;
-        error = result.message;
+        error = result?.ok === false && typeof result.message === 'string'
+          ? result.message : invalidUpdate;
       }
     } catch {
       stale = true;

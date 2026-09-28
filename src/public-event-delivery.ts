@@ -1,19 +1,25 @@
 import type { EventSnapshot } from './event-core';
+import type { GamePhase } from './game-phase';
+
+type PhaseSnapshot = EventSnapshot & { readonly phase: GamePhase; readonly lastTransitionAt: string | null };
 
 export const PUBLIC_EVENT_CHANNEL = 'public:event-state';
 
 export type PublicEventResult =
-  | { ok: true; snapshot: EventSnapshot }
+  | { ok: true; snapshot: PhaseSnapshot }
   | { ok: false; code: 'event_unavailable' | 'storage_failure'; message: string };
 
-type Store = { load(): EventSnapshot | null };
+type Store = { load(): PhaseSnapshot | null };
 type Target = {
   isDestroyed(): boolean;
   send(channel: string, result: PublicEventResult): void;
 };
 
-const success = (snapshot: EventSnapshot): PublicEventResult =>
-  ({ ok: true, snapshot: { calledNumbers: [...snapshot.calledNumbers] } });
+const success = (snapshot: PhaseSnapshot): PublicEventResult => ({
+  ok: true, snapshot: {
+    calledNumbers: [...snapshot.calledNumbers], phase: snapshot.phase, lastTransitionAt: snapshot.lastTransitionAt,
+  },
+});
 
 export function createPublicEventDelivery(store: Store) {
   let current: Target | null = null;
@@ -49,7 +55,7 @@ export function createPublicEventDelivery(store: Store) {
     detachIfCurrent(target: Target): void {
       if (current === target) current = null;
     },
-    publishCommitted(snapshot: EventSnapshot): void {
+    publishCommitted(snapshot: PhaseSnapshot): void {
       if (current !== null) send(current, success(snapshot));
     },
   };

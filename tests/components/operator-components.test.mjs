@@ -208,16 +208,23 @@ it('operator wiring keeps committed state on failure and public controls use the
     const history = main.querySelector('#called-numbers');
     const summary = main.querySelector('#event-summary');
     const status = main.querySelector('#event-status');
+    const phase = main.querySelector('#phase-status');
     const error = main.querySelector('#event-error');
     const controls = main.querySelector('#draw-controls');
     await controls.updateComplete;
     expect(controls.digitalButton.disabled).to.equal(true);
     expect(status.message).to.equal('Loading event state');
-    resolveLoad({ ok: true, snapshot: { calledNumbers: [90, 3, 1] } });
+    expect(phase.message).to.equal('Current phase: waiting for event state');
+    resolveLoad({ ok: true, snapshot: { calledNumbers: [90, 3, 1], phase: 'checking_bingo',
+      lastTransitionAt: '2026-01-01T00:00:00.000Z' } });
     await new Promise((resolve) => setTimeout(resolve, 0));
     await history.updateComplete;
     expect(summary.remaining).to.equal(87);
     expect(history.calledNumbers).to.deep.equal([90, 3, 1]);
+    expect(phase.message).to.equal('Current phase: Checking bingo');
+    await phase.updateComplete;
+    expect(phase.shadowRoot.querySelector('[role="status"]').textContent).to.equal('Current phase: Checking bingo');
+    await expect(phase).to.be.accessible();
     await controls.updateComplete;
     expect(controls.digitalButton.disabled).to.equal(false);
     controls.digitalButton.click();
@@ -227,6 +234,7 @@ it('operator wiring keeps committed state on failure and public controls use the
     expect(status.tone).to.equal('warning');
     expect(error.message).to.equal('Write failed');
     expect(error.hidden).to.equal(false);
+    expect(phase.message).to.equal('Current phase: Checking bingo');
     main.querySelector('#open-public').shadowRoot.querySelector('button').click();
     main.querySelector('#move-public').shadowRoot.querySelector('button').click();
     expect([openCount, moveCount]).to.deep.equal([1, 1]);

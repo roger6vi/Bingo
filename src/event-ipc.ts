@@ -1,4 +1,11 @@
 import type { EventSnapshot } from './event-core';
+import type { GamePhase } from './game-phase';
+
+type PhaseSnapshot = EventSnapshot & { readonly phase: GamePhase; readonly lastTransitionAt: string | null };
+
+const copySnapshot = (snapshot: PhaseSnapshot): PhaseSnapshot => ({
+  calledNumbers: [...snapshot.calledNumbers], phase: snapshot.phase, lastTransitionAt: snapshot.lastTransitionAt,
+});
 
 export const EVENT_CHANNELS = Object.freeze({
   get: 'event:get',
@@ -7,13 +14,13 @@ export const EVENT_CHANNELS = Object.freeze({
 });
 
 export type EventResult =
-  | { ok: true; snapshot: { calledNumbers: number[] } }
+  | { ok: true; snapshot: PhaseSnapshot }
   | { ok: false; code: 'invalid_request' | 'event_unavailable' | 'duplicate' | 'exhausted' | 'invalid_draw' | 'storage_failure'; message: string };
 
 type EventRequest = { sender: unknown; senderFrame: unknown };
 type EventStore = {
-  load(): EventSnapshot | null;
-  update(transition: (current: EventSnapshot) => EventSnapshot): EventSnapshot;
+  load(): PhaseSnapshot | null;
+  update(transition: (current: EventSnapshot) => EventSnapshot): PhaseSnapshot;
 };
 type DrawRules = {
   drawManual(event: EventSnapshot, number: number): EventSnapshot;
@@ -24,13 +31,12 @@ type Registrar = {
 };
 
 const invalidRequest = (): EventResult => ({ ok: false, code: 'invalid_request', message: 'Invalid event request.' });
-const committed = (snapshot: EventSnapshot): EventResult =>
-  ({ ok: true, snapshot: { calledNumbers: [...snapshot.calledNumbers] } });
+const committed = (snapshot: PhaseSnapshot): EventResult => ({ ok: true, snapshot: copySnapshot(snapshot) });
 
 export function registerEventIpc(
   registrar: Registrar, store: EventStore, rules: DrawRules, random: () => number,
   sender: object, getMainFrame: () => { url: string } | null, expectedUrl: string,
-  notifyCommitted?: (snapshot: EventSnapshot) => void,
+  notifyCommitted?: (snapshot: PhaseSnapshot) => void,
 ): void {
   function authorized(event: EventRequest): void {
     if (event.sender !== sender) throw new Error('Unauthorized event request');
@@ -55,7 +61,7 @@ export function registerEventIpc(
         }
       });
       // The store has returned after commit. A broken display cannot undo the draw.
-      try { notifyCommitted?.({ calledNumbers: [...snapshot.calledNumbers] }); }
+      try { notifyCommitted?.(copySnapshot(snapshot)); }
       catch { /* Delivery is best effort after persistence commits. */ }
       return committed(snapshot);
     } catch (error) {

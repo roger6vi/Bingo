@@ -104,6 +104,20 @@ test('public adapter maps controller fields to all display states without mutati
   assert.doesNotMatch(ui, /replaceChildren|HTMLOListElement/);
 });
 
+test('both windows display six committed phase labels through a separate accessible status', () => {
+  const labels = ['Drawing', 'Checking line', 'Line declared', 'Checking bingo', 'Bingo declared', 'Finished'];
+  for (const windowName of ['operator', 'public']) {
+    const page = source(`src/${windowName}.html`);
+    const ui = source(`src/${windowName}-ui.mjs`);
+    assert.match(page, /<bingo-status id="phase-status"><\/bingo-status>/);
+    assert.match(ui, /phaseStatus\.message\s*=/);
+    assert.match(ui, /state\.phase/);
+    for (const label of labels) assert.ok(ui.includes(`'${label}'`), `${windowName}: ${label}`);
+    assert.match(ui, /eventError\.message = state\.error/);
+    assert.match(ui, /eventStatus\.message|status\.message/);
+  }
+});
+
 test('public layout is responsive and uses semantic colors only', () => {
   const css = source('src/screen.css');
   assert.match(css, /@media\s*\(max-width:/);

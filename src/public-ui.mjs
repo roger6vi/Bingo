@@ -23,7 +23,12 @@ const latestNumber = required('latest-number', HTMLElement);
 const history = required('called-numbers', HTMLElement);
 const count = required('called-count', HTMLOutputElement);
 const remaining = required('remaining-count', HTMLOutputElement);
+const phaseStatus = required('phase-status', HTMLElement);
 const status = required('event-status', HTMLElement);
+const phaseLabels = {
+  drawing: 'Drawing', checking_line: 'Checking line', line_declared: 'Line declared',
+  checking_bingo: 'Checking bingo', bingo_declared: 'Bingo declared', finished: 'Finished',
+};
 const eventError = required('event-error', HTMLElement);
 
 const controller = createPublicController(window.publicEvent, {
@@ -36,6 +41,9 @@ const controller = createPublicController(window.publicEvent, {
     history.loaded = state.loaded;
     count.value = String(state.count);
     remaining.value = String(state.remaining);
+    phaseStatus.message = state.phase === null ? 'Current phase: waiting for event state'
+      : `Current phase: ${phaseLabels[state.phase]}`;
+    phaseStatus.tone = 'info';
     status.message = state.loaded ? (state.stale ? 'Last confirmed history may be stale.' : 'Event ready')
       : (state.error ? '' : 'Waiting for event state');
     status.tone = state.stale ? 'warning' : 'info';
