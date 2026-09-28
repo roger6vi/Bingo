@@ -5,7 +5,6 @@ import { createEventStore } from './event-store';
 import { drawManual, drawDigital } from './event-core';
 import { initializeCurrentEvent } from './event-persistence';
 import { createOperatorGuard, registerEventIpc } from './event-ipc';
-import { createThemeStore } from './theme-store';
 import { registerThemeIpc } from './theme-ipc';
 import { createPublicEventDelivery } from './public-event-delivery';
 import { createWindowLifecycle } from './window-lifecycle';
@@ -40,19 +39,9 @@ if (!app.requestSingleInstanceLock()) {
   const operatorPath = htmlPath('operator.html');
   const operatorFrame = () => operator.webContents.mainFrame;
   const operatorUrl = pathToFileURL(operatorPath).href;
-  // Theme storage is separate from event data; if it cannot open, render the default and fail saves.
-  let themeStore: Pick<ReturnType<typeof createThemeStore>, 'load' | 'save'>;
-  try {
-    const opened = createThemeStore(path.join(app.getPath('userData'), 'theme.sqlite'));
-    app.once('before-quit', () => opened.close());
-    themeStore = opened;
-  } catch {
-    const unavailable = () => { throw new Error('Theme storage unavailable'); };
-    themeStore = { load: unavailable, save: unavailable };
-  }
   // The public window is only attached after theme IPC is registered below.
   const publicDelivery = createPublicEventDelivery(store, () => theme.current());
-  const theme = registerThemeIpc(ipcMain, themeStore,
+  const theme = registerThemeIpc(ipcMain, { load: store.loadTheme, save: store.saveTheme },
     createOperatorGuard(operator.webContents, operatorFrame, operatorUrl), publicDelivery.publishTheme);
   registerEventIpc(ipcMain, store, { drawManual, drawDigital }, Math.random,
     operator.webContents, operatorFrame, operatorUrl, publicDelivery.publishCommitted);
