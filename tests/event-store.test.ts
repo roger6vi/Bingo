@@ -1086,3 +1086,24 @@ test('createEvent and selectEvent fail atomically under a concurrent writer lock
   });
   assert.deepEqual(store.listEvents(), before);
 });
+
+test('selectEvent refuses an event whose persisted state is corrupt and keeps the current selection', (t) => {
+  const path = fixture(t);
+  const store = createEventStore(path);
+  const a = store.createEvent({ name: 'A', date: '2025-01-01', place: 'X' });
+  const corrupt = [
+    { name: 'history', sql: "UPDATE events SET history = '[7,7]' WHERE id = ?" },
+    { name: 'phase', sql: "UPDATE events SET phase = 'line_declared' WHERE id = ?" },
+  ];
+  for (const { name, sql } of corrupt) {
+    const b = store.createEvent({ name: `B-${name}`, date: '2025-01-02', place: 'Y' });
+    withDb(path, (db) => { db.prepare(sql).run(b.id); });
+    assert.throws(() => store.selectEvent(b.id), /invalid/i, name);
+    assert.equal(store.listEvents().find((e) => e.id === a.id)?.active, true, name);
+    assert.deepEqual(store.load()?.calledNumbers, [], name);
+  }
+  store.close();
+  const reopened = createEventStore(path);
+  try { assert.equal(reopened.listEvents().find((e) => e.id === a.id)?.active, true); }
+  finally { reopened.close(); }
+});
