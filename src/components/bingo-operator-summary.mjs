@@ -6,7 +6,7 @@ class BingoOperatorSummary extends LitElement {
   static styles = css`
     :host { display: block; }
     .summary { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.75rem; align-items: center; }
-    bingo-number { --bingo-font-display: clamp(2.25rem, 7vh, 4rem); justify-self: start; }
+    bingo-number { --bingo-font-display: clamp(2rem, 5.5vh, 4rem); justify-self: start; }
     .stats { display: grid; gap: 0.375rem; }
     p {
       display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem;

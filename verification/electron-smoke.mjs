@@ -1,4 +1,4 @@
-// Isolated Electron smoke for the operator workspace (#59, #77). Run after `npm run build`, under a
+// Isolated Electron smoke for the operator workspace (#59, #77, #78). Run after `npm run build`, under a
 // display (e.g. `xvfb-run -a node verification/electron-smoke.mjs`). It always uses a fresh temporary
 // --user-data-dir, never the real profile, and deletes it afterwards.
 import assert from 'node:assert/strict';
@@ -46,13 +46,30 @@ try {
   await operator.click('#tab-events');
   step('full-viewport tabs without document scroll');
 
-  // Commit one draw, then open the public window.
+  // Commit one draw from the board in manual mode: it shows as called only after the acknowledgement.
   await operator.click('#tab-bingo');
-  await operator.locator('#draw-digital button').click();
+  const cell = (number) => operator.locator(`#operator-board [data-number="${number}"]`);
+  assert.equal(await cell(42).getAttribute('data-state'), 'uncalled');
+  await cell(42).click();
   await operator.waitForFunction(() => document.querySelector('#event-summary').count === 1);
+  assert.equal(await cell(42).getAttribute('data-state'), 'latest');
+  assert.equal(await cell(42).getAttribute('aria-label'), 'Número 42, última bola cantada');
+  // Playwright refuses to click aria-disabled elements; force the click to prove the cell is inert.
+  await cell(42).click({ force: true });
+  assert.equal(await operator.locator('#event-summary').evaluate((summary) => summary.count), 1, 'a called number is inert');
+  step('manual call from the 1–90 board');
+
+  // Digital mode: the board is read-only and the rail draws.
+  await operator.locator('#draw-controls label', { hasText: 'Digital' }).click();
+  assert.equal(await operator.locator('#operator-board').evaluate((board) => board.readonly), true);
+  await cell(7).click({ force: true });
+  await operator.locator('#draw-digital button').click();
+  await operator.waitForFunction(() => document.querySelector('#event-summary').count === 2);
+  assert.equal(await operator.locator('#operator-board [data-state="latest"]').count(), 1);
+  step('digital draw with a read-only board');
   const [publicWindow] = await Promise.all([app.waitForEvent('window'), operator.locator('#open-public button').click()]);
   await publicWindow.waitForFunction(() => document.querySelectorAll('#called-numbers').length === 1 &&
-    document.querySelector('#called-count').value === '1' && document.querySelector('#event-name').textContent === 'Evento actual');
+    document.querySelector('#called-count').value === '2' && document.querySelector('#event-name').textContent === 'Evento actual');
 
   // Tab navigation and draft preview: only the simulator shows the draft.
   await operator.locator('#tab-bingo').focus();
@@ -65,7 +82,7 @@ try {
   await operator.selectOption('#theme-select', 'high-contrast');
   await simulator.waitForFunction(() => document.querySelector('#event-name').textContent === 'Verbena de prueba' &&
     document.querySelector('#event-details').textContent.endsWith('· Plaza Mayor') &&
-    document.documentElement.dataset.theme === 'high-contrast' && document.querySelector('#called-count').value === '1');
+    document.documentElement.dataset.theme === 'high-contrast' && document.querySelector('#called-count').value === '2');
   assert.equal(await publicWindow.locator('#event-name').textContent(), 'Evento actual');
   assert.equal(await publicWindow.evaluate(() => document.documentElement.dataset.theme), 'pixel-classic');
   assert.equal(await operator.evaluate(() => document.documentElement.dataset.theme), 'pixel-classic');
@@ -99,7 +116,7 @@ try {
   // Both windows and banners reflect the committed values; history is untouched.
   await publicWindow.waitForFunction(() => document.querySelector('#event-name').textContent === 'Verbena de prueba' &&
     document.documentElement.dataset.theme === 'high-contrast');
-  assert.equal(await publicWindow.locator('#called-count').evaluate((output) => output.value), '1');
+  assert.equal(await publicWindow.locator('#called-count').evaluate((output) => output.value), '2');
   assert.equal(await operator.evaluate(() => document.documentElement.dataset.theme), 'high-contrast');
   assert.match(await banner(operator), /^Evento activo: Verbena de prueba — \d{4}-\d{2}-\d{2}, Plaza Mayor$/);
   step('save reaches both windows and banners');
@@ -112,7 +129,8 @@ try {
     document.documentElement.dataset.theme === 'high-contrast');
   assert.equal(await operator.inputValue('#settings-place'), 'Plaza Mayor');
   assert.equal(await operator.inputValue('#theme-select'), 'high-contrast');
-  assert.equal(await operator.locator('#event-summary').evaluate((summary) => summary.count), 1);
+  assert.equal(await operator.locator('#event-summary').evaluate((summary) => summary.count), 2);
+  assert.equal(await operator.locator('#operator-board [data-number="42"]').getAttribute('data-state'), 'called');
   step('saved configuration and history survive restart');
   await app.close();
 } finally {

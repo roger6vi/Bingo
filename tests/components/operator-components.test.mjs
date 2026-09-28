@@ -10,7 +10,8 @@ import '../../src/components/bingo-app-shell.mjs';
 import '../../src/components/bingo-tabs.mjs';
 import '../../src/components/bingo-side-rail.mjs';
 import '../../src/components/bingo-panel.mjs';
-import { setViewport } from '@web/test-runner-commands';
+import '../../src/components/bingo-operator-board.mjs';
+import { sendKeys, setViewport } from '@web/test-runner-commands';
 import { SIMULATOR_MESSAGE } from '../../src/public-bridge.mjs';
 
 const settle = async () => { for (let turn = 0; turn < 4; turn++) await new Promise((resolve) => setTimeout(resolve, 0)); };
@@ -40,7 +41,7 @@ async function loadOperator() {
   screen.textContent = (await (await fetch(new URL('../../src/screen.css', import.meta.url))).text()).replace(/@import [^;]+;/g, '');
   document.head.append(screen);
   const requests = [];
-  const replies = { setTheme: null, updateEvent: null };
+  const replies = { setTheme: null, updateEvent: null, drawManual: null };
   let theme = 'pixel-classic';
   let events = [
     { id: 'a', name: 'Verbena', date: '2026-08-15', place: 'Plaza', phase: 'drawing', createdAt: '2026-01-01T00:00:00.000Z', active: true },
@@ -49,7 +50,10 @@ async function loadOperator() {
   const list = () => ({ ok: true, events: events.map((event) => ({ ...event })) });
   window.desktop = {
     getCurrentEvent: async () => ({ ok: true, snapshot: { calledNumbers: [4, 9], phase: 'drawing', lastTransitionAt: null } }),
-    drawManual: async () => { requests.push('draw'); return { ok: false, message: 'unexpected' }; },
+    drawManual: async (number) => {
+      requests.push('draw');
+      return replies.drawManual ? replies.drawManual(number) : { ok: false, message: 'unexpected' };
+    },
     drawDigital: async () => { requests.push('draw'); return { ok: false, message: 'unexpected' }; },
     onPublicStatus: () => {}, openPublic: () => {}, movePublicToSecondary: () => {},
     getTheme: async () => ({ ok: true, theme }),
@@ -129,7 +133,8 @@ it('operator page is a Spanish three-tab application shell with shared panels an
   expect(page.querySelector('#panel-events bingo-event-list#event-list')).not.to.equal(null);
   expect(page.querySelector('#panel-events input#event-date[type="date"][required]')).not.to.equal(null);
   // Bingo: the dominant zone beside a side rail with draw, claim, and public-window controls.
-  expect(page.querySelector('#panel-bingo .bingo-workspace > bingo-panel.board-zone')).not.to.equal(null);
+  expect(page.querySelector('#panel-bingo .bingo-workspace > bingo-panel.board-zone > bingo-operator-board#operator-board'))
+    .not.to.equal(null, 'the 1–90 board is the dominant zone');
   const rail = page.querySelector('#panel-bingo .bingo-workspace > bingo-side-rail');
   expect(rail.getAttribute('label')).to.equal('Controles de la partida');
   expect(rail.querySelector('bingo-draw-controls#draw-controls')).not.to.equal(null);
@@ -152,7 +157,8 @@ it('operator page is a Spanish three-tab application shell with shared panels an
     .to.deep.equal([['pixel-classic', 'Píxel clásico'], ['high-contrast', 'Alto contraste']]);
   expect(page.querySelector('bingo-status#theme-status')).not.to.equal(null);
   expect(page.querySelector('bingo-operator-summary#event-summary')).not.to.equal(null);
-  expect(page.querySelector('bingo-call-history#called-numbers')).not.to.equal(null);
+  expect(page.querySelector('bingo-side-rail bingo-call-history#called-numbers.last-calls[limit="8"]'))
+    .not.to.equal(null, 'a compact last-calls strip in the side rail');
   for (const id of ['phase-status', 'event-status', 'public-status']) {
     expect(page.querySelector(`footer[slot="status"] bingo-status#${id}`)).not.to.equal(null, `${id} in the status bar`);
   }
@@ -358,7 +364,7 @@ it('operator wiring keeps committed state on failure and public controls use the
     const controls = main.querySelector('#draw-controls');
     await controls.updateComplete;
     expect(controls.digitalButton.disabled).to.equal(true);
-    expect(status.message).to.equal('Cargando el evento');
+    expect(status.message).to.equal('Actualizando el evento');
     expect(phase.message).to.equal('Fase: esperando el estado del evento');
     resolveLoad({ ok: true, snapshot: { calledNumbers: [90, 3, 1], phase: 'checking_bingo',
       lastTransitionAt: '2026-01-01T00:00:00.000Z' } });
@@ -372,6 +378,9 @@ it('operator wiring keeps committed state on failure and public controls use the
     await expect(phase).to.be.accessible();
     await controls.updateComplete;
     expect(controls.digitalButton.disabled).to.equal(false);
+    controls.modeInput('digital').click();
+    await controls.updateComplete;
+    expect(main.querySelector('#operator-board').readonly).to.equal(true, 'digital mode makes the board read-only');
     controls.digitalButton.click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(history.calledNumbers).to.deep.equal([90, 3, 1]);
@@ -775,6 +784,225 @@ it('a long event list scrolls inside its panel, never the document', async () =>
     expect(getComputedStyle(body).overflowY).to.equal('auto');
     expect(body.scrollHeight).to.be.greaterThan(body.clientHeight);
     expect(document.scrollingElement.scrollHeight).to.be.at.most(innerHeight);
+  } finally {
+    op.cleanup();
+    await setViewport({ width: 800, height: 600 });
+  }
+});
+
+const cells = (board) => [...board.shadowRoot.querySelectorAll('.cell')];
+const cellOf = (board, number) => board.shadowRoot.querySelector(`[data-number="${number}"]`);
+const themeLinks = () => Promise.all(['pixel-classic', 'high-contrast']
+  .map((name) => stylesheet(new URL(`../../src/generated/${name}.css`, import.meta.url).href)));
+
+it('operator board lays out 1–90 in numeric rows with uncalled, called, latest and disabled states', async () => {
+  const board = await fixture(html`<bingo-operator-board style="height: 540px; width: 720px"></bingo-operator-board>`);
+  const rows = [...board.shadowRoot.querySelectorAll('[role="row"]')];
+  expect(rows).to.have.length(9);
+  expect(rows.map((row) => [...row.querySelectorAll('.cell')].map((cell) => Number(cell.dataset.number))))
+    .to.deep.equal(Array.from({ length: 9 }, (_, row) => Array.from({ length: 10 }, (__, column) => row * 10 + column + 1)));
+  // Before the committed snapshot arrives every number is disabled and nothing is callable.
+  expect(new Set(cells(board).map((cell) => cell.dataset.state))).to.deep.equal(new Set(['disabled']));
+  expect(board.shadowRoot.querySelector('.state').textContent).to.equal('Esperando el evento');
+  board.loaded = true;
+  board.calledNumbers = [90, 3, 42];
+  await board.updateComplete;
+  const state = (number) => cellOf(board, number).dataset.state;
+  expect([state(1), state(3), state(90), state(42)]).to.deep.equal(['uncalled', 'called', 'called', 'latest']);
+  expect([cellOf(board, 1), cellOf(board, 3), cellOf(board, 42)].map((cell) => cell.getAttribute('aria-label')))
+    .to.deep.equal(['Número 1, sin cantar', 'Número 3, cantado', 'Número 42, última bola cantada']);
+  // The latest marker does not rely on color alone: it carries a text badge and a ring.
+  expect(cellOf(board, 42).querySelector('.badge').textContent).to.equal('Última');
+  expect(board.shadowRoot.querySelectorAll('.badge')).to.have.length(1);
+  expect([cellOf(board, 3), cellOf(board, 42)].every((cell) => cell.getAttribute('aria-disabled') === 'true')).to.equal(true);
+  expect(cellOf(board, 1).hasAttribute('aria-disabled')).to.equal(false);
+  board.disabled = true;
+  await board.updateComplete;
+  expect([state(1), state(3), state(42)]).to.deep.equal(['disabled', 'called', 'latest']);
+  expect(cellOf(board, 1).getAttribute('aria-disabled')).to.equal('true');
+  expect(board.shadowRoot.querySelector('[role="grid"]').getAttribute('aria-readonly')).to.equal('true');
+  const links = await themeLinks();
+  try {
+    for (const theme of ['pixel-classic', 'high-contrast']) {
+      document.documentElement.dataset.theme = theme;
+      const probe = document.createElement('span');
+      probe.style.color = getComputedStyle(board).getPropertyValue('--bingo-color-accent').trim();
+      document.body.append(probe);
+      expect(getComputedStyle(cellOf(board, 3)).backgroundColor).to.equal(getComputedStyle(probe).color, `${theme} called cell`);
+      expect(getComputedStyle(cellOf(board, 42)).outlineStyle).to.equal('solid', `${theme} latest ring`);
+      probe.remove();
+      await expect(board).to.be.accessible();
+    }
+  } finally {
+    delete document.documentElement.dataset.theme;
+    links.forEach((link) => link.remove());
+  }
+});
+
+it('operator board supports arrow-key grid navigation and Enter/Space calling in manual mode', async () => {
+  const board = await fixture(html`<bingo-operator-board style="height: 540px; width: 720px"></bingo-operator-board>`);
+  board.loaded = true;
+  board.calledNumbers = [5];
+  await board.updateComplete;
+  const chosen = [];
+  board.addEventListener('number-select', (event) => chosen.push(event.detail.number));
+  expect(cells(board).filter((cell) => cell.tabIndex === 0).map((cell) => cell.dataset.number)).to.deep.equal(['1'], 'one tab stop');
+  cellOf(board, 1).focus();
+  const focused = () => Number(board.shadowRoot.activeElement?.dataset.number);
+  const press = async (key) => { await sendKeys({ press: key }); await board.updateComplete; };
+  await press('ArrowRight');
+  expect(focused()).to.equal(2);
+  await press('ArrowDown');
+  expect(focused()).to.equal(12);
+  await press('End');
+  expect(focused()).to.equal(20);
+  await press('Home');
+  expect(focused()).to.equal(11);
+  await press('PageDown');
+  expect(focused()).to.equal(81);
+  await press('ArrowDown');
+  expect(focused()).to.equal(81, 'navigation stops at the edge');
+  await press('Control+End');
+  expect(focused()).to.equal(90);
+  await press('PageUp');
+  expect(focused()).to.equal(10);
+  expect(cells(board).filter((cell) => cell.tabIndex === 0).map((cell) => cell.dataset.number)).to.deep.equal(['10']);
+  await press('Enter');
+  expect(chosen).to.deep.equal([10]);
+  await press('ArrowLeft');
+  await press('ArrowLeft');
+  await press('ArrowLeft');
+  await press('ArrowLeft');
+  await press('ArrowLeft');
+  expect(focused()).to.equal(5);
+  await press('Space');
+  expect(chosen).to.deep.equal([10], 'an already-called number is inert');
+  await press('ArrowRight');
+  await press('Space');
+  expect(chosen).to.deep.equal([10, 6]);
+});
+
+it('operator board calls only uncalled numbers in manual mode and is read-only in digital mode', async () => {
+  const board = await fixture(html`<bingo-operator-board style="height: 540px; width: 720px"></bingo-operator-board>`);
+  board.loaded = true;
+  board.calledNumbers = [7];
+  await board.updateComplete;
+  const chosen = [];
+  board.addEventListener('number-select', (event) => chosen.push(event.detail.number));
+  cellOf(board, 7).click();
+  expect(chosen).to.deep.equal([]);
+  cellOf(board, 8).click();
+  expect(chosen).to.deep.equal([8]);
+  // Pending: the request is marked on its cell but never shown as called, and the board is inert.
+  board.pending = true;
+  await board.updateComplete;
+  expect([cellOf(board, 8).dataset.state, cellOf(board, 8).hasAttribute('data-pending'), cellOf(board, 8).getAttribute('aria-label')])
+    .to.deep.equal(['uncalled', true, 'Número 8, cantándose']);
+  expect(board.shadowRoot.querySelector('[role="grid"]').getAttribute('aria-busy')).to.equal('true');
+  cellOf(board, 9).click();
+  expect(chosen).to.deep.equal([8]);
+  board.pending = false;
+  await board.updateComplete;
+  expect(cellOf(board, 8).hasAttribute('data-pending')).to.equal(false);
+  board.readonly = true;
+  await board.updateComplete;
+  cellOf(board, 9).click();
+  expect(chosen).to.deep.equal([8]);
+  expect(cells(board).every((cell) => cell.getAttribute('aria-disabled') === 'true')).to.equal(true);
+  expect(board.shadowRoot.querySelector('.state').textContent).to.equal('Solo lectura (modo digital)');
+  expect(cells(board).filter((cell) => cell.tabIndex === 0)).to.have.length(1, 'read-only numbers stay reachable by keyboard');
+  board.stale = true;
+  await board.updateComplete;
+  expect(board.shadowRoot.querySelector('.state').textContent).to.equal('Puede estar desactualizado');
+  const links = await themeLinks();
+  try {
+    document.documentElement.dataset.theme = 'high-contrast';
+    expect(getComputedStyle(board.shadowRoot.querySelector('.board')).outlineStyle).to.equal('dashed');
+    await expect(board).to.be.accessible();
+  } finally {
+    delete document.documentElement.dataset.theme;
+    links.forEach((link) => link.remove());
+  }
+});
+
+it('operator board announces each newly committed latest call once and respects reduced motion', async () => {
+  const board = await fixture(html`<bingo-operator-board style="height: 540px; width: 720px"></bingo-operator-board>`);
+  const live = board.shadowRoot.querySelector('[aria-live="polite"]');
+  board.loaded = true;
+  board.calledNumbers = [12, 34];
+  await board.updateComplete;
+  expect(live.textContent).to.equal('', 'the history present on load is not announced');
+  board.calledNumbers = [12, 34, 56];
+  await board.updateComplete;
+  expect(live.textContent).to.equal('Última bola cantada: 56');
+  board.calledNumbers = [12, 34, 56];
+  board.stale = true;
+  await board.updateComplete;
+  expect(live.textContent).to.equal('Última bola cantada: 56');
+  expect(board.shadowRoot.querySelectorAll('[aria-live]')).to.have.length(1);
+  expect(matchMedia('(prefers-reduced-motion: reduce)').matches).to.equal(true);
+  expect(getComputedStyle(cellOf(board, 56)).animationName).to.equal('none');
+  expect(getComputedStyle(cellOf(board, 1)).transitionDuration).to.equal('0s');
+});
+
+it('the Bingo tab calls a board number through the manual draw IPC and shows it only once committed', async () => {
+  await setViewport({ width: 1280, height: 720 });
+  const op = await loadOperator();
+  try {
+    const { main, requests, replies } = op;
+    main.querySelector('#tab-bingo').click();
+    const board = main.querySelector('#operator-board');
+    await board.updateComplete;
+    expect(board.calledNumbers).to.deep.equal([4, 9]);
+    expect([cellOf(board, 9).dataset.state, board.readonly]).to.deep.equal(['latest', false]);
+    let acknowledge;
+    const drawn = [];
+    replies.drawManual = (number) => { drawn.push(number); return new Promise((resolve) => { acknowledge = resolve; }); };
+    cellOf(board, 42).click();
+    await board.updateComplete;
+    expect(drawn).to.deep.equal([42]);
+    expect([cellOf(board, 42).dataset.state, board.pending, cellOf(board, 42).hasAttribute('data-pending')])
+      .to.deep.equal(['uncalled', true, true], 'never shown as called before the acknowledgement');
+    cellOf(board, 43).click();
+    expect(drawn).to.deep.equal([42], 'one request at a time');
+    acknowledge({ ok: true, snapshot: { calledNumbers: [4, 9, 42], phase: 'drawing', lastTransitionAt: null } });
+    await settle();
+    await board.updateComplete;
+    expect([cellOf(board, 42).dataset.state, cellOf(board, 9).dataset.state, board.pending]).to.deep.equal(['latest', 'called', false]);
+    expect(main.querySelector('#event-summary').latest).to.equal(42);
+    const strip = main.querySelector('#called-numbers');
+    await strip.updateComplete;
+    expect([...strip.shadowRoot.querySelectorAll('li')].map((item) => item.textContent.trim())).to.deep.equal(['4', '9', '42']);
+    // A rejected draw keeps the committed board, marks it stale and explains in Spanish.
+    replies.drawManual = async () => ({ ok: false, code: 'duplicate', message: 'That number has already been called.' });
+    cellOf(board, 50).click();
+    await settle();
+    await board.updateComplete;
+    expect([cellOf(board, 50).dataset.state, board.stale, board.calledNumbers]).to.deep.equal(['uncalled', true, [4, 9, 42]]);
+    expect(main.querySelector('#event-error').message).to.equal('Ese número ya se ha cantado.');
+    // Digital mode: the board is read-only and never requests a draw.
+    const controls = main.querySelector('#draw-controls');
+    controls.modeInput('digital').click();
+    await board.updateComplete;
+    const before = requests.length;
+    cellOf(board, 60).click();
+    await settle();
+    expect([board.readonly, requests.length]).to.deep.equal([true, before]);
+    expect(controls.shadowRoot.querySelector('#draw-digital').closest('[hidden]')).to.equal(null, 'the digital control is shown');
+    expect(controls.shadowRoot.querySelector('#draw-manual').closest('[hidden]')).not.to.equal(null);
+    // Readable at 1280×720, inside the dominant zone, with no rail or document scroll.
+    const zone = main.querySelector('.board-zone').getBoundingClientRect();
+    const grid = board.shadowRoot.querySelector('[role="grid"]').getBoundingClientRect();
+    expect(grid.bottom).to.be.at.most(zone.bottom);
+    expect(grid.right).to.be.at.most(zone.right);
+    const cell = cellOf(board, 1).getBoundingClientRect();
+    expect(cell.height).to.be.at.least(44);
+    expect(cell.width).to.be.at.least(cell.height);
+    expect(parseFloat(getComputedStyle(cellOf(board, 1)).fontSize)).to.be.at.least(20);
+    const rail = main.querySelector('bingo-side-rail').shadowRoot.querySelector('.body');
+    expect(rail.scrollHeight).to.be.at.most(rail.clientHeight, 'the rail fits at 1280×720');
+    expect(document.scrollingElement.scrollHeight).to.be.at.most(innerHeight);
+    await expect(main.querySelector('#panel-bingo')).to.be.accessible();
   } finally {
     op.cleanup();
     await setViewport({ width: 800, height: 600 });

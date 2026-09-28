@@ -6,6 +6,7 @@ import './components/bingo-panel.mjs';
 import './components/bingo-status.mjs';
 import './components/bingo-operator-summary.mjs';
 import './components/bingo-call-history.mjs';
+import './components/bingo-operator-board.mjs';
 import './components/bingo-draw-controls.mjs';
 import './components/bingo-dialog.mjs';
 import './components/bingo-event-list.mjs';
@@ -28,6 +29,7 @@ const movePublic = required('move-public', HTMLElement);
 const publicStatus = required('public-status', HTMLElement);
 const controls = required('draw-controls', HTMLElement);
 const history = required('called-numbers', HTMLElement);
+const board = required('operator-board', HTMLElement);
 const summary = required('event-summary', HTMLElement);
 const phaseStatus = required('phase-status', HTMLElement);
 const eventStatus = required('event-status', HTMLElement);
@@ -62,7 +64,7 @@ const settings = bindSettings({
 // writes could land on the newly active event unnoticed.
 let selecting = false;
 let activating = false;
-let drawLocks = { manualDisabled: true, digitalDisabled: true, reloadDisabled: false };
+let drawLocks = { manualDisabled: true, digitalDisabled: true, reloadDisabled: false, pending: false };
 let themePending = true;
 let eventsPending = false;
 let eventListRef = null;
@@ -71,6 +73,9 @@ function applyLocks() {
   controls.manualDisabled = locked || drawLocks.manualDisabled;
   controls.digitalDisabled = locked || drawLocks.digitalDisabled;
   controls.reloadDisabled = locked || drawLocks.reloadDisabled;
+  // A request in flight keeps the board idle-looking but inert; it is disabled only when it cannot draw.
+  board.disabled = locked || (drawLocks.manualDisabled && !drawLocks.pending);
+  board.pending = drawLocks.pending;
   settings.setLocked(locked || themePending);
   // A second selection must not start until the first one's dependent panels have re-read.
   if (eventListRef !== null) eventListRef.disabled = eventsPending || activating;
@@ -86,8 +91,17 @@ window.desktop.onPublicStatus((pauseSuggested) => {
   publicStatus.hidden = !pauseSuggested;
 });
 
+// Manual mode lets the operator call a number from the board; digital mode leaves it read-only.
+board.readonly = controls.mode === 'digital';
+controls.addEventListener('mode-change', () => { board.readonly = controls.mode === 'digital'; });
+
 const controller = createOperatorController(window.desktop, {
   bind: ({ manual, digital, reload }) => {
+    // The board only requests a call; it shows the number called once the acknowledged snapshot arrives.
+    board.addEventListener('number-select', (event) => {
+      if (selecting || activating || controls.mode === 'digital') return;
+      manual(event.detail.number);
+    });
     controls.addEventListener('click', (event) => {
       if (selecting || activating) return;
       const action = event.composedPath().find((node) => node?.id === 'draw-manual' || node?.id === 'draw-digital' || node?.id === 'reload-event');
@@ -99,6 +113,9 @@ const controller = createOperatorController(window.desktop, {
   clearManual: () => { controls.manualInput.value = ''; },
   render: (state) => {
     history.calledNumbers = state.calledNumbers;
+    board.calledNumbers = state.calledNumbers;
+    board.loaded = state.snapshot !== null;
+    board.stale = state.stale;
     summary.latest = state.calledNumbers.at(-1) ?? null;
     summary.count = state.calledNumbers.length;
     summary.remaining = state.remaining;
@@ -106,14 +123,14 @@ const controller = createOperatorController(window.desktop, {
       : `Fase: ${PHASE_LABELS_ES[state.phase]}`;
     phaseStatus.tone = 'info';
     eventStatus.message = state.stale ? 'El historial puede estar desactualizado. Recarga el evento antes de seguir.'
-      : state.pending ? 'Cargando el evento' : state.manualDisabled && state.remaining > 0
+      : state.pending ? 'Actualizando el evento' : state.manualDisabled && state.remaining > 0
         ? 'Esperando el estado del evento' : state.remaining === 0 ? 'Todas las bolas cantadas' : 'Evento listo';
     eventStatus.tone = state.stale ? 'warning' : 'info';
     eventError.message = operatorMessage(state.error) ?? '';
     eventError.tone = 'error';
     eventError.hidden = !state.error;
     drawLocks = { manualDisabled: state.manualDisabled, digitalDisabled: state.digitalDisabled,
-      reloadDisabled: state.reloadDisabled };
+      reloadDisabled: state.reloadDisabled, pending: state.pending };
     applyLocks();
     // The simulator shows only committed history; it has no draw path of its own.
     settings.showCommitted(state.snapshot === null

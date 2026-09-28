@@ -64,12 +64,13 @@ test('built operator shell bundles shared presentation under the offline CSP', (
   const html = text('dist/renderer/operator.html');
   const js = readdirSync(path.join(renderer, 'assets'))
     .filter((file) => file.endsWith('.js')).map((file) => text(`dist/renderer/assets/${file}`)).join('\n');
-  for (const name of ['app-shell', 'tabs', 'tab-panel', 'side-rail', 'panel', 'status', 'number', 'operator-summary', 'call-history']) {
+  for (const name of ['app-shell', 'tabs', 'tab-panel', 'side-rail', 'operator-board', 'panel', 'status', 'number', 'operator-summary', 'call-history']) {
     assert.ok(js.includes(`bingo-${name}`), `bundled ${name} registration`);
   }
   assert.match(html, /<html lang="es">/);
   assert.match(html, /<bingo-app-shell class="operator-app">[\s\S]*<h1>Consola del operador<\/h1>[\s\S]*<main class="app-main">/);
   assert.match(html, /<bingo-operator-summary id="event-summary"/);
+  assert.match(html, /<bingo-operator-board id="operator-board"><\/bingo-operator-board>/);
   assert.match(html, /<bingo-call-history id="called-numbers"/);
   assert.doesNotMatch(html, /<ol id="called-numbers"|id="stale-warning"/);
 });
