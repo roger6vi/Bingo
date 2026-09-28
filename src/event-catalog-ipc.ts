@@ -23,8 +23,12 @@ type Registrar = {
 const MAX_TEXT = 120;
 const invalidRequest = (): CatalogResult => ({ ok: false, code: 'invalid_request', message: 'Invalid event request.' });
 const text = (value: unknown) => typeof value === 'string' && value.trim() !== '' && value.trim().length <= MAX_TEXT;
-const isoDate = (value: unknown) => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) &&
-  new Date(`${value}T00:00:00.000Z`).toISOString().startsWith(value);
+// An out-of-range value such as 2026-99-99 is an Invalid Date; toISOString() would throw on it.
+const isoDate = (value: unknown) => {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().startsWith(value);
+};
 
 // Accepts only a plain { name, date, place } record; extra keys are a malformed request.
 function validMeta(value: unknown): value is { name: string; date: string; place: string } {

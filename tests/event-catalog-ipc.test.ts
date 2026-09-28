@@ -64,7 +64,7 @@ test('malformed requests never reach the store', () => {
   const invalid = { ok: false, code: 'invalid_request', message: 'Invalid event request.' };
   assert.deepEqual(f.invoke(CATALOG_CHANNELS.list, [1]), invalid);
   for (const bad of [null, [], 'x', { ...meta, extra: 1 }, { ...meta, name: '  ' }, { ...meta, place: 'p'.repeat(121) },
-    { ...meta, date: '2026-02-30' }, { ...meta, date: '28/09/2026' }, Object.assign(Object.create(null), meta)]) {
+    { ...meta, date: '2026-02-30' }, { ...meta, date: '2026-99-99' }, { ...meta, date: '28/09/2026' }, Object.assign(Object.create(null), meta)]) {
     assert.deepEqual(f.invoke(CATALOG_CHANNELS.create, [bad]), invalid);
   }
   for (const bad of [[], [1], [''], ['x'.repeat(65)], ['a', 'b']]) {

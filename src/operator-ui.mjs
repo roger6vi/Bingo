@@ -34,15 +34,18 @@ const phaseLabels = {
 const eventError = required('event-error', HTMLElement);
 const themeSelect = required('theme-select', HTMLSelectElement);
 
-// While an event select is in flight, writes could land on the newly active event unnoticed.
+// From the select request until the dependent panels have re-read the new event,
+// writes could land on the newly active event unnoticed.
 let selecting = false;
+let activating = false;
 let drawLocks = { manualDisabled: true, digitalDisabled: true, reloadDisabled: false };
 let themePending = true;
 function applyLocks() {
-  controls.manualDisabled = selecting || drawLocks.manualDisabled;
-  controls.digitalDisabled = selecting || drawLocks.digitalDisabled;
-  controls.reloadDisabled = selecting || drawLocks.reloadDisabled;
-  themeSelect.disabled = selecting || themePending;
+  const locked = selecting || activating;
+  controls.manualDisabled = locked || drawLocks.manualDisabled;
+  controls.digitalDisabled = locked || drawLocks.digitalDisabled;
+  controls.reloadDisabled = locked || drawLocks.reloadDisabled;
+  themeSelect.disabled = locked || themePending;
 }
 
 openPublic.addEventListener('click', () => window.desktop.openPublic());
@@ -58,7 +61,7 @@ window.desktop.onPublicStatus((pauseSuggested) => {
 const controller = createOperatorController(window.desktop, {
   bind: ({ manual, digital, reload }) => {
     controls.addEventListener('click', (event) => {
-      if (selecting) return;
+      if (selecting || activating) return;
       const action = event.composedPath().find((node) => node?.id === 'draw-manual' || node?.id === 'draw-digital' || node?.id === 'reload-event');
       if (action?.id === 'draw-manual') createManualDrawHandler(controls.manualInput, manual)();
       else if (action?.id === 'draw-digital') digital();
@@ -102,7 +105,7 @@ const themes = createThemeController(window.desktop, {
     themeStatus.tone = error ? 'error' : 'info';
   },
 });
-themeSelect.addEventListener('change', () => { if (!selecting) void themes.select(themeSelect.value); });
+themeSelect.addEventListener('change', () => { if (!selecting && !activating) void themes.select(themeSelect.value); });
 void themes.start();
 
 bindTabs(document.querySelector('[role="tablist"]'));
@@ -141,7 +144,16 @@ const events = createEventsController(window.desktop, {
     }
   },
 }, () => Promise.all([controller.resync(), themes.start()]));
-eventList.addEventListener('event-select', (event) => { void events.select(event.detail.id); });
+// events.select resolves only after resync() and the theme re-read settle.
+eventList.addEventListener('event-select', async (event) => {
+  activating = true;
+  applyLocks();
+  try { await events.select(event.detail.id); }
+  finally {
+    activating = false;
+    applyLocks();
+  }
+});
 reloadEvents.addEventListener('click', () => { void events.start(); });
 createForm.addEventListener('submit', async (event) => {
   event.preventDefault();
