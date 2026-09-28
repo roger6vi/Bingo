@@ -656,6 +656,10 @@ export function createEventStore(path: string) {
         const currentActive = readActiveEventId(db);
         if (currentActive !== id) {
           db.prepare('UPDATE active_event SET event_id = ? WHERE slot = 1').run(id);
+          // Validate the complete target state before commit: a corrupt event must never become active,
+          // or every later load and the next startup would fail. Throwing here rolls the selection back.
+          readEvent(db);
+          readTheme(db);
         }
         return toSummary(row, id);
       });
