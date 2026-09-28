@@ -47,9 +47,10 @@ export function createEventsController(api, view, onSelected) {
       } else {
         stale = loaded;
         error = result?.ok === false && typeof result.message === 'string' ? result.message : invalidUpdate;
-        // From the select channel, ok:true means the selection committed even if the list is unusable.
-        if ((kind === 'select' && result?.ok === true) || (result?.ok === false &&
-            (result.selected === true || (kind === 'create' && result.created === true)))) {
+        // From the select and update channels, ok:true means the write committed even if the list is unusable.
+        if (((kind === 'select' || kind === 'update') && result?.ok === true) || (result?.ok === false &&
+            (result.selected === true || (kind === 'create' && result.created === true) ||
+             (kind === 'update' && result.updated === true)))) {
           outcome = 'committed';
         }
       }
@@ -68,6 +69,8 @@ export function createEventsController(api, view, onSelected) {
     start: async () => (await request('list', () => api.listEvents())) === 'accepted',
     // A committed create must not look failed, or the operator would submit the form again.
     create: async (meta) => ['accepted', 'committed'].includes(await request('create', () => api.createEvent(meta))),
+    // Resolves true only for an acknowledged commit, so an unsaved draft is never reported as saved.
+    update: async (id, meta) => ['accepted', 'committed'].includes(await request('update', () => api.updateEvent(id, meta))),
     // Dependent panels re-read committed state whenever the active event may have changed:
     // an acknowledged selection, one that committed without a readable list, or one with no answer.
     select: async (id) => {

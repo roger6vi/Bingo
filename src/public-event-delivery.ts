@@ -6,6 +6,10 @@ type PhaseSnapshot = EventSnapshot & { readonly phase: GamePhase; readonly lastT
 
 export const PUBLIC_EVENT_CHANNEL = 'public:event-state';
 export const PUBLIC_THEME_CHANNEL = 'public:theme';
+export const PUBLIC_META_CHANNEL = 'public:event-meta';
+
+// The active event's committed name, date, and place; null when it cannot be read.
+export type PublicEventMeta = { readonly name: string; readonly date: string; readonly place: string } | null;
 
 export type PublicEventResult =
   | { ok: true; snapshot: PhaseSnapshot; eventChanged?: true }
@@ -14,7 +18,7 @@ export type PublicEventResult =
 type Store = { load(): PhaseSnapshot | null };
 type Target = {
   isDestroyed(): boolean;
-  send(channel: string, result: PublicEventResult | ThemeId): void;
+  send(channel: string, result: PublicEventResult | ThemeId | PublicEventMeta): void;
 };
 
 const success = (snapshot: PhaseSnapshot): PublicEventResult => ({
@@ -23,10 +27,13 @@ const success = (snapshot: PhaseSnapshot): PublicEventResult => ({
   },
 });
 
-export function createPublicEventDelivery(store: Store, committedTheme?: () => ThemeId) {
+export function createPublicEventDelivery(
+  store: Store, committedTheme?: () => ThemeId, committedMeta?: () => PublicEventMeta,
+) {
   let current: Target | null = null;
 
-  function send(target: Target, result: PublicEventResult | ThemeId, channel = PUBLIC_EVENT_CHANNEL): void {
+  function send(target: Target, result: PublicEventResult | ThemeId | PublicEventMeta,
+    channel = PUBLIC_EVENT_CHANNEL): void {
     try {
       if (target.isDestroyed()) {
         if (current === target) current = null;
@@ -49,13 +56,26 @@ export function createPublicEventDelivery(store: Store, committedTheme?: () => T
     }
   }
 
+  function loadMeta(): PublicEventMeta {
+    try {
+      const meta = committedMeta?.() ?? null;
+      return meta === null ? null : { name: meta.name, date: meta.date, place: meta.place };
+    } catch { return null; }
+  }
+
+  // Sends the metadata unless the target was replaced or closed; reports whether it is still current.
+  function sendMeta(target: Target): boolean {
+    if (committedMeta !== undefined) send(target, loadMeta(), PUBLIC_META_CHANNEL);
+    return current === target;
+  }
+
   return {
     attachAfterLoad(target: Target): void {
       if (target.isDestroyed()) return;
       current = target;
       // Theme first, so the page is revealed in the committed theme.
       if (committedTheme !== undefined) send(target, committedTheme(), PUBLIC_THEME_CHANNEL);
-      if (current !== target) return;
+      if (current !== target || !sendMeta(target)) return;
       const result = loadResult();
       // A reentrant load may have replaced or closed this target.
       if (current === target) send(target, result);
@@ -69,12 +89,16 @@ export function createPublicEventDelivery(store: Store, committedTheme?: () => T
     publishTheme(theme: ThemeId): void {
       if (current !== null) send(current, theme, PUBLIC_THEME_CHANNEL);
     },
-    // After the active event changes, resend its theme and committed state in reveal order.
+    // After the active event's name, date, or place commit.
+    publishMeta(): void {
+      if (current !== null) sendMeta(current);
+    },
+    // After the active event changes, resend its theme, metadata, and committed state in reveal order.
     publishActive(theme: ThemeId): void {
       const target = current;
       if (target === null) return;
       send(target, theme, PUBLIC_THEME_CHANNEL);
-      if (current !== target) return;
+      if (current !== target || !sendMeta(target)) return;
       const result = loadResult();
       // A different event's history is not a continuation of the one on screen.
       if (current === target) send(target, result.ok ? { ...result, eventChanged: true } : result);

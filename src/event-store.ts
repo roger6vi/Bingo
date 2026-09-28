@@ -664,6 +664,21 @@ export function createEventStore(path: string) {
         return toSummary(row, id);
       });
     },
+    // Edits only the active event's descriptive metadata, with createEvent's rules; history, phase,
+    // audit, and theme are untouched. Requiring the active id stops a stale draft reaching another event.
+    updateEventMeta(id: unknown, meta: { name: unknown; date: unknown; place: unknown }): EventSummary {
+      if (typeof id !== 'string') throw new Error('Invalid event id');
+      const { name, date, place } = validateEventMeta(meta);
+      return transaction(() => {
+        const activeId = readActiveEventId(db);
+        if (activeId !== id) throw new Error('Event is not the active event');
+        db.prepare('UPDATE events SET name = ?, date = ?, place = ? WHERE id = ?').run(name, date, place, id);
+        // Return the values read back inside the committing transaction.
+        const row = readEventRow(db, id);
+        return toSummary({ id: row.id as string, name: row.name as string, date: row.date as string,
+          place: row.place as string, phase: row.phase as GamePhase, createdAt: row.createdAt as string }, activeId);
+      });
+    },
     close(): void { db.close(); },
   };
 }

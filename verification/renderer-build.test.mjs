@@ -124,8 +124,10 @@ test('theme selection keeps an operator-only setter, a receive-only sandboxed pu
   assert.match(main, /createOperatorGuard\)\(operator\.webContents/);
   const publicPreload = text('dist/public-preload.js');
   assert.match(publicPreload, /exposeInMainWorld\('publicTheme'/);
+  assert.match(publicPreload, /exposeInMainWorld\('publicEventMeta'/);
   assert.doesNotMatch(publicPreload, /ipcRenderer\.(?:send|invoke|sendSync)\b/);
   assert.match(text('dist/preload.js'), /invoke\('theme:set', theme\)/);
+  assert.match(text('dist/preload.js'), /invoke\('events:update', id, meta\)/);
   const css = readdirSync(path.join(renderer, 'assets'))
     .filter((file) => file.endsWith('.css')).map((file) => text(`dist/renderer/assets/${file}`)).join('\n');
   assert.match(css, /html:not\(\[data-theme\]\) body\s*\{\s*visibility:\s*hidden/);
