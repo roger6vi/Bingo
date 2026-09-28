@@ -4,6 +4,9 @@ import { registerEventIpc, EVENT_CHANNELS } from '../src/event-ipc.ts';
 import { drawManual, drawDigital, type EventSnapshot } from '../src/event-core.ts';
 
 const rules = { drawManual, drawDigital };
+type StoredSnapshot = EventSnapshot & { phase: 'drawing' | 'line_declared'; lastTransitionAt: string | null };
+const initialSnapshot = (calledNumbers: number[]): StoredSnapshot =>
+  ({ calledNumbers, phase: 'drawing', lastTransitionAt: null });
 
 type Handler = (event: { sender: object; senderFrame: object | null }, ...args: unknown[]) => unknown;
 
@@ -12,21 +15,21 @@ function fixture(initial: readonly number[] | null = [90, 1], random = () => 0,
   const sender = {}, frame = { url: 'file:///app/operator.html' }, other = {};
   const handlers = new Map<string, Handler>();
   const calls: string[] = [];
-  let current: EventSnapshot | null = initial === null ? null : { calledNumbers: [...initial] };
+  let current: StoredSnapshot | null = initial === null ? null : initialSnapshot([...initial]);
   let failure: 'load' | 'update' | null = null;
   const store = {
-    load(): EventSnapshot | null {
+    load(): StoredSnapshot | null {
       calls.push('load');
       if (failure === 'load') throw new Error('secret read detail');
       return current;
     },
-    update(transition: (event: EventSnapshot) => EventSnapshot): EventSnapshot {
+    update(transition: (event: EventSnapshot) => EventSnapshot): StoredSnapshot {
       calls.push('update');
       if (current === null) throw new Error('missing event');
       const proposed = transition(current);
       if (failure === 'update') throw new Error('secret write detail');
-      current = proposed;
-      return { calledNumbers: [...proposed.calledNumbers] };
+      current = { ...current, ...proposed, calledNumbers: [...proposed.calledNumbers] };
+      return { ...current, calledNumbers: [...current.calledNumbers] };
     },
   };
   registerEventIpc({ handle: (channel: string, handler: Handler) => {
@@ -49,15 +52,15 @@ test('only three fixed channels are registered; get reads ordered persisted hist
   const f = fixture();
   assert.deepEqual([...f.handlers.keys()], Object.values(EVENT_CHANNELS));
   const result = f.invoke(EVENT_CHANNELS.get);
-  assert.deepEqual(result, { ok: true, snapshot: { calledNumbers: [90, 1] } });
+  assert.deepEqual(result, { ok: true, snapshot: initialSnapshot([90, 1]) });
   assert.deepEqual(f.calls, ['load']);
   assert.notEqual((result as { snapshot: EventSnapshot }).snapshot.calledNumbers, f.snapshot());
 });
 
 test('manual and digital draws acknowledge only the committed returned snapshot', () => {
   const f = fixture([90, 1], () => { f.calls.push('random'); return 0; });
-  assert.deepEqual(f.invoke(EVENT_CHANNELS.manual, [45]), { ok: true, snapshot: { calledNumbers: [90, 1, 45] } });
-  assert.deepEqual(f.invoke(EVENT_CHANNELS.digital), { ok: true, snapshot: { calledNumbers: [90, 1, 45, 2] } });
+  assert.deepEqual(f.invoke(EVENT_CHANNELS.manual, [45]), { ok: true, snapshot: initialSnapshot([90, 1, 45]) });
+  assert.deepEqual(f.invoke(EVENT_CHANNELS.digital), { ok: true, snapshot: initialSnapshot([90, 1, 45, 2]) });
   assert.deepEqual(f.snapshot(), [90, 1, 45, 2]);
   assert.deepEqual(f.calls, ['update', 'update', 'random']);
 });
@@ -82,10 +85,10 @@ test('navigation replaces the authorized frame but never grants another document
   const calls: string[] = [];
   const handlers = new Map<string, Handler>();
   registerEventIpc({ handle: (channel, handler) => { handlers.set(channel, handler); } }, {
-    load: () => { calls.push('load'); return { calledNumbers: [90, 1] }; },
+    load: () => { calls.push('load'); return initialSnapshot([90, 1]); },
     update: (transition) => {
       calls.push('update');
-      return transition({ calledNumbers: [90, 1] });
+      return { ...initialSnapshot([90, 1]), ...transition(initialSnapshot([90, 1])) };
     },
   }, rules, () => { calls.push('random'); return 0; }, sender, () => current, expectedUrl);
   const invoke = (channel: string, from: object, frame: object | null, ...args: unknown[]) => {
@@ -95,11 +98,11 @@ test('navigation replaces the authorized frame but never grants another document
   };
   current = loaded;
   assert.deepEqual(invoke(EVENT_CHANNELS.get, sender, loaded),
-    { ok: true, snapshot: { calledNumbers: [90, 1] } });
+    { ok: true, snapshot: initialSnapshot([90, 1]) });
   assert.deepEqual(invoke(EVENT_CHANNELS.manual, sender, loaded, 2),
-    { ok: true, snapshot: { calledNumbers: [90, 1, 2] } });
+    { ok: true, snapshot: initialSnapshot([90, 1, 2]) });
   assert.deepEqual(invoke(EVENT_CHANNELS.digital, sender, loaded),
-    { ok: true, snapshot: { calledNumbers: [90, 1, 2] } });
+    { ok: true, snapshot: initialSnapshot([90, 1, 2]) });
   assert.deepEqual(calls, ['load', 'update', 'update', 'random']);
   calls.length = 0;
   for (const channel of Object.values(EVENT_CHANNELS)) {
@@ -152,25 +155,25 @@ test('the successful response comes from the post-update return, not the propose
   registerEventIpc({ handle: (channel, handler) => { bound.set(channel, handler); } }, {
     load: () => null,
     update: (transition) => {
-      assert.deepEqual(transition({ calledNumbers: [1] }).calledNumbers, [1, 2]);
-      return { calledNumbers: [1, 2, 3] };
+      assert.deepEqual(transition(initialSnapshot([1])), initialSnapshot([1, 2]));
+      return { calledNumbers: [1, 2, 3], phase: 'line_declared', lastTransitionAt: '2026-01-01T00:00:00.000Z' };
     },
   }, rules, () => 0, sender, () => frame, frame.url);
   assert.deepEqual(bound.get(EVENT_CHANNELS.manual)?.({ sender, senderFrame: frame }, 2),
-    { ok: true, snapshot: { calledNumbers: [1, 2, 3] } });
+    { ok: true, snapshot: { calledNumbers: [1, 2, 3], phase: 'line_declared', lastTransitionAt: '2026-01-01T00:00:00.000Z' } });
 });
 
 test('notification follows the committed return, not the proposal, and gets its own clone', () => {
   const sender = {}, frame = { url: 'file:///app/operator.html' };
   const handlers = new Map<string, Handler>();
   const order: string[] = [];
-  const committed = { calledNumbers: [1, 2, 3] };
+  const committed = { calledNumbers: [1, 2, 3], phase: 'line_declared' as const, lastTransitionAt: '2026-01-01T00:00:00.000Z' };
   let received: EventSnapshot | undefined;
   registerEventIpc({ handle: (channel, handler) => { handlers.set(channel, handler); } }, {
     load: () => null,
     update: (transition) => {
       order.push('transition');
-      assert.deepEqual(transition({ calledNumbers: [1] }).calledNumbers, [1, 2]);
+      assert.deepEqual(transition(initialSnapshot([1])), initialSnapshot([1, 2]));
       order.push('commit');
       return committed;
     },
@@ -184,7 +187,8 @@ test('notification follows the committed return, not the proposal, and gets its 
   assert.notEqual(received, committed);
   assert.notEqual(received?.calledNumbers, committed.calledNumbers);
   assert.notEqual(received, (result as { snapshot: EventSnapshot }).snapshot);
-  assert.deepEqual(result, { ok: true, snapshot: { calledNumbers: [1, 2, 3] } });
+  assert.deepEqual(result, { ok: true, snapshot: committed });
+  assert.notEqual((result as { snapshot: EventSnapshot }).snapshot.calledNumbers, committed.calledNumbers);
 });
 
 test('notification never runs for invalid, unauthorized, domain or storage failures', () => {
@@ -196,7 +200,7 @@ test('notification never runs for invalid, unauthorized, domain or storage failu
   assert.deepEqual(f.invoke(EVENT_CHANNELS.digital), failure('invalid_draw', 'Could not draw a number. Reload and try again.'));
   f.setFailure('update');
   assert.deepEqual(f.invoke(EVENT_CHANNELS.manual, [2]), failure('storage_failure', 'Could not save the draw. Reload and try again.'));
-  assert.deepEqual(f.invoke(EVENT_CHANNELS.get), { ok: true, snapshot: { calledNumbers: [1] } });
+  assert.deepEqual(f.invoke(EVENT_CHANNELS.get), { ok: true, snapshot: initialSnapshot([1]) });
   assert.deepEqual(notified, []);
   const full = fixture(Array.from({ length: 90 }, (_, i) => i + 1), () => 0,
     (snapshot) => notified.push(snapshot));
@@ -207,7 +211,7 @@ test('notification never runs for invalid, unauthorized, domain or storage failu
 test('notifier exceptions cannot reverse an acknowledged commit', () => {
   const f = fixture([1], () => 0, () => { throw new Error('display disconnected'); });
   assert.deepEqual(f.invoke(EVENT_CHANNELS.manual, [2]),
-    { ok: true, snapshot: { calledNumbers: [1, 2] } });
+    { ok: true, snapshot: initialSnapshot([1, 2]) });
   assert.deepEqual(f.snapshot(), [1, 2]);
 });
 

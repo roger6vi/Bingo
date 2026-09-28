@@ -3,7 +3,11 @@ import test from 'node:test';
 import { createOperatorController } from '../src/operator-controller.mjs';
 import type { EventResult } from '../src/event-ipc.ts';
 
-const success = (...calledNumbers: number[]): EventResult => ({ ok: true, snapshot: { calledNumbers } });
+const time = '2026-01-01T00:00:00.000Z';
+const success = (...calledNumbers: number[]): EventResult => ({ ok: true,
+  snapshot: { calledNumbers, phase: 'drawing', lastTransitionAt: null } });
+const phased = (phase: string, lastTransitionAt: unknown, calledNumbers: unknown) =>
+  ({ ok: true, snapshot: { calledNumbers, phase, lastTransitionAt } }) as EventResult;
 const failure = (message: string): EventResult => ({ ok: false, code: 'storage_failure', message });
 function deferred() {
   let resolve!: (value: EventResult) => void;
@@ -28,7 +32,7 @@ function fixture() {
     render: (state) => { renders.push(structuredClone(state)); },
   });
   return { controller, calls, handlers, renders, responses, cleared: () => cleared,
-    last: () => renders.at(-1) as { calledNumbers: number[]; remaining: number; stale: boolean; error: string | null;
+    last: () => renders.at(-1) as { calledNumbers: number[]; remaining: number; phase: string | null; stale: boolean; error: string | null;
       pending: boolean; manualDisabled: boolean; digitalDisabled: boolean; reloadDisabled: boolean } };
 }
 
@@ -36,7 +40,7 @@ test('initial get renders persisted order, remaining count, and a non-stale stat
   const f = fixture();
   await f.controller.start();
   assert.deepEqual(f.calls, ['get']);
-  assert.deepEqual(f.last(), { calledNumbers: [90, 1], remaining: 88, stale: false, error: null,
+  assert.deepEqual(f.last(), { calledNumbers: [90, 1], remaining: 88, phase: 'drawing', stale: false, error: null,
     pending: false, manualDisabled: false, digitalDisabled: false, reloadDisabled: false });
   assert.equal(typeof f.handlers.reload, 'function');
 });
@@ -96,10 +100,10 @@ test('expected IPC failure preserves acknowledged history, marks stale and displ
   assert.equal(f.last().stale, true);
   assert.equal(f.last().error, 'Could not save the draw. Reload and try again.');
   assert.equal(f.cleared(), 0);
-  f.responses.get = async () => success(1, 90, 3);
+  f.responses.get = async () => success(90, 1, 3);
   f.handlers.reload?.();
   await new Promise(setImmediate);
-  assert.deepEqual(f.last().calledNumbers, [1, 90, 3]);
+  assert.deepEqual(f.last().calledNumbers, [90, 1, 3]);
   assert.equal(f.last().remaining, 87);
   assert.equal(f.last().stale, false);
   assert.equal(f.last().error, null);
@@ -139,6 +143,53 @@ test('initial read failure keeps draws unavailable until a successful reload', a
   assert.deepEqual(f.last().calledNumbers, [7]);
   assert.equal(f.last().stale, false);
   assert.equal(f.last().manualDisabled, false);
+});
+
+test('phase snapshots can jump across missed transitions and preserve history on invalid or stale updates', async () => {
+  const f = fixture();
+  await f.controller.start();
+  f.responses.get = async () => phased('bingo_declared', time, [90, 1, 45]);
+  f.handlers.reload?.();
+  await new Promise(setImmediate);
+  assert.equal(f.last().phase, 'bingo_declared');
+  assert.deepEqual(f.last().calledNumbers, [90, 1, 45]);
+  const bad = [
+    { calledNumbers: [90, 1, 45, 2], lastTransitionAt: time },
+    { calledNumbers: [90, 1, 45, 2], phase: 'unknown', lastTransitionAt: time },
+    { calledNumbers: [90, 1, 45, 2], phase: 'drawing', lastTransitionAt: null },
+    { calledNumbers: [90, 1, 45, 2], phase: 'finished', lastTransitionAt: 'not-a-date' },
+    { calledNumbers: [90, 1, 45, 2], phase: 'finished', lastTransitionAt: '2025-12-31T00:00:00.000Z' },
+    { calledNumbers: [1, 90, 45, 2], phase: 'finished', lastTransitionAt: '2026-01-02T00:00:00.000Z' },
+  ];
+  for (const snapshot of bad) {
+    f.responses.get = async () => ({ ok: true, snapshot }) as EventResult;
+    f.handlers.reload?.();
+    await new Promise(setImmediate);
+    assert.equal(f.last().phase, 'bingo_declared');
+    assert.deepEqual(f.last().calledNumbers, [90, 1, 45]);
+    assert.equal(f.last().stale, true);
+    assert.equal(f.last().error, 'Invalid event update. Reload and try again.');
+  }
+  f.responses.get = async () => phased('drawing', '2026-01-02T00:00:00.000Z', [90, 1, 45, 2]);
+  f.handlers.reload?.();
+  await new Promise(setImmediate);
+  assert.equal(f.last().phase, 'drawing', 'a correction may return to drawing with a non-null timestamp');
+  assert.deepEqual(f.last().calledNumbers, [90, 1, 45, 2]);
+  assert.equal(f.last().error, null);
+});
+
+test('invalid bootstrap leaves phase unknown and controls disabled until a valid snapshot arrives', async () => {
+  const f = fixture();
+  f.responses.get = async () => phased('checking_line', null, []);
+  await f.controller.start();
+  assert.equal(f.last().phase, null);
+  assert.equal(f.last().manualDisabled, true);
+  assert.equal(f.last().stale, true);
+  f.responses.get = async () => phased('checking_line', time, [7]);
+  f.handlers.reload?.();
+  await new Promise(setImmediate);
+  assert.equal(f.last().phase, 'checking_line');
+  assert.equal(f.last().stale, false);
 });
 
 test('exhaustion disables draws but still allows reload', async () => {

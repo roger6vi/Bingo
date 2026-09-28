@@ -21,7 +21,12 @@ const publicStatus = required('public-status', HTMLElement);
 const controls = required('draw-controls', HTMLElement);
 const history = required('called-numbers', HTMLElement);
 const summary = required('event-summary', HTMLElement);
+const phaseStatus = required('phase-status', HTMLElement);
 const eventStatus = required('event-status', HTMLElement);
+const phaseLabels = {
+  drawing: 'Drawing', checking_line: 'Checking line', line_declared: 'Line declared',
+  checking_bingo: 'Checking bingo', bingo_declared: 'Bingo declared', finished: 'Finished',
+};
 const eventError = required('event-error', HTMLElement);
 
 openPublic.addEventListener('click', () => window.desktop.openPublic());
@@ -49,6 +54,9 @@ const controller = createOperatorController(window.desktop, {
     summary.latest = state.calledNumbers.at(-1) ?? null;
     summary.count = state.calledNumbers.length;
     summary.remaining = state.remaining;
+    phaseStatus.message = state.phase === null ? 'Current phase: waiting for event state'
+      : `Current phase: ${phaseLabels[state.phase]}`;
+    phaseStatus.tone = 'info';
     eventStatus.message = state.stale ? 'Event history may be stale. Reload before relying on it.'
       : state.pending ? 'Loading event state' : state.manualDisabled && state.remaining > 0
         ? 'Waiting for event state' : 'Event ready';

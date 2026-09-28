@@ -3,8 +3,10 @@ import test from 'node:test';
 import { createPublicController } from '../src/public-controller.mjs';
 
 type State = { loaded: boolean; calledNumbers: number[]; latest: number | null; count: number;
-  remaining: number; stale: boolean; error: string | null };
-const success = (calledNumbers: unknown) => ({ ok: true, snapshot: { calledNumbers } });
+  remaining: number; phase: string | null; stale: boolean; error: string | null };
+const time = '2026-01-01T00:00:00.000Z';
+const success = (calledNumbers: unknown, phase = 'drawing', lastTransitionAt: unknown = null) =>
+  ({ ok: true, snapshot: { calledNumbers, phase, lastTransitionAt } });
 function fixture() {
   const renders: State[] = [];
   let listener: ((result: unknown) => void) | undefined;
@@ -23,21 +25,21 @@ function fixture() {
 test('renders waiting before subscribing once, then bootstraps empty and ordered full history', () => {
   const f = fixture();
   assert.deepEqual(f.renders, [{ loaded: false, calledNumbers: [], latest: null, count: 0,
-    remaining: 90, stale: false, error: null }]);
+    remaining: 90, phase: null, stale: false, error: null }]);
   assert.equal(f.subscriptions(), 1);
   f.send(success([]));
   assert.deepEqual(f.last(), { loaded: true, calledNumbers: [], latest: null, count: 0,
-    remaining: 90, stale: false, error: null });
+    remaining: 90, phase: 'drawing', stale: false, error: null });
   f.send(success([90, 3, 1]));
   assert.deepEqual(f.last(), { loaded: true, calledNumbers: [90, 3, 1], latest: 1, count: 3,
-    remaining: 87, stale: false, error: null });
+    remaining: 87, phase: 'drawing', stale: false, error: null });
 });
 
 test('accepts identical histories and multi-number catch-up appends, never deriving latest from other fields', () => {
   const f = fixture();
-  f.send({ ok: true, snapshot: { calledNumbers: [2], latest: 85 } });
+  f.send({ ok: true, snapshot: { calledNumbers: [2], phase: 'drawing', lastTransitionAt: null, latest: 85 } });
   f.send(success([2]));
-  f.send({ ok: true, snapshot: { calledNumbers: [2, 7, 9], latest: 88 } });
+  f.send({ ok: true, snapshot: { calledNumbers: [2, 7, 9], phase: 'drawing', lastTransitionAt: null, latest: 88 } });
   assert.deepEqual(f.last().calledNumbers, [2, 7, 9]);
   assert.equal(f.last().latest, 9);
   assert.equal(f.last().error, null);
@@ -52,10 +54,10 @@ test('a sparse bootstrap cannot establish a loaded draw and recovers with dense 
   assert.equal(Object.hasOwn(sparse, 0), false);
   f.send(success(sparse));
   assert.deepEqual(f.last(), { loaded: false, calledNumbers: [], latest: null, count: 0,
-    remaining: 90, stale: false, error: 'Invalid public event update.' });
+    remaining: 90, phase: null, stale: false, error: 'Invalid public event update.' });
   f.send(success([7]));
   assert.deepEqual(f.last(), { loaded: true, calledNumbers: [7], latest: 7, count: 1,
-    remaining: 89, stale: false, error: null });
+    remaining: 89, phase: 'drawing', stale: false, error: null });
 });
 
 test('sparse post-bootstrap append holes preserve the accepted draw until dense recovery', () => {
@@ -67,10 +69,10 @@ test('sparse post-bootstrap append holes preserve the accepted draw until dense 
   assert.equal(Object.hasOwn(sparse, 2), false);
   f.send(success(sparse));
   assert.deepEqual(f.last(), { loaded: true, calledNumbers: [4, 8], latest: 8, count: 2,
-    remaining: 88, stale: true, error: 'Invalid public event update.' });
+    remaining: 88, phase: 'drawing', stale: true, error: 'Invalid public event update.' });
   f.send(success([4, 8, 6, 7]));
   assert.deepEqual(f.last(), { loaded: true, calledNumbers: [4, 8, 6, 7], latest: 7, count: 4,
-    remaining: 86, stale: false, error: null });
+    remaining: 86, phase: 'drawing', stale: false, error: null });
 });
 
 test('rejects malformed results and histories without replacing an accepted snapshot', () => {
@@ -165,6 +167,30 @@ test('accepts all 90 unique calls but rejects overlength and duplicate full-hist
   assert.equal(f.last().count, 90);
   assert.equal(f.last().stale, true);
   f.send(success(full));
+  assert.equal(f.last().stale, false);
+});
+
+test('phase acceptance tolerates missed transitions and corrections but rejects stale timestamps', () => {
+  const f = fixture();
+  f.send(success([4], 'drawing'));
+  f.send(success([4, 8], 'finished', time));
+  assert.equal(f.last().phase, 'finished');
+  const bad = [
+    { calledNumbers: [4, 8, 9], lastTransitionAt: time },
+    { calledNumbers: [4, 8, 9], phase: 'mystery', lastTransitionAt: time },
+    { calledNumbers: [4, 8, 9], phase: 'drawing', lastTransitionAt: null },
+    { calledNumbers: [4, 8, 9], phase: 'checking_line', lastTransitionAt: '2025-12-31T00:00:00.000Z' },
+    { calledNumbers: [4, 8, 9], phase: 'checking_line', lastTransitionAt: '2026-01-01' },
+  ];
+  for (const snapshot of bad) {
+    f.send({ ok: true, snapshot });
+    assert.deepEqual(f.last().calledNumbers, [4, 8]);
+    assert.equal(f.last().phase, 'finished');
+    assert.equal(f.last().stale, true);
+  }
+  f.send(success([4, 8, 9], 'drawing', '2026-01-02T00:00:00.000Z'));
+  assert.equal(f.last().phase, 'drawing');
+  assert.equal(f.last().count, 3);
   assert.equal(f.last().stale, false);
 });
 

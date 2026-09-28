@@ -87,6 +87,53 @@ it('panel, number, latest announcer and status respond to properties without dup
   await expect(panel).to.be.accessible();
 });
 
+it('public wiring keeps a committed phase visible beside separate stale feedback', async () => {
+  const page = new DOMParser().parseFromString(await (await fetch(new URL('../../src/public.html', import.meta.url))).text(), 'text/html');
+  const shell = document.importNode(page.querySelector('bingo-shell'), true);
+  document.body.append(shell);
+  let receive;
+  let unsubscribed = 0;
+  window.publicEvent = { subscribe: (callback) => {
+    receive = callback;
+    return () => { unsubscribed++; };
+  } };
+  try {
+    const entry = new URL('../../src/public-ui.mjs', import.meta.url);
+    const response = await fetch(entry);
+    expect(response.ok, `public UI fetch: ${response.status}`).to.equal(true);
+    const original = await response.text();
+    const assetImport = /import sampleVideoUrl from '(?:\.\/)?\.\.\/assets\/sample\.mp4\?url';/;
+    expect(original).to.match(assetImport);
+    const source = original
+      .replace("import './screen.css';", '')
+      .replace(assetImport, "const sampleVideoUrl = 'sample.mp4';")
+      .replaceAll(/from '(\.\/[^']+)'/g, (_, relative) => `from '${new URL(relative, entry).href}'`)
+      .replaceAll(/import '(\.\/[^']+)'/g, (_, relative) => `import '${new URL(relative, entry).href}'`);
+    const moduleUrl = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
+    try { await import(moduleUrl); } finally { URL.revokeObjectURL(moduleUrl); }
+    const phase = shell.querySelector('#phase-status');
+    const status = shell.querySelector('#event-status');
+    const error = shell.querySelector('#event-error');
+    expect(phase.message).to.equal('Current phase: waiting for event state');
+    receive({ ok: true, snapshot: { calledNumbers: [9], phase: 'line_declared',
+      lastTransitionAt: '2026-01-01T00:00:00.000Z' } });
+    expect(phase.message).to.equal('Current phase: Line declared');
+    receive({ ok: true, snapshot: { calledNumbers: [9, 10], phase: 'unknown',
+      lastTransitionAt: '2026-01-02T00:00:00.000Z' } });
+    expect(phase.message).to.equal('Current phase: Line declared');
+    expect(status.message).to.equal('Last confirmed history may be stale.');
+    expect(error.hidden).to.equal(false);
+    await phase.updateComplete;
+    expect(phase.shadowRoot.querySelector('[role="status"]').textContent).to.equal('Current phase: Line declared');
+    await expect(phase).to.be.accessible();
+    window.dispatchEvent(new Event('pagehide'));
+    expect(unsubscribed).to.equal(1);
+  } finally {
+    shell.remove();
+    delete window.publicEvent;
+  }
+});
+
 it('uses both generated themes, wraps at narrow widths, and computes reduced motion', async () => {
   const response = await fetch(new URL('../../src/screen.css', import.meta.url));
   expect(response.ok).to.equal(true);
