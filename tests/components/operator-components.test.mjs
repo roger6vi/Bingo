@@ -11,7 +11,11 @@ it('operator page exposes shared panels and interactive components', async () =>
   expect(response.ok).to.equal(true);
   const page = new DOMParser().parseFromString(await response.text(), 'text/html');
   expect(page.querySelector('main h1')).not.to.equal(null);
-  expect(page.querySelectorAll('main bingo-panel')).to.have.length(2);
+  expect(page.querySelectorAll('main bingo-panel')).to.have.length(3);
+  expect(page.querySelector('label[for="theme-select"]').textContent).to.equal('Theme for both windows');
+  expect([...page.querySelectorAll('select#theme-select option')].map((option) => option.value))
+    .to.deep.equal(['pixel-classic', 'high-contrast']);
+  expect(page.querySelector('bingo-status#theme-status')).not.to.equal(null);
   expect(page.querySelector('bingo-operator-summary#event-summary')).not.to.equal(null);
   expect(page.querySelector('bingo-call-history#called-numbers')).not.to.equal(null);
   expect(page.querySelector('bingo-status#event-status')).not.to.equal(null);
@@ -195,6 +199,8 @@ it('operator wiring keeps committed state on failure and public controls use the
     openPublic: () => { openCount++; },
     movePublicToSecondary: () => { moveCount++; },
     onPublicStatus: (callback) => { publicUpdate = callback; },
+    getTheme: async () => ({ ok: true, theme: 'pixel-classic' }),
+    setTheme: async () => ({ ok: false, message: 'Write failed' }),
   };
   window.desktop = desktop;
   try {
@@ -245,5 +251,70 @@ it('operator wiring keeps committed state on failure and public controls use the
   } finally {
     main.remove();
     delete window.desktop;
+    delete document.documentElement.dataset.theme;
+  }
+});
+
+it('operator theme selection applies only committed themes and keeps the last one on failure', async () => {
+  const page = new DOMParser().parseFromString(await (await fetch(new URL('../../src/operator.html', import.meta.url))).text(), 'text/html');
+  const main = document.importNode(page.querySelector('main'), true);
+  document.body.append(main);
+  const links = await Promise.all(['pixel-classic', 'high-contrast'].map((name) => new Promise((resolve, reject) => {
+    const element = document.createElement('link');
+    element.rel = 'stylesheet';
+    element.href = new URL(`../../src/generated/${name}.css`, import.meta.url).href;
+    element.onload = () => resolve(element);
+    element.onerror = reject;
+    document.head.append(element);
+  })));
+  let reply = { ok: true, theme: 'high-contrast' };
+  const requests = [];
+  window.desktop = {
+    getCurrentEvent: async () => ({ ok: true, snapshot: { calledNumbers: [], phase: 'drawing', lastTransitionAt: null } }),
+    onPublicStatus: () => {}, openPublic: () => {}, movePublicToSecondary: () => {},
+    getTheme: async () => ({ ok: true, theme: 'pixel-classic' }),
+    setTheme: async (theme) => { requests.push(theme); return reply; },
+  };
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+  try {
+    const entry = new URL('../../src/operator-ui.mjs', import.meta.url);
+    const source = (await (await fetch(entry)).text())
+      .replace("import './screen.css';", '')
+      .replaceAll(/from '(\.\/[^']+)'/g, (_, relative) => `from '${new URL(relative, entry).href}'`)
+      .replaceAll(/import '(\.\/[^']+)'/g, (_, relative) => `import '${new URL(relative, entry).href}'`);
+    const moduleUrl = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
+    try { await import(moduleUrl); } finally { URL.revokeObjectURL(moduleUrl); }
+    await settle();
+    const select = main.querySelector('#theme-select');
+    const status = main.querySelector('#theme-status');
+    const root = document.documentElement;
+    expect(root.dataset.theme).to.equal('pixel-classic');
+    expect(select.disabled).to.equal(false);
+    const canvas = () => getComputedStyle(root).getPropertyValue('--bingo-color-canvas').trim();
+    const classic = canvas();
+    select.value = 'high-contrast';
+    select.dispatchEvent(new Event('change'));
+    expect(select.disabled).to.equal(true);
+    expect(root.dataset.theme).to.equal('pixel-classic');
+    await settle();
+    expect(root.dataset.theme).to.equal('high-contrast');
+    expect(canvas()).not.to.equal(classic);
+    expect(status.message).to.equal('Current theme: High contrast');
+    reply = { ok: false, code: 'storage_failure', message: 'Could not save the theme. Try again.' };
+    select.value = 'pixel-classic';
+    select.dispatchEvent(new Event('change'));
+    await settle();
+    expect(requests).to.deep.equal(['high-contrast', 'pixel-classic']);
+    expect(root.dataset.theme).to.equal('high-contrast');
+    expect(select.value).to.equal('high-contrast');
+    expect(status.message).to.equal('Could not save the theme. Try again.');
+    await status.updateComplete;
+    expect(status.shadowRoot.querySelector('[role="alert"]')).not.to.equal(null);
+    await expect(select.closest('bingo-panel')).to.be.accessible();
+  } finally {
+    main.remove();
+    links.forEach((link) => link.remove());
+    delete window.desktop;
+    delete document.documentElement.dataset.theme;
   }
 });

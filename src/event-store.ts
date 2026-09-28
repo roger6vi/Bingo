@@ -3,10 +3,12 @@ import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import type { EventSnapshot } from './event-core';
 import { transitionPhase, type GamePhase, type PhaseTransitionIntent } from './game-phase.ts';
+import { DEFAULT_THEME, isThemeId, THEME_IDS, type ThemeId } from './theme.ts';
 
-const VERSION = 2;
+const VERSION = 3;
 const phases = ['drawing', 'checking_line', 'line_declared', 'checking_bingo', 'bingo_declared', 'finished'];
 const phaseCheck = `CHECK (phase IN (${phases.map((phase) => `'${phase}'`).join(', ')}))`;
+const themeCheck = `CHECK (theme IN (${THEME_IDS.map((theme) => `'${theme}'`).join(', ')}))`;
 const auditTable = `CREATE TABLE phase_audit (
   sequence INTEGER PRIMARY KEY,
   transitionAt TEXT NOT NULL,
@@ -121,6 +123,51 @@ function validateV2(db: DatabaseSync): void {
   }
 }
 
+function extendV3Schema(db: DatabaseSync): void {
+  db.exec(`ALTER TABLE current_event ADD COLUMN theme TEXT NOT NULL DEFAULT '${DEFAULT_THEME}' ${themeCheck}`);
+}
+
+function validateV3(db: DatabaseSync): void {
+  const fields = columns(db, 'current_event');
+  const definition = db.prepare("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'current_event'")
+    .get()?.sql;
+  const normalized = typeof definition === 'string'
+    ? definition.replace(/[\s"`\[\]]/g, '').toUpperCase() : '';
+  const expectedPhaseCheck = phaseCheck.replace(/\s/g, '').toUpperCase();
+  const expectedThemeCheck = themeCheck.replace(/\s/g, '').toUpperCase();
+  if (fields.length !== 5 || fields[0].name !== 'id' || fields[0].type !== 'INTEGER' ||
+      fields[0].pk !== 1 || fields[1].name !== 'history' || fields[1].type !== 'TEXT' ||
+      fields[1].notnull !== 1 || fields[2].name !== 'phase' || fields[2].type !== 'TEXT' ||
+      fields[2].notnull !== 1 || fields[2].dflt_value !== "'drawing'" ||
+      fields[3].name !== 'lastTransitionAt' || fields[3].type !== 'TEXT' ||
+      fields[4].name !== 'theme' || fields[4].type !== 'TEXT' || fields[4].notnull !== 1 ||
+      fields[4].dflt_value !== `'${DEFAULT_THEME}'` ||
+      !/CHECK\(+ID=1\)+(?=[,)])/.test(normalized) ||
+      !normalized.includes(expectedPhaseCheck) || !normalized.includes(expectedThemeCheck)) {
+    throw new Error('Invalid event schema: current_event table missing or malformed');
+  }
+  const stored = db.prepare("SELECT sql FROM sqlite_schema WHERE name = 'phase_audit' AND type = 'table'").get()?.sql;
+  const normalize = (sql: string) => sql.replace(/\s/g, '').toUpperCase();
+  if (typeof stored !== 'string' || normalize(stored) !== normalize(auditTable)) {
+    throw new Error('Invalid event schema: phase audit table missing or malformed');
+  }
+  for (const guard of auditGuards) {
+    const name = guard.split(' ')[2];
+    const sql = db.prepare("SELECT sql FROM sqlite_schema WHERE name = ? AND type = 'trigger'").get(name)?.sql;
+    if (typeof sql !== 'string' || normalize(sql) !== normalize(guard)) {
+      throw new Error('Invalid event schema: phase audit guard missing or malformed');
+    }
+  }
+}
+
+function readTheme(db: DatabaseSync): ThemeId {
+  const rows = db.prepare('SELECT theme FROM current_event WHERE id = 1').all();
+  if (rows.length === 0) return DEFAULT_THEME;
+  const value = rows[0].theme;
+  if (!isThemeId(value)) throw new Error('Invalid stored theme');
+  return value;
+}
+
 function replayAudit(db: DatabaseSync): PhaseAuditEntry[] {
   const rows = db.prepare('SELECT sequence, transitionAt, kind, from_phase, to_phase FROM phase_audit ORDER BY sequence').all();
   let phase: GamePhase = 'drawing';
@@ -178,7 +225,8 @@ export function createEventStore(path: string) {
             history TEXT NOT NULL
           )`);
           extendSchema(candidate);
-          candidate.exec('PRAGMA user_version = 2; COMMIT');
+          extendV3Schema(candidate);
+          candidate.exec('PRAGMA user_version = 3; COMMIT');
         } catch (error) {
           try { candidate.exec('ROLLBACK'); } catch { /* Preserve the original error. */ }
           throw error;
@@ -199,11 +247,11 @@ export function createEventStore(path: string) {
     db.exec('BEGIN');
     try {
       const observed = db.prepare('PRAGMA user_version').get()?.user_version;
-      if (observed !== 1 && observed !== VERSION) {
+      if (observed !== 1 && observed !== 2 && observed !== VERSION) {
         throw new Error(`Unsupported event schema version: ${String(observed)}`);
       }
       if (observed === VERSION) {
-        validateV2(db);
+        validateV3(db);
         readEvent(db);
         db.exec('COMMIT');
       } else {
@@ -222,11 +270,16 @@ export function createEventStore(path: string) {
           extendSchema(db);
           // Updating the row also detects any failing write before the version is published.
           if (rows.length === 1) db.exec("UPDATE current_event SET phase = 'drawing', lastTransitionAt = NULL WHERE id = 1");
-          db.exec('PRAGMA user_version = 2');
+          extendV3Schema(db);
+          db.exec('PRAGMA user_version = 3');
+        } else if (version === 2) {
+          validateV2(db);
+          extendV3Schema(db);
+          db.exec('PRAGMA user_version = 3');
         } else if (version !== VERSION) {
           throw new Error(`Unsupported event schema version: ${String(version)}`);
         }
-        validateV2(db);
+        validateV3(db);
         readEvent(db);
         db.exec('COMMIT');
       }
@@ -265,6 +318,17 @@ export function createEventStore(path: string) {
 
   return {
     load(): StoredEvent | null { return readSnapshot(() => readEvent(db)); },
+    loadTheme(): ThemeId { return readSnapshot(() => readTheme(db)); },
+    // Returns the value read back inside the committing transaction.
+    saveTheme(theme: unknown): ThemeId {
+      if (!isThemeId(theme)) throw new Error('Unknown theme');
+      return transaction(() => {
+        const rows = db.prepare('SELECT id FROM current_event WHERE id = 1').all();
+        if (rows.length === 0) throw new Error('Current event does not exist');
+        db.prepare('UPDATE current_event SET theme = ? WHERE id = 1').run(theme);
+        return readTheme(db);
+      });
+    },
     readAudit(): PhaseAuditEntry[] {
       return readSnapshot(() => {
         readEvent(db);

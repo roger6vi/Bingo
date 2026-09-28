@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createPublicEventDelivery, PUBLIC_EVENT_CHANNEL } from '../src/public-event-delivery.ts';
+import { createPublicEventDelivery, PUBLIC_EVENT_CHANNEL, PUBLIC_THEME_CHANNEL } from '../src/public-event-delivery.ts';
 import type { EventSnapshot } from '../src/event-core.ts';
 
 type Message = { channel: string; result: unknown };
@@ -119,4 +119,26 @@ test('destroyed late attach cannot replace newer target; failed sends are isolat
   f.delivery.attachAfterLoad(current);
   current.destroy();
   assert.doesNotThrow(() => f.delivery.publishCommitted({ calledNumbers: [1, 2, 3, 4] }));
+});
+
+test('theme is sent before event state on attach, published to the current window, and recovered on reopen', () => {
+  let theme: 'pixel-classic' | 'high-contrast' = 'high-contrast';
+  const delivery = createPublicEventDelivery({ load: () => snapshot([7]) }, () => theme);
+  const target = () => {
+    const messages: Message[] = [];
+    return { messages, isDestroyed: () => false, send: (channel: string, result: unknown) => { messages.push({ channel, result }); } };
+  };
+  const first = target();
+  delivery.attachAfterLoad(first);
+  assert.deepEqual(first.messages.map(({ channel }) => channel), [PUBLIC_THEME_CHANNEL, PUBLIC_EVENT_CHANNEL]);
+  assert.equal(first.messages[0].result, 'high-contrast');
+  theme = 'pixel-classic';
+  delivery.publishTheme('pixel-classic');
+  assert.deepEqual(first.messages[2], { channel: PUBLIC_THEME_CHANNEL, result: 'pixel-classic' });
+  delivery.detachIfCurrent(first);
+  delivery.publishTheme('pixel-classic');
+  assert.equal(first.messages.length, 3);
+  const reopened = target();
+  delivery.attachAfterLoad(reopened);
+  assert.deepEqual(reopened.messages[0], { channel: PUBLIC_THEME_CHANNEL, result: 'pixel-classic' });
 });

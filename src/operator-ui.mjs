@@ -8,6 +8,7 @@ import './components/bingo-dialog.mjs';
 import './screen.css';
 import { createOperatorController } from './operator-controller.mjs';
 import { createManualDrawHandler } from './manual-draw.mjs';
+import { applyTheme, createThemeController, DEFAULT_THEME, THEME_LABELS } from './theme-controller.mjs';
 
 function required(id, type) {
   const element = document.getElementById(id);
@@ -70,3 +71,20 @@ const controller = createOperatorController(window.desktop, {
   },
 });
 void controller.start();
+
+const themeSelect = required('theme-select', HTMLSelectElement);
+const themeStatus = required('theme-status', HTMLElement);
+const themes = createThemeController(window.desktop, {
+  render: ({ theme, pending, error }) => {
+    // Only an acknowledged theme is applied; a failed first read reveals the default.
+    if (theme !== null) applyTheme(document.documentElement, theme);
+    else if (error !== null && !document.documentElement.dataset.theme) applyTheme(document.documentElement, DEFAULT_THEME);
+    themeSelect.value = theme ?? DEFAULT_THEME;
+    themeSelect.disabled = pending;
+    themeStatus.message = error ?? (pending ? 'Saving theme' : theme === null ? 'Waiting for theme'
+      : `Current theme: ${THEME_LABELS[theme]}`);
+    themeStatus.tone = error ? 'error' : 'info';
+  },
+});
+themeSelect.addEventListener('change', () => { void themes.select(themeSelect.value); });
+void themes.start();

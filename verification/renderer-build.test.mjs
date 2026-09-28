@@ -116,3 +116,17 @@ test('renderer output stays confined to its directory', () => {
   assert.deepEqual(readdirSync(dist).filter((name) => name.endsWith('.html')), []);
   assert.deepEqual(readdirSync(dist).filter((name) => name === 'assets'), []);
 });
+
+test('theme selection keeps an operator-only setter, a receive-only sandboxed public channel, and no-flash CSS', () => {
+  const main = text('dist/main.js');
+  assert.match(main, /sandbox: true/);
+  assert.match(main, /registerThemeIpc\)\(electron_1\.ipcMain/);
+  assert.match(main, /createOperatorGuard\)\(operator\.webContents/);
+  const publicPreload = text('dist/public-preload.js');
+  assert.match(publicPreload, /exposeInMainWorld\('publicTheme'/);
+  assert.doesNotMatch(publicPreload, /ipcRenderer\.(?:send|invoke|sendSync)\b/);
+  assert.match(text('dist/preload.js'), /invoke\('theme:set', theme\)/);
+  const css = readdirSync(path.join(renderer, 'assets'))
+    .filter((file) => file.endsWith('.css')).map((file) => text(`dist/renderer/assets/${file}`)).join('\n');
+  assert.match(css, /html:not\(\[data-theme\]\) body\s*\{\s*visibility:\s*hidden/);
+});

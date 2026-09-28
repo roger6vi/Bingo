@@ -1,9 +1,11 @@
 import type { EventSnapshot } from './event-core';
 import type { GamePhase } from './game-phase';
+import type { ThemeId } from './theme';
 
 type PhaseSnapshot = EventSnapshot & { readonly phase: GamePhase; readonly lastTransitionAt: string | null };
 
 export const PUBLIC_EVENT_CHANNEL = 'public:event-state';
+export const PUBLIC_THEME_CHANNEL = 'public:theme';
 
 export type PublicEventResult =
   | { ok: true; snapshot: PhaseSnapshot }
@@ -12,7 +14,7 @@ export type PublicEventResult =
 type Store = { load(): PhaseSnapshot | null };
 type Target = {
   isDestroyed(): boolean;
-  send(channel: string, result: PublicEventResult): void;
+  send(channel: string, result: PublicEventResult | ThemeId): void;
 };
 
 const success = (snapshot: PhaseSnapshot): PublicEventResult => ({
@@ -21,16 +23,16 @@ const success = (snapshot: PhaseSnapshot): PublicEventResult => ({
   },
 });
 
-export function createPublicEventDelivery(store: Store) {
+export function createPublicEventDelivery(store: Store, committedTheme?: () => ThemeId) {
   let current: Target | null = null;
 
-  function send(target: Target, result: PublicEventResult): void {
+  function send(target: Target, result: PublicEventResult | ThemeId, channel = PUBLIC_EVENT_CHANNEL): void {
     try {
       if (target.isDestroyed()) {
         if (current === target) current = null;
         return;
       }
-      target.send(PUBLIC_EVENT_CHANNEL, result);
+      target.send(channel, result);
     } catch {
       if (current === target) current = null;
     }
@@ -40,6 +42,9 @@ export function createPublicEventDelivery(store: Store) {
     attachAfterLoad(target: Target): void {
       if (target.isDestroyed()) return;
       current = target;
+      // Theme first, so the page is revealed in the committed theme.
+      if (committedTheme !== undefined) send(target, committedTheme(), PUBLIC_THEME_CHANNEL);
+      if (current !== target) return;
       let result: PublicEventResult;
       try {
         const snapshot = store.load();
@@ -57,6 +62,9 @@ export function createPublicEventDelivery(store: Store) {
     },
     publishCommitted(snapshot: PhaseSnapshot): void {
       if (current !== null) send(current, success(snapshot));
+    },
+    publishTheme(theme: ThemeId): void {
+      if (current !== null) send(current, theme, PUBLIC_THEME_CHANNEL);
     },
   };
 }

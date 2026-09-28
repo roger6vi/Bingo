@@ -93,8 +93,13 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
   document.body.append(shell);
   let receive;
   let unsubscribed = 0;
+  let receiveTheme;
   window.publicEvent = { subscribe: (callback) => {
     receive = callback;
+    return () => { unsubscribed++; };
+  } };
+  window.publicTheme = { subscribe: (callback) => {
+    receiveTheme = callback;
     return () => { unsubscribed++; };
   } };
   try {
@@ -115,6 +120,13 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
     const status = shell.querySelector('#event-status');
     const error = shell.querySelector('#event-error');
     expect(phase.message).to.equal('Current phase: waiting for event state');
+    expect(document.documentElement.dataset.theme).to.equal(undefined);
+    receiveTheme('high-contrast');
+    expect(document.documentElement.dataset.theme).to.equal('high-contrast');
+    for (const invalid of ['body{}', 'https://example.com/x.css', '../generated/x.css', 'dark', null]) receiveTheme(invalid);
+    expect(document.documentElement.dataset.theme).to.equal('high-contrast');
+    receiveTheme('pixel-classic');
+    expect(document.documentElement.dataset.theme).to.equal('pixel-classic');
     receive({ ok: true, snapshot: { calledNumbers: [9], phase: 'line_declared',
       lastTransitionAt: '2026-01-01T00:00:00.000Z' } });
     expect(phase.message).to.equal('Current phase: Line declared');
@@ -127,10 +139,12 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
     expect(phase.shadowRoot.querySelector('[role="status"]').textContent).to.equal('Current phase: Line declared');
     await expect(phase).to.be.accessible();
     window.dispatchEvent(new Event('pagehide'));
-    expect(unsubscribed).to.equal(1);
+    expect(unsubscribed).to.equal(2);
   } finally {
     shell.remove();
     delete window.publicEvent;
+    delete window.publicTheme;
+    delete document.documentElement.dataset.theme;
   }
 });
 
