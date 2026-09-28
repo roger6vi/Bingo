@@ -41,8 +41,23 @@ test('initial get renders persisted order, remaining count, and a non-stale stat
   await f.controller.start();
   assert.deepEqual(f.calls, ['get']);
   assert.deepEqual(f.last(), { calledNumbers: [90, 1], remaining: 88, phase: 'drawing', stale: false, error: null,
-    pending: false, manualDisabled: false, digitalDisabled: false, reloadDisabled: false });
+    pending: false, manualDisabled: false, digitalDisabled: false, reloadDisabled: false,
+    snapshot: { calledNumbers: [90, 1], phase: 'drawing', lastTransitionAt: null } });
   assert.equal(typeof f.handlers.reload, 'function');
+});
+
+test('the acknowledged snapshot for the simulator is absent before load and kept through failures', async () => {
+  const f = fixture();
+  f.responses.get = async () => failure('Could not read.');
+  await f.controller.start();
+  assert.equal((f.renders.at(-1) as { snapshot: unknown }).snapshot, null);
+  f.responses.get = async () => phased('line_declared', time, [4, 5]);
+  await f.controller.start();
+  f.responses.digital = async () => failure('Write failed');
+  f.handlers.digital?.();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual((f.renders.at(-1) as { snapshot: unknown }).snapshot,
+    { calledNumbers: [4, 5], phase: 'line_declared', lastTransitionAt: time });
 });
 
 test('manual and digital actions render only acknowledged IPC snapshots and clear manual only on success', async () => {

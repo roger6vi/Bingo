@@ -8,6 +8,8 @@ const root = path.resolve(import.meta.dirname, '..');
 const dist = path.join(root, 'dist');
 const renderer = path.join(dist, 'renderer');
 const csp = "default-src 'none'; script-src 'self'; style-src 'self'; media-src 'self'; img-src 'self' data:; font-src 'self'; object-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'";
+// Only the operator page may frame, and only the bundled public page, for the Configuración simulator.
+const pageCsp = { public: csp, operator: csp.replace("object-src 'none';", "object-src 'none'; frame-src 'self';") };
 const text = (file) => readFileSync(path.join(root, file), 'utf8');
 
 for (const name of ['main', 'preload', 'public-preload']) {
@@ -29,7 +31,7 @@ test('built main loads both exact renderer pages and authorizes the operator pat
 for (const page of ['operator', 'public']) {
   test(`${page} page has CSP and only local, external renderer resources`, () => {
     const html = text(`dist/renderer/${page}.html`);
-    assert.ok(html.includes(`content="${csp}"`), 'exact offline CSP');
+    assert.ok(html.includes(`content="${pageCsp[page]}"`), 'exact offline CSP');
     assert.match(html, /<bingo-shell\b/);
     assert.doesNotMatch(html, /<(?:script|style)\b[^>]*>\s*[^<\s]/i);
     assert.doesNotMatch(html, /\bhttps?:\/\/|(?:src|href)="(?:\/\/|data:|javascript:)/i);
@@ -131,4 +133,17 @@ test('theme selection keeps an operator-only setter, a receive-only sandboxed pu
   const css = readdirSync(path.join(renderer, 'assets'))
     .filter((file) => file.endsWith('.css')).map((file) => text(`dist/renderer/assets/${file}`)).join('\n');
   assert.match(css, /html:not\(\[data-theme\]\) body\s*\{\s*visibility:\s*hidden/);
+});
+
+test('the Configuración simulator frames the bundled public page without any privileged bridge', () => {
+  const html = text('dist/renderer/operator.html');
+  const frames = [...html.matchAll(/<iframe\b[^>]*>/g)].map(([tag]) => tag);
+  assert.equal(frames.length, 1);
+  assert.match(frames[0], /src="\.\/public\.html"/);
+  assert.match(frames[0], /\binert\b/);
+  assert.match(frames[0], /title="Simulador de la pantalla pública"/);
+  assert.ok(statSync(path.join(renderer, 'public.html')).size > 0);
+  // Subframes get no preload: the simulator can only receive display messages from its parent.
+  assert.doesNotMatch(text('dist/main.js'), /nodeIntegrationInSubFrames/);
+  assert.doesNotMatch(text('dist/renderer/public.html'), /<iframe\b/);
 });

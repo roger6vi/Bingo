@@ -7,6 +7,100 @@ import '../../src/components/bingo-draw-controls.mjs';
 import '../../src/components/bingo-dialog.mjs';
 import '../../src/components/bingo-event-list.mjs';
 import { bindTabs } from '../../src/operator-tabs.mjs';
+import { setViewport } from '@web/test-runner-commands';
+import { SIMULATOR_MESSAGE } from '../../src/public-bridge.mjs';
+
+const settle = async () => { for (let turn = 0; turn < 4; turn++) await new Promise((resolve) => setTimeout(resolve, 0)); };
+// ResizeObserver delivers on the next rendering frames.
+const frames = async () => { for (let frame = 0; frame < 3; frame++) await new Promise((resolve) => requestAnimationFrame(resolve)); };
+const stylesheet = (href) => new Promise((resolve, reject) => {
+  const link = document.createElement('link');
+  link.rel = 'stylesheet';
+  link.href = href;
+  link.onload = () => resolve(link);
+  link.onerror = reject;
+  document.head.append(link);
+});
+
+// Mounts the real operator page and entry module against an in-memory desktop boundary, and records
+// every message the Configuración simulator frame receives.
+async function loadOperator() {
+  const page = new DOMParser().parseFromString(await (await fetch(new URL('../../src/operator.html', import.meta.url))).text(), 'text/html');
+  const main = document.importNode(page.querySelector('main'), true);
+  document.body.append(main);
+  const links = await Promise.all(['pixel-classic', 'high-contrast']
+    .map((name) => stylesheet(new URL(`../../src/generated/${name}.css`, import.meta.url).href)));
+  const screen = document.createElement('style');
+  screen.textContent = (await (await fetch(new URL('../../src/screen.css', import.meta.url))).text()).replace(/@import [^;]+;/g, '');
+  document.head.append(screen);
+  const requests = [];
+  const replies = { setTheme: null, updateEvent: null };
+  let theme = 'pixel-classic';
+  let events = [
+    { id: 'a', name: 'Verbena', date: '2026-08-15', place: 'Plaza', phase: 'drawing', createdAt: '2026-01-01T00:00:00.000Z', active: true },
+    { id: 'b', name: 'Fiesta', date: '2026-10-01', place: 'Sala', phase: 'drawing', createdAt: '2026-01-02T00:00:00.000Z', active: false },
+  ];
+  const list = () => ({ ok: true, events: events.map((event) => ({ ...event })) });
+  window.desktop = {
+    getCurrentEvent: async () => ({ ok: true, snapshot: { calledNumbers: [4, 9], phase: 'drawing', lastTransitionAt: null } }),
+    drawManual: async () => { requests.push('draw'); return { ok: false, message: 'unexpected' }; },
+    drawDigital: async () => { requests.push('draw'); return { ok: false, message: 'unexpected' }; },
+    onPublicStatus: () => {}, openPublic: () => {}, movePublicToSecondary: () => {},
+    getTheme: async () => ({ ok: true, theme }),
+    setTheme: async (next) => {
+      requests.push(`theme:${next}`);
+      if (replies.setTheme) return replies.setTheme;
+      theme = next;
+      return { ok: true, theme };
+    },
+    listEvents: async () => list(),
+    createEvent: async () => list(),
+    selectEvent: async (id) => {
+      requests.push(`select:${id}`);
+      events = events.map((event) => ({ ...event, active: event.id === id }));
+      return list();
+    },
+    updateEvent: async (id, meta) => {
+      requests.push(`update:${id}:${JSON.stringify(meta)}`);
+      if (replies.updateEvent) return replies.updateEvent;
+      events = events.map((event) => (event.id === id ? { ...event, ...meta } : event));
+      return list();
+    },
+  };
+  const entry = new URL('../../src/operator-ui.mjs', import.meta.url);
+  const source = (await (await fetch(entry)).text())
+    .replace("import './screen.css';", '')
+    .replaceAll(/from '(\.\/[^']+)'/g, (_, relative) => `from '${new URL(relative, entry).href}'`)
+    .replaceAll(/import '(\.\/[^']+)'/g, (_, relative) => `import '${new URL(relative, entry).href}'`);
+  const moduleUrl = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
+  try { await import(moduleUrl); } finally { URL.revokeObjectURL(moduleUrl); }
+  const frame = main.querySelector('#public-simulator');
+  if (frame.contentDocument?.readyState !== 'complete' || frame.contentWindow.location.href === 'about:blank') {
+    await new Promise((resolve) => frame.addEventListener('load', resolve, { once: true }));
+  }
+  const messages = [];
+  frame.contentWindow.addEventListener('message', (message) => {
+    if (message.data?.type === SIMULATOR_MESSAGE) messages.push(message.data);
+  });
+  // Replay the feed into the listener, as a frame reload would.
+  frame.dispatchEvent(new Event('load'));
+  await settle();
+  const simulator = { messages, last: (channel) => messages.filter((message) => message.channel === channel).at(-1)?.payload };
+  const cleanup = () => {
+    for (const dialog of main.querySelectorAll('bingo-dialog')) dialog.shadowRoot?.querySelector('dialog')?.close();
+    main.remove();
+    links.forEach((link) => link.remove());
+    screen.remove();
+    delete window.desktop;
+    delete document.documentElement.dataset.theme;
+  };
+  return { main, requests, replies, simulator, cleanup };
+}
+
+function type(input, value) {
+  input.value = value;
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+}
 
 it('operator page exposes shared panels and interactive components', async () => {
   const response = await fetch(new URL('../../src/operator.html', import.meta.url));
@@ -15,7 +109,8 @@ it('operator page exposes shared panels and interactive components', async () =>
   expect(page.querySelector('main h1')).not.to.equal(null);
   expect([...page.querySelectorAll('main [role="tab"]')].map((tab) => tab.textContent))
     .to.deep.equal(['Eventos', 'Configuración', 'Bingo']);
-  expect(page.querySelectorAll('#panel-bingo bingo-panel')).to.have.length(3);
+  expect(page.querySelectorAll('#panel-bingo bingo-panel')).to.have.length(2);
+  expect(page.querySelector('#panel-bingo #theme-select')).to.equal(null, 'the theme selector lives in Configuración');
   expect(page.querySelectorAll('#panel-settings .active-event-banner, #panel-bingo .active-event-banner')).to.have.length(2);
   expect(page.querySelector('#panel-events bingo-event-list#event-list')).not.to.equal(null);
   for (const selector of ['[role="tablist"]', '#panel-events', '#panel-settings']) {
@@ -24,7 +119,17 @@ it('operator page exposes shared panels and interactive components', async () =>
   expect([...page.querySelectorAll('.active-event-banner')].every((banner) => banner.lang === 'es')).to.equal(true);
   expect(page.querySelector('#panel-events input#event-date[type="date"][required]')).not.to.equal(null);
   expect(page.querySelector('#panel-bingo bingo-draw-controls#draw-controls')).not.to.equal(null);
-  expect(page.querySelector('label[for="theme-select"]').textContent).to.equal('Theme for both windows');
+  expect(page.querySelector('#panel-settings label[for="theme-select"]').textContent).to.equal('Tema para ambas pantallas');
+  for (const id of ['settings-name', 'settings-place', 'settings-date']) {
+    const input = page.querySelector(`#panel-settings form#settings-form input#${id}[required]`);
+    expect(page.querySelector(`label[for="${id}"]`)).not.to.equal(null);
+    expect(page.getElementById(input.getAttribute('aria-describedby')).classList.contains('field-error')).to.equal(true);
+  }
+  expect(page.querySelector('#settings-save').textContent).to.equal('Guardar cambios');
+  expect(page.querySelector('#settings-save[type="submit"]')).not.to.equal(null);
+  const simulator = page.querySelector('#panel-settings figure.simulator iframe#public-simulator');
+  expect([simulator.getAttribute('src'), simulator.hasAttribute('inert'), simulator.title])
+    .to.deep.equal(['./public.html', true, 'Simulador de la pantalla pública']);
   expect([...page.querySelectorAll('select#theme-select option')].map((option) => option.value))
     .to.deep.equal(['pixel-classic', 'high-contrast']);
   expect(page.querySelector('bingo-status#theme-status')).not.to.equal(null);
@@ -34,7 +139,7 @@ it('operator page exposes shared panels and interactive components', async () =>
   expect(page.querySelector('bingo-status#public-status')).not.to.equal(null);
   expect(page.querySelector('bingo-draw-controls#draw-controls')).not.to.equal(null);
   for (const id of ['open-public', 'move-public']) expect(page.querySelector(`bingo-button#${id}`)).not.to.equal(null);
-  expect(page.querySelector('bingo-dialog')).to.equal(null);
+  expect([...page.querySelectorAll('bingo-dialog')].map((dialog) => dialog.id)).to.deep.equal(['unsaved-dialog']);
 });
 
 it('summary and history show ordered acknowledged values, preserve them through stale states, and remain presentation-only', async () => {
@@ -267,68 +372,47 @@ it('operator wiring keeps committed state on failure and public controls use the
   }
 });
 
-it('operator theme selection applies only committed themes and keeps the last one on failure', async () => {
-  const page = new DOMParser().parseFromString(await (await fetch(new URL('../../src/operator.html', import.meta.url))).text(), 'text/html');
-  const main = document.importNode(page.querySelector('main'), true);
-  document.body.append(main);
-  const links = await Promise.all(['pixel-classic', 'high-contrast'].map((name) => new Promise((resolve, reject) => {
-    const element = document.createElement('link');
-    element.rel = 'stylesheet';
-    element.href = new URL(`../../src/generated/${name}.css`, import.meta.url).href;
-    element.onload = () => resolve(element);
-    element.onerror = reject;
-    document.head.append(element);
-  })));
-  let reply = { ok: true, theme: 'high-contrast' };
-  const requests = [];
-  window.desktop = {
-    getCurrentEvent: async () => ({ ok: true, snapshot: { calledNumbers: [], phase: 'drawing', lastTransitionAt: null } }),
-    onPublicStatus: () => {}, openPublic: () => {}, movePublicToSecondary: () => {},
-    getTheme: async () => ({ ok: true, theme: 'pixel-classic' }),
-    setTheme: async (theme) => { requests.push(theme); return reply; },
-  };
-  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+it('operator theme selection drafts into the simulator and applies only committed themes', async () => {
+  const op = await loadOperator();
   try {
-    const entry = new URL('../../src/operator-ui.mjs', import.meta.url);
-    const source = (await (await fetch(entry)).text())
-      .replace("import './screen.css';", '')
-      .replaceAll(/from '(\.\/[^']+)'/g, (_, relative) => `from '${new URL(relative, entry).href}'`)
-      .replaceAll(/import '(\.\/[^']+)'/g, (_, relative) => `import '${new URL(relative, entry).href}'`);
-    const moduleUrl = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
-    try { await import(moduleUrl); } finally { URL.revokeObjectURL(moduleUrl); }
-    await settle();
+    const { main, requests, simulator } = op;
     const select = main.querySelector('#theme-select');
     const status = main.querySelector('#theme-status');
+    const state = main.querySelector('#settings-state');
+    const save = main.querySelector('#settings-save');
     const root = document.documentElement;
-    expect(root.dataset.theme).to.equal('pixel-classic');
-    expect(select.disabled).to.equal(false);
+    expect([root.dataset.theme, select.disabled, save.disabled]).to.deep.equal(['pixel-classic', false, true]);
     const canvas = () => getComputedStyle(root).getPropertyValue('--bingo-color-canvas').trim();
     const classic = canvas();
     select.value = 'high-contrast';
     select.dispatchEvent(new Event('change'));
-    expect(select.disabled).to.equal(true);
-    expect(root.dataset.theme).to.equal('pixel-classic');
     await settle();
+    expect(root.dataset.theme).to.equal('pixel-classic', 'a draft never restyles the operator or the public window');
+    expect(requests).to.deep.equal([]);
+    expect(simulator.last('theme')).to.equal('high-contrast');
+    expect([state.message, state.tone, save.disabled]).to.deep.equal(['Cambios sin guardar: solo se ven en el simulador.', 'warning', false]);
+    save.click();
+    await settle();
+    expect(requests).to.deep.equal(['theme:high-contrast']);
     expect(root.dataset.theme).to.equal('high-contrast');
     expect(canvas()).not.to.equal(classic);
-    expect(status.message).to.equal('Current theme: High contrast');
-    reply = { ok: false, code: 'storage_failure', message: 'Could not save the theme. Try again.' };
+    expect([status.message, state.message, save.disabled]).to.deep.equal(['Tema guardado: High contrast', 'Sin cambios pendientes.', true]);
+    op.replies.setTheme = { ok: false, code: 'storage_failure', message: 'Could not save the theme. Try again.' };
     select.value = 'pixel-classic';
     select.dispatchEvent(new Event('change'));
+    save.click();
     await settle();
-    expect(requests).to.deep.equal(['high-contrast', 'pixel-classic']);
-    expect(root.dataset.theme).to.equal('high-contrast');
-    expect(select.value).to.equal('high-contrast');
-    expect(status.message).to.equal('Could not save the theme. Try again.');
-    await status.updateComplete;
-    expect(status.shadowRoot.querySelector('[role="alert"]')).not.to.equal(null);
+    expect(requests).to.deep.equal(['theme:high-contrast', 'theme:pixel-classic']);
+    expect([root.dataset.theme, select.value]).to.deep.equal(['high-contrast', 'pixel-classic'], 'the failed draft is kept');
+    const error = main.querySelector('#settings-error');
+    expect([error.hidden, error.message]).to.deep.equal([false, 'No se guardó el tema. Los cambios siguen en el borrador; inténtalo de nuevo.']);
+    await error.updateComplete;
+    expect(error.shadowRoot.querySelector('[role="alert"]')).not.to.equal(null);
+    main.querySelector('#settings-discard').click();
+    await settle();
+    expect([select.value, error.hidden, simulator.last('theme')]).to.deep.equal(['high-contrast', true, 'high-contrast']);
     await expect(select.closest('bingo-panel')).to.be.accessible();
-  } finally {
-    main.remove();
-    links.forEach((link) => link.remove());
-    delete window.desktop;
-    delete document.documentElement.dataset.theme;
-  }
+  } finally { op.cleanup(); }
 });
 
 it('operator tabs follow WAI-ARIA selection by pointer and keyboard with a roving tabindex', async () => {
@@ -386,4 +470,170 @@ it('event list marks the committed active event, offers selection for others, an
   expect(chosen).to.deep.equal(['b']);
   expect(items[1].querySelector('bingo-button').button.disabled).to.equal(true);
   await expect(list).to.be.accessible();
+});
+
+it('event details draft into the simulator, validate like the store, and save through the operator IPC', async () => {
+  const op = await loadOperator();
+  try {
+    const { main, requests, simulator } = op;
+    const name = main.querySelector('#settings-name');
+    const place = main.querySelector('#settings-place');
+    const date = main.querySelector('#settings-date');
+    const save = main.querySelector('#settings-save');
+    const banners = [...main.querySelectorAll('.active-event-banner')];
+    const committedBanner = 'Evento activo: Verbena — 2026-08-15, Plaza';
+    expect([name.value, place.value, date.value, name.disabled]).to.deep.equal(['Verbena', 'Plaza', '2026-08-15', false]);
+    expect(banners.map((banner) => banner.message)).to.deep.equal([committedBanner, committedBanner]);
+    expect(simulator.last('event')).to.deep.equal({ ok: true, eventChanged: true,
+      snapshot: { calledNumbers: [4, 9], phase: 'drawing', lastTransitionAt: null } }, 'the simulator shows committed history');
+    type(name, '  Gran Bingo ');
+    type(date, '2026-09-01');
+    await settle();
+    expect(simulator.last('meta')).to.deep.equal({ name: 'Gran Bingo', date: '2026-09-01', place: 'Plaza' });
+    expect(banners.map((banner) => banner.message)).to.deep.equal([committedBanner, committedBanner]);
+    type(place, '   ');
+    const placeError = main.querySelector('#settings-place-error');
+    expect([place.getAttribute('aria-invalid'), placeError.hidden, placeError.textContent, save.disabled])
+      .to.deep.equal(['true', false, 'Escribe un lugar de 1 a 120 caracteres.', true]);
+    type(place, 'Plaza');
+    expect([place.getAttribute('aria-invalid'), placeError.hidden, save.disabled]).to.deep.equal(['false', true, false]);
+    op.replies.updateEvent = { ok: false, code: 'storage_failure', message: 'Could not save the event details. Reload the events and try again.' };
+    save.click();
+    await settle();
+    const request = 'update:a:{"name":"Gran Bingo","date":"2026-09-01","place":"Plaza"}';
+    expect(requests).to.deep.equal([request]);
+    expect([name.value, date.value]).to.deep.equal(['  Gran Bingo ', '2026-09-01'], 'a failed save keeps the draft');
+    expect(main.querySelector('#settings-error').message)
+      .to.equal('No se guardaron los datos del evento. Los cambios siguen en el borrador; inténtalo de nuevo.');
+    expect(banners[0].message).to.equal(committedBanner);
+    op.replies.updateEvent = null;
+    save.click();
+    await settle();
+    expect(requests).to.deep.equal([request, request]);
+    const saved = 'Evento activo: Gran Bingo — 2026-09-01, Plaza';
+    expect(banners.map((banner) => [banner.message, banner.tone])).to.deep.equal([[saved, 'info'], [saved, 'info']]);
+    expect([name.value, main.querySelector('#settings-state').message, main.querySelector('#settings-error').hidden])
+      .to.deep.equal(['Gran Bingo', 'Sin cambios pendientes.', true]);
+    expect(requests.includes('draw')).to.equal(false);
+    await expect(main.querySelector('#settings-form')).to.be.accessible();
+  } finally { op.cleanup(); }
+});
+
+it('leaving Configuración with unsaved edits offers Save, Discard, and Cancel with keyboard focus restored', async () => {
+  const op = await loadOperator();
+  try {
+    const { main, requests } = op;
+    const [eventsTab, settingsTab, bingoTab] = ['tab-events', 'tab-settings', 'tab-bingo'].map((id) => main.querySelector(`#${id}`));
+    const dialog = main.querySelector('#unsaved-dialog');
+    const native = () => dialog.shadowRoot.querySelector('dialog');
+    const name = main.querySelector('#settings-name');
+    const key = (tab, name) => tab.dispatchEvent(new KeyboardEvent('keydown', { key: name, bubbles: true }));
+    const choose = async (action) => {
+      dialog.shadowRoot.querySelector(`[data-action="${action}"]`).button.click();
+      await settle();
+    };
+    settingsTab.click();
+    type(name, 'Borrador');
+    settingsTab.focus();
+    key(settingsTab, 'ArrowRight');
+    await settle();
+    expect(native().open).to.equal(true);
+    expect(document.activeElement).to.equal(dialog, 'focus moves into the modal dialog');
+    expect([...dialog.shadowRoot.querySelectorAll('bingo-button')].map((button) => button.textContent.trim()))
+      .to.deep.equal(['Cancelar', 'Descartar cambios', 'Guardar cambios']);
+    await expect(dialog).to.be.accessible();
+    await choose('cancel');
+    expect([native().open, settingsTab.getAttribute('aria-selected'), document.activeElement, name.value])
+      .to.deep.equal([false, 'true', settingsTab, 'Borrador']);
+    key(settingsTab, 'ArrowRight');
+    await settle();
+    native().dispatchEvent(new Event('cancel', { cancelable: true }));
+    await settle();
+    expect([settingsTab.getAttribute('aria-selected'), document.activeElement]).to.deep.equal(['true', settingsTab], 'Escape cancels');
+    key(settingsTab, 'ArrowRight');
+    await settle();
+    await choose('discard');
+    expect([bingoTab.getAttribute('aria-selected'), document.activeElement, name.value]).to.deep.equal(['true', bingoTab, 'Verbena']);
+    expect(requests).to.deep.equal([]);
+    settingsTab.click();
+    type(name, 'Guardado');
+    op.replies.updateEvent = { ok: false, code: 'storage_failure', message: 'x' };
+    eventsTab.click();
+    await settle();
+    await choose('save');
+    expect([settingsTab.getAttribute('aria-selected'), name.value]).to.deep.equal(['true', 'Guardado'], 'a failed save stays put');
+    op.replies.updateEvent = null;
+    eventsTab.click();
+    await settle();
+    await choose('save');
+    expect(eventsTab.getAttribute('aria-selected')).to.equal('true');
+    expect(requests.at(-1)).to.equal('update:a:{"name":"Guardado","date":"2026-08-15","place":"Plaza"}');
+    bingoTab.click();
+    await settle();
+    expect([native().open, bingoTab.getAttribute('aria-selected')]).to.deep.equal([false, 'true'], 'a clean draft never prompts');
+  } finally { op.cleanup(); }
+});
+
+it('selecting another event with unsaved edits is guarded and the draft follows the newly active event', async () => {
+  const op = await loadOperator();
+  try {
+    const { main, requests } = op;
+    const dialog = main.querySelector('#unsaved-dialog');
+    const list = main.querySelector('#event-list');
+    const name = main.querySelector('#settings-name');
+    main.querySelector('#tab-settings').click();
+    type(name, 'Borrador');
+    list.dispatchEvent(new CustomEvent('event-select', { detail: { id: 'b' } }));
+    await settle();
+    dialog.shadowRoot.querySelector('[data-action="cancel"]').button.click();
+    await settle();
+    expect([requests, name.value]).to.deep.equal([[], 'Borrador']);
+    list.dispatchEvent(new CustomEvent('event-select', { detail: { id: 'b' } }));
+    await settle();
+    dialog.shadowRoot.querySelector('[data-action="discard"]').button.click();
+    await settle();
+    expect(requests).to.deep.equal(['select:b']);
+    expect([name.value, main.querySelector('#settings-place').value, op.simulator.last('meta')?.name])
+      .to.deep.equal(['Fiesta', 'Sala', 'Fiesta']);
+  } finally { op.cleanup(); }
+});
+
+it('Configuración keeps a scrollable control column beside a 16:9 simulator and stacks at narrow widths', async () => {
+  await setViewport({ width: 1400, height: 900 });
+  const op = await loadOperator();
+  try {
+    const { main } = op;
+    main.querySelector('#tab-settings').click();
+    await frames();
+    const controls = main.querySelector('.settings-controls');
+    const viewport = main.querySelector('#simulator-viewport');
+    const frame = main.querySelector('#public-simulator');
+    let c = controls.getBoundingClientRect();
+    let v = viewport.getBoundingClientRect();
+    expect(v.left).to.be.at.least(c.right);
+    expect(v.width).to.be.greaterThan(c.width);
+    expect(Math.abs(v.width / v.height - 16 / 9)).to.be.lessThan(0.02);
+    expect(Math.abs(frame.getBoundingClientRect().width - viewport.clientWidth)).to.be.lessThan(1, 'the 1920px page is scaled to fit');
+    expect(getComputedStyle(controls).overflowY).to.equal('auto');
+    expect(getComputedStyle(main.querySelector('.simulator')).position).to.equal('sticky');
+    for (const theme of ['pixel-classic', 'high-contrast']) {
+      document.documentElement.dataset.theme = theme;
+      const probe = document.createElement('span');
+      probe.style.color = getComputedStyle(viewport).getPropertyValue('--bingo-color-border').trim();
+      document.body.append(probe);
+      expect(getComputedStyle(viewport).borderTopColor).to.equal(getComputedStyle(probe).color);
+      probe.remove();
+      await expect(main.querySelector('#panel-settings')).to.be.accessible();
+    }
+    expect(getComputedStyle(main.querySelector('#settings-discard')).transitionDuration).to.equal('0s');
+    await setViewport({ width: 600, height: 900 });
+    await frames();
+    c = controls.getBoundingClientRect();
+    v = viewport.getBoundingClientRect();
+    expect(v.top).to.be.at.least(c.bottom);
+    expect(Math.abs(frame.getBoundingClientRect().width - viewport.clientWidth)).to.be.lessThan(1);
+  } finally {
+    op.cleanup();
+    await setViewport({ width: 800, height: 600 });
+  }
 });

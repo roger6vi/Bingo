@@ -74,6 +74,8 @@ test('public markup composes the shell with one main and h1, draw order and sepa
   for (const name of names) assert.match(page, new RegExp(`<bingo-${name}\\b`));
   assert.equal([...page.matchAll(/<main\b/g)].length, 1);
   assert.equal([...page.matchAll(/<h1\b/g)].length, 1);
+  assert.match(page, /<h1 id="event-name">Current event<\/h1>/);
+  assert.match(page, /<p id="event-details" class="event-details" hidden><\/p>/);
   for (const id of ['called-numbers', 'called-count', 'remaining-count']) assert.ok(page.includes(`id="${id}"`));
   assert.match(page, /Called: <output id="called-count" aria-live="off">0<\/output>/);
   assert.match(page, /Remaining: <output id="remaining-count" aria-live="off">90<\/output>/);
@@ -91,7 +93,8 @@ test('public adapter maps controller fields to all display states without mutati
   for (const field of ['loaded', 'calledNumbers', 'latest', 'count', 'remaining', 'stale', 'error']) {
     assert.ok(ui.includes(`state.${field}`), field);
   }
-  assert.match(ui, /createPublicController\(window\.publicEvent/);
+  assert.match(ui, /const bridges = publicBridges\(window\)/);
+  assert.match(ui, /createPublicController\(bridges\.event/);
   assert.match(ui, /state\.stale\s*\? 'warning' : 'info'/);
   assert.match(ui, /state\.error/);
   assert.match(ui, /eventError\.tone = 'error'/);
