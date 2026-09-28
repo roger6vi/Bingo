@@ -210,3 +210,12 @@ test('a mutating view cannot modify controller history or future prefix decision
   assert.equal(states.at(-1)?.latest, 6);
   assert.equal(states.at(-1)?.stale, false);
 });
+
+test('a republished active event replaces history only when marked eventChanged', () => {
+  const f = fixture();
+  f.send(success([90, 1]));
+  f.send(success([7]));
+  assert.equal(f.last().stale, true);
+  f.send({ ...success([7]), eventChanged: true });
+  assert.deepEqual([f.last().calledNumbers, f.last().stale, f.last().error], [[7], false, null]);
+});

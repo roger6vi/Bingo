@@ -70,3 +70,10 @@ test('only the operator main frame at its page URL may read or set the theme', (
   assert.throws(() => f.invoke(THEME_CHANNELS.set, ['pixel-classic'], undefined, null), /Unauthorized/);
   assert.equal(f.stored(), 'high-contrast');
 });
+
+test('reload re-reads the active event theme and falls back to the default when unreadable', () => {
+  const f = fixture('high-contrast');
+  f.invoke(THEME_CHANNELS.set, ['pixel-classic']);
+  assert.equal(f.theme.reload(), 'pixel-classic');
+  assert.deepEqual(f.invoke(THEME_CHANNELS.get), { ok: true, theme: 'pixel-classic' });
+});

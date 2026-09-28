@@ -84,3 +84,20 @@ test('operator window: a never-settling getTheme reveals the default without rep
   assert.equal(root.dataset.theme, 'high-contrast');
   assert.deepEqual(states.at(-1), { theme: 'high-contrast', pending: false, error: null });
 });
+
+test('start() during a pending save queues a fresh read instead of being dropped', async () => {
+  let resolveSave: (value: unknown) => void = () => {};
+  let reads = 0;
+  const f = fixture({
+    getTheme: async () => { reads += 1; return { ok: true, theme: reads === 1 ? 'pixel-classic' : 'high-contrast' }; },
+    setTheme: () => new Promise((resolve) => { resolveSave = resolve; }),
+  });
+  await f.controller.start();
+  const saving = f.controller.select('high-contrast');
+  const reread = f.controller.start();
+  resolveSave({ ok: true, theme: 'high-contrast' });
+  await saving;
+  await reread;
+  assert.equal(reads, 2);
+  assert.deepEqual(f.last(), { theme: 'high-contrast', pending: false, error: null });
+});

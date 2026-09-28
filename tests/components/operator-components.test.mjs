@@ -5,13 +5,25 @@ import '../../src/components/bingo-status.mjs';
 import '../../src/components/bingo-button.mjs';
 import '../../src/components/bingo-draw-controls.mjs';
 import '../../src/components/bingo-dialog.mjs';
+import '../../src/components/bingo-event-list.mjs';
+import { bindTabs } from '../../src/operator-tabs.mjs';
 
 it('operator page exposes shared panels and interactive components', async () => {
   const response = await fetch(new URL('../../src/operator.html', import.meta.url));
   expect(response.ok).to.equal(true);
   const page = new DOMParser().parseFromString(await response.text(), 'text/html');
   expect(page.querySelector('main h1')).not.to.equal(null);
-  expect(page.querySelectorAll('main bingo-panel')).to.have.length(3);
+  expect([...page.querySelectorAll('main [role="tab"]')].map((tab) => tab.textContent))
+    .to.deep.equal(['Eventos', 'Configuración', 'Bingo']);
+  expect(page.querySelectorAll('#panel-bingo bingo-panel')).to.have.length(3);
+  expect(page.querySelectorAll('#panel-settings .active-event-banner, #panel-bingo .active-event-banner')).to.have.length(2);
+  expect(page.querySelector('#panel-events bingo-event-list#event-list')).not.to.equal(null);
+  for (const selector of ['[role="tablist"]', '#panel-events', '#panel-settings']) {
+    expect(page.querySelector(selector).getAttribute('lang')).to.equal('es');
+  }
+  expect([...page.querySelectorAll('.active-event-banner')].every((banner) => banner.lang === 'es')).to.equal(true);
+  expect(page.querySelector('#panel-events input#event-date[type="date"][required]')).not.to.equal(null);
+  expect(page.querySelector('#panel-bingo bingo-draw-controls#draw-controls')).not.to.equal(null);
   expect(page.querySelector('label[for="theme-select"]').textContent).to.equal('Theme for both windows');
   expect([...page.querySelectorAll('select#theme-select option')].map((option) => option.value))
     .to.deep.equal(['pixel-classic', 'high-contrast']);
@@ -317,4 +329,61 @@ it('operator theme selection applies only committed themes and keeps the last on
     delete window.desktop;
     delete document.documentElement.dataset.theme;
   }
+});
+
+it('operator tabs follow WAI-ARIA selection by pointer and keyboard with a roving tabindex', async () => {
+  const root = await fixture(html`<div>
+    <div role="tablist" aria-label="Espacio de trabajo">
+      <button role="tab" id="t1" aria-controls="p1" aria-selected="true">Eventos</button>
+      <button role="tab" id="t2" aria-controls="p2" aria-selected="false">Configuración</button>
+      <button role="tab" id="t3" aria-controls="p3" aria-selected="false">Bingo</button>
+    </div>
+    <div role="tabpanel" id="p1" aria-labelledby="t1" tabindex="0">A</div>
+    <div role="tabpanel" id="p2" aria-labelledby="t2" tabindex="0" hidden>B</div>
+    <div role="tabpanel" id="p3" aria-labelledby="t3" tabindex="0" hidden>C</div></div>`);
+  bindTabs(root.querySelector('[role="tablist"]'));
+  const tabs = [...root.querySelectorAll('[role="tab"]')];
+  const state = () => tabs.map((tab) => [tab.getAttribute('aria-selected'), tab.tabIndex,
+    root.querySelector(`#${tab.getAttribute('aria-controls')}`).hidden]);
+  expect(state()).to.deep.equal([['true', 0, false], ['false', -1, true], ['false', -1, true]]);
+  tabs[2].click();
+  expect(state()[2]).to.deep.equal(['true', 0, false]);
+  const key = (name) => document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: name, bubbles: true }));
+  tabs[2].focus();
+  key('ArrowRight');
+  expect(document.activeElement).to.equal(tabs[0]);
+  expect(state()[0]).to.deep.equal(['true', 0, false]);
+  key('ArrowLeft');
+  expect(document.activeElement).to.equal(tabs[2]);
+  key('Home');
+  key('End');
+  expect([document.activeElement, state()[1][2]]).to.deep.equal([tabs[2], true]);
+  await expect(root).to.be.accessible();
+});
+
+it('event list marks the committed active event, offers selection for others, and shows an empty state', async () => {
+  const list = await fixture(html`<bingo-event-list></bingo-event-list>`);
+  expect(list.shadowRoot.textContent).to.include('no disponible todavía');
+  expect(list.shadowRoot.textContent).not.to.include('Todavía no hay eventos');
+  list.loaded = true;
+  await list.updateComplete;
+  expect(list.shadowRoot.textContent).to.include('Todavía no hay eventos');
+  list.events = [
+    { id: 'a', name: 'Verbena', date: '2026-09-28', place: 'Plaza', phase: 'drawing', active: true },
+    { id: 'b', name: 'Fiesta', date: '2026-10-01', place: 'Sala', phase: 'finished', active: false },
+  ];
+  await list.updateComplete;
+  const items = [...list.shadowRoot.querySelectorAll('li')];
+  expect(items.map((item) => item.getAttribute('aria-current'))).to.deep.equal(['true', 'false']);
+  expect(items[0].textContent).to.include('Evento activo');
+  expect(items[0].querySelector('bingo-button')).to.equal(null);
+  const chosen = [];
+  list.addEventListener('event-select', (event) => chosen.push(event.detail.id));
+  items[1].querySelector('bingo-button').button.click();
+  list.disabled = true;
+  await list.updateComplete;
+  items[1].querySelector('bingo-button').button.click();
+  expect(chosen).to.deep.equal(['b']);
+  expect(items[1].querySelector('bingo-button').button.disabled).to.equal(true);
+  await expect(list).to.be.accessible();
 });

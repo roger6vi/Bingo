@@ -20,8 +20,14 @@ export function createOperatorController(api, view) {
       digitalDisabled: pending || !loaded || exhausted, reloadDisabled: pending });
   }
 
-  async function request(operation, manual = false) {
-    if (pending) return;
+  let inFlight = Promise.resolve();
+  function request(operation, manual = false) {
+    if (pending) return inFlight;
+    inFlight = settle(operation, manual);
+    return inFlight;
+  }
+
+  async function settle(operation, manual) {
     pending = true;
     render();
     try {
@@ -62,7 +68,21 @@ export function createOperatorController(api, view) {
     if (!loaded || calledNumbers.length === 90) return;
     void request(() => api.drawDigital());
   };
+  // After the active event changes, drop the old baseline so the new event's history is accepted.
+  let resyncQueued = null;
+  const resync = async () => {
+    if (pending) {
+      resyncQueued ??= inFlight.then(resync);
+      return resyncQueued;
+    }
+    resyncQueued = null;
+    calledNumbers = [];
+    phase = null;
+    lastTransitionAt = null;
+    loaded = false;
+    await reload();
+  };
   view.bind({ manual, digital, reload: () => { void reload(); } });
   render();
-  return { start: reload };
+  return { start: reload, resync };
 }

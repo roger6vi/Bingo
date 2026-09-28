@@ -9,32 +9,65 @@
   <bingo-shell>
   <main>
     <h1>Operator console</h1>
-    <div class="operator-layout">
-      <bingo-panel heading="Current event">
-        <bingo-status id="phase-status"></bingo-status>
-        <bingo-status id="event-status"></bingo-status>
-        <bingo-status id="event-error" hidden></bingo-status>
-        <bingo-operator-summary id="event-summary"></bingo-operator-summary>
-        <bingo-call-history id="called-numbers"></bingo-call-history>
-        <bingo-draw-controls id="draw-controls"></bingo-draw-controls>
-      </bingo-panel>
-      <bingo-panel heading="Public window preview">
-        <div class="public-controls">
-          <bingo-button id="open-public">Open / reopen public window</bingo-button>
-          <bingo-button id="move-public">Move public window to secondary display</bingo-button>
-        </div>
-        <bingo-status id="public-status" hidden></bingo-status>
-      </bingo-panel>
-      <bingo-panel heading="Display theme">
-        <label for="theme-select">Theme for both windows</label>
-        <select id="theme-select" disabled>
-          <option value="pixel-classic">Pixel classic</option>
-          <option value="high-contrast">High contrast</option>
-        </select>
-        <bingo-status id="theme-status"></bingo-status>
-      </bingo-panel>
+    <div role="tablist" lang="es" aria-label="Espacio de trabajo" class="operator-tabs">
+      <button type="button" role="tab" id="tab-events" aria-controls="panel-events" aria-selected="true">Eventos</button>
+      <button type="button" role="tab" id="tab-settings" aria-controls="panel-settings" aria-selected="false">Configuración</button>
+      <button type="button" role="tab" id="tab-bingo" aria-controls="panel-bingo" aria-selected="false">Bingo</button>
     </div>
-    <p>Claims and prizes are not implemented.</p>
+    <div role="tabpanel" lang="es" id="panel-events" aria-labelledby="tab-events" tabindex="0">
+      <div class="operator-layout">
+        <bingo-panel heading="Eventos">
+          <bingo-status id="events-status"></bingo-status>
+          <bingo-status id="events-error" hidden></bingo-status>
+          <bingo-event-list id="event-list"></bingo-event-list>
+          <bingo-button id="reload-events">Recargar eventos</bingo-button>
+        </bingo-panel>
+        <bingo-panel heading="Nuevo evento">
+          <form id="create-event" class="event-form">
+            <label for="event-name">Nombre</label>
+            <input id="event-name" name="name" required maxlength="120" autocomplete="off">
+            <label for="event-place">Lugar</label>
+            <input id="event-place" name="place" required maxlength="120" autocomplete="off">
+            <label for="event-date">Fecha</label>
+            <input id="event-date" name="date" type="date" required>
+            <button type="submit" id="create-event-submit">Crear evento</button>
+          </form>
+        </bingo-panel>
+      </div>
+    </div>
+    <div role="tabpanel" lang="es" id="panel-settings" aria-labelledby="tab-settings" tabindex="0" hidden>
+      <bingo-status class="active-event-banner" lang="es"></bingo-status>
+      <p>La configuración del evento activo llegará en la siguiente entrega.</p>
+    </div>
+    <div role="tabpanel" id="panel-bingo" aria-labelledby="tab-bingo" tabindex="0" hidden>
+      <bingo-status class="active-event-banner" lang="es"></bingo-status>
+      <div class="operator-layout">
+        <bingo-panel heading="Current event">
+          <bingo-status id="phase-status"></bingo-status>
+          <bingo-status id="event-status"></bingo-status>
+          <bingo-status id="event-error" hidden></bingo-status>
+          <bingo-operator-summary id="event-summary"></bingo-operator-summary>
+          <bingo-call-history id="called-numbers"></bingo-call-history>
+          <bingo-draw-controls id="draw-controls"></bingo-draw-controls>
+        </bingo-panel>
+        <bingo-panel heading="Public window preview">
+          <div class="public-controls">
+            <bingo-button id="open-public">Open / reopen public window</bingo-button>
+            <bingo-button id="move-public">Move public window to secondary display</bingo-button>
+          </div>
+          <bingo-status id="public-status" hidden></bingo-status>
+        </bingo-panel>
+        <bingo-panel heading="Display theme">
+          <label for="theme-select">Theme for both windows</label>
+          <select id="theme-select" disabled>
+            <option value="pixel-classic">Pixel classic</option>
+            <option value="high-contrast">High contrast</option>
+          </select>
+          <bingo-status id="theme-status"></bingo-status>
+        </bingo-panel>
+      </div>
+      <p>Claims and prizes are not implemented.</p>
+    </div>
   </main>
   </bingo-shell>
   <script type="module" src="./operator-ui.mjs"></script>

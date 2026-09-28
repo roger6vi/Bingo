@@ -5,9 +5,12 @@ import './components/bingo-operator-summary.mjs';
 import './components/bingo-call-history.mjs';
 import './components/bingo-draw-controls.mjs';
 import './components/bingo-dialog.mjs';
+import './components/bingo-event-list.mjs';
 import './screen.css';
 import { createOperatorController } from './operator-controller.mjs';
 import { createManualDrawHandler } from './manual-draw.mjs';
+import { createEventsController, today } from './events-controller.mjs';
+import { bindTabs } from './operator-tabs.mjs';
 import { applyTheme, createThemeController, DEFAULT_THEME, revealAfter, THEME_LABELS } from './theme-controller.mjs';
 
 function required(id, type) {
@@ -29,6 +32,25 @@ const phaseLabels = {
   checking_bingo: 'Checking bingo', bingo_declared: 'Bingo declared', finished: 'Finished',
 };
 const eventError = required('event-error', HTMLElement);
+const themeSelect = required('theme-select', HTMLSelectElement);
+
+// From the select request until the dependent panels have re-read the new event,
+// writes could land on the newly active event unnoticed.
+let selecting = false;
+let activating = false;
+let drawLocks = { manualDisabled: true, digitalDisabled: true, reloadDisabled: false };
+let themePending = true;
+let eventsPending = false;
+let eventListRef = null;
+function applyLocks() {
+  const locked = selecting || activating;
+  controls.manualDisabled = locked || drawLocks.manualDisabled;
+  controls.digitalDisabled = locked || drawLocks.digitalDisabled;
+  controls.reloadDisabled = locked || drawLocks.reloadDisabled;
+  themeSelect.disabled = locked || themePending;
+  // A second selection must not start until the first one's dependent panels have re-read.
+  if (eventListRef !== null) eventListRef.disabled = eventsPending || activating;
+}
 
 openPublic.addEventListener('click', () => window.desktop.openPublic());
 movePublic.addEventListener('click', () => window.desktop.movePublicToSecondary());
@@ -43,6 +65,7 @@ window.desktop.onPublicStatus((pauseSuggested) => {
 const controller = createOperatorController(window.desktop, {
   bind: ({ manual, digital, reload }) => {
     controls.addEventListener('click', (event) => {
+      if (selecting || activating) return;
       const action = event.composedPath().find((node) => node?.id === 'draw-manual' || node?.id === 'draw-digital' || node?.id === 'reload-event');
       if (action?.id === 'draw-manual') createManualDrawHandler(controls.manualInput, manual)();
       else if (action?.id === 'draw-digital') digital();
@@ -65,14 +88,13 @@ const controller = createOperatorController(window.desktop, {
     eventError.message = state.error ?? '';
     eventError.tone = 'error';
     eventError.hidden = !state.error;
-    controls.manualDisabled = state.manualDisabled;
-    controls.digitalDisabled = state.digitalDisabled;
-    controls.reloadDisabled = state.reloadDisabled;
+    drawLocks = { manualDisabled: state.manualDisabled, digitalDisabled: state.digitalDisabled,
+      reloadDisabled: state.reloadDisabled };
+    applyLocks();
   },
 });
 void controller.start();
 
-const themeSelect = required('theme-select', HTMLSelectElement);
 const themeStatus = required('theme-status', HTMLElement);
 const themes = createThemeController(window.desktop, {
   render: ({ theme, pending, error }) => {
@@ -80,13 +102,74 @@ const themes = createThemeController(window.desktop, {
     if (theme !== null) applyTheme(document.documentElement, theme);
     else if (error !== null && !document.documentElement.dataset.theme) applyTheme(document.documentElement, DEFAULT_THEME);
     themeSelect.value = theme ?? DEFAULT_THEME;
-    themeSelect.disabled = pending;
+    themePending = pending;
+    applyLocks();
     themeStatus.message = error ?? (pending ? 'Saving theme' : theme === null ? 'Waiting for theme'
       : `Current theme: ${THEME_LABELS[theme]}`);
     themeStatus.tone = error ? 'error' : 'info';
   },
 });
-themeSelect.addEventListener('change', () => { void themes.select(themeSelect.value); });
+themeSelect.addEventListener('change', () => { if (!selecting && !activating) void themes.select(themeSelect.value); });
 void themes.start();
+
+bindTabs(document.querySelector('[role="tablist"]'));
+const eventList = required('event-list', HTMLElement);
+eventListRef = eventList;
+const eventsStatus = required('events-status', HTMLElement);
+const eventsError = required('events-error', HTMLElement);
+const reloadEvents = required('reload-events', HTMLElement);
+const createForm = required('create-event', HTMLFormElement);
+const createSubmit = required('create-event-submit', HTMLButtonElement);
+const eventDate = required('event-date', HTMLInputElement);
+const banners = [...document.querySelectorAll('.active-event-banner')];
+eventDate.value = today();
+
+// Both dependent panels re-read the newly committed event and its theme.
+const events = createEventsController(window.desktop, {
+  render: ({ events: list, loaded, pending, stale, error, active }) => {
+    eventList.events = list;
+    eventList.loaded = loaded;
+    selecting = pending === 'select';
+    eventsPending = pending !== null;
+    applyLocks();
+    reloadEvents.disabled = pending !== null;
+    createSubmit.disabled = pending !== null;
+    eventsStatus.message = pending === 'select' ? 'Activando evento' : pending === 'create' ? 'Creando evento'
+      : !loaded ? (pending ? 'Cargando eventos' : 'No se pudieron cargar los eventos')
+        : stale ? 'La lista de eventos puede estar desactualizada. Recárgala antes de continuar.'
+          : `${list.length} evento${list.length === 1 ? '' : 's'}`;
+    eventsStatus.tone = stale ? 'warning' : 'info';
+    eventsError.message = error ?? '';
+    eventsError.tone = 'error';
+    eventsError.hidden = !error;
+    for (const banner of banners) {
+      banner.message = active ? `Evento activo: ${active.name} — ${active.date}, ${active.place}`
+        : loaded ? 'Ningún evento activo. Elige uno en Eventos.' : 'Cargando evento activo';
+      banner.tone = active && !stale ? 'info' : 'warning';
+    }
+  },
+}, () => Promise.all([controller.resync(), themes.start()]));
+// events.select resolves only after resync() and the theme re-read settle.
+eventList.addEventListener('event-select', async (event) => {
+  if (activating) return;
+  activating = true;
+  applyLocks();
+  try { await events.select(event.detail.id); }
+  catch { /* Controllers report their own errors; never leave the rejection unhandled. */ }
+  finally {
+    activating = false;
+    applyLocks();
+  }
+});
+reloadEvents.addEventListener('click', () => { void events.start(); });
+createForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const meta = { name: createForm.elements.name.value, place: createForm.elements.place.value, date: eventDate.value };
+  if (await events.create(meta)) {
+    createForm.reset();
+    eventDate.value = today();
+  }
+});
+void events.start();
 // If getTheme() never settles, reveal the default without marking it as the saved theme.
 revealAfter(document.documentElement, 2000);

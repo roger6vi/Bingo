@@ -8,7 +8,7 @@ export const PUBLIC_EVENT_CHANNEL = 'public:event-state';
 export const PUBLIC_THEME_CHANNEL = 'public:theme';
 
 export type PublicEventResult =
-  | { ok: true; snapshot: PhaseSnapshot }
+  | { ok: true; snapshot: PhaseSnapshot; eventChanged?: true }
   | { ok: false; code: 'event_unavailable' | 'storage_failure'; message: string };
 
 type Store = { load(): PhaseSnapshot | null };
@@ -38,6 +38,17 @@ export function createPublicEventDelivery(store: Store, committedTheme?: () => T
     }
   }
 
+  function loadResult(): PublicEventResult {
+    try {
+      const snapshot = store.load();
+      return snapshot === null
+        ? { ok: false, code: 'event_unavailable', message: 'No current event is available.' }
+        : success(snapshot);
+    } catch {
+      return { ok: false, code: 'storage_failure', message: 'Could not read the current event. Try again.' };
+    }
+  }
+
   return {
     attachAfterLoad(target: Target): void {
       if (target.isDestroyed()) return;
@@ -45,15 +56,7 @@ export function createPublicEventDelivery(store: Store, committedTheme?: () => T
       // Theme first, so the page is revealed in the committed theme.
       if (committedTheme !== undefined) send(target, committedTheme(), PUBLIC_THEME_CHANNEL);
       if (current !== target) return;
-      let result: PublicEventResult;
-      try {
-        const snapshot = store.load();
-        result = snapshot === null
-          ? { ok: false, code: 'event_unavailable', message: 'No current event is available.' }
-          : success(snapshot);
-      } catch {
-        result = { ok: false, code: 'storage_failure', message: 'Could not read the current event. Try again.' };
-      }
+      const result = loadResult();
       // A reentrant load may have replaced or closed this target.
       if (current === target) send(target, result);
     },
@@ -65,6 +68,16 @@ export function createPublicEventDelivery(store: Store, committedTheme?: () => T
     },
     publishTheme(theme: ThemeId): void {
       if (current !== null) send(current, theme, PUBLIC_THEME_CHANNEL);
+    },
+    // After the active event changes, resend its theme and committed state in reveal order.
+    publishActive(theme: ThemeId): void {
+      const target = current;
+      if (target === null) return;
+      send(target, theme, PUBLIC_THEME_CHANNEL);
+      if (current !== target) return;
+      const result = loadResult();
+      // A different event's history is not a continuation of the one on screen.
+      if (current === target) send(target, result.ok ? { ...result, eventChanged: true } : result);
     },
   };
 }

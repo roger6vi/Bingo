@@ -20,8 +20,22 @@ export function createThemeController(api, view) {
   let error = null;
   const render = () => view.render({ theme, pending, error });
 
-  async function request(operation) {
-    if (pending) return;
+  let inFlight = Promise.resolve();
+  let readQueued = null;
+  function request(operation) {
+    if (pending) return undefined;
+    inFlight = run(operation);
+    return inFlight;
+  }
+  // A read requested while another request is pending (e.g. after an event switch) must not be
+  // dropped: queue exactly one fresh read after the in-flight request settles.
+  function read() {
+    if (!pending) return request(() => api.getTheme());
+    readQueued ??= inFlight.then(() => { readQueued = null; return read(); });
+    return readQueued;
+  }
+
+  async function run(operation) {
     pending = true;
     render();
     try {
@@ -42,7 +56,7 @@ export function createThemeController(api, view) {
 
   render();
   return {
-    start: () => request(() => api.getTheme()),
+    start: read,
     select: (next) => (validTheme(next) && next !== theme ? request(() => api.setTheme(next)) : undefined),
   };
 }

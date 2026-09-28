@@ -18,7 +18,11 @@ export function registerThemeIpc(
 ) {
   // An unreadable setting renders the default without overwriting what is stored.
   let committed: ThemeId;
-  try { committed = store.load(); } catch { committed = DEFAULT_THEME; }
+  const reload = (): ThemeId => {
+    try { committed = store.load(); } catch { committed = DEFAULT_THEME; }
+    return committed;
+  };
+  reload();
 
   registrar.handle(THEME_CHANNELS.get, (event, ...args) => {
     authorize(event);
@@ -38,5 +42,6 @@ export function registerThemeIpc(
     catch { /* Delivery is best effort after persistence commits. */ }
     return { ok: true, theme: saved };
   });
-  return { current: (): ThemeId => committed };
+  // reload() re-reads the setting after the active event (and so its theme) changes.
+  return { current: (): ThemeId => committed, reload };
 }

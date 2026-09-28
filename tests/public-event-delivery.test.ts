@@ -142,3 +142,20 @@ test('theme is sent before event state on attach, published to the current windo
   delivery.attachAfterLoad(reopened);
   assert.deepEqual(reopened.messages[0], { channel: PUBLIC_THEME_CHANNEL, result: 'pixel-classic' });
 });
+
+test('publishActive resends theme then the newly active event marked eventChanged', () => {
+  const f = fixture();
+  const window = f.target();
+  f.delivery.publishActive('high-contrast');
+  f.delivery.attachAfterLoad(window);
+  f.setCurrent([7]);
+  f.delivery.publishActive('high-contrast');
+  assert.deepEqual(window.messages.slice(-2), [
+    { channel: PUBLIC_THEME_CHANNEL, result: 'high-contrast' },
+    { channel: PUBLIC_EVENT_CHANNEL, result: { ok: true, snapshot: snapshot([7]), eventChanged: true } },
+  ]);
+  f.failRead();
+  f.delivery.publishActive('pixel-classic');
+  assert.deepEqual(window.messages.at(-1)?.result, { ok: false, code: 'storage_failure',
+    message: 'Could not read the current event. Try again.' });
+});
