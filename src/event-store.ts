@@ -5,7 +5,7 @@ import type { EventSnapshot } from './event-core';
 import { transitionPhase, type GamePhase, type PhaseTransitionIntent } from './game-phase.ts';
 import { DEFAULT_THEME, isThemeId, THEME_IDS, type ThemeId } from './theme.ts';
 
-const VERSION = 3;
+const VERSION = 4;
 const phases = ['drawing', 'checking_line', 'line_declared', 'checking_bingo', 'bingo_declared', 'finished'];
 const phaseCheck = `CHECK (phase IN (${phases.map((phase) => `'${phase}'`).join(', ')}))`;
 // Existing databases are validated against this exact list: adding or renaming a theme id
@@ -25,7 +25,47 @@ const auditGuards = [
     BEGIN SELECT RAISE(ABORT, 'phase audit is immutable'); END`,
 ];
 
+// v4 event-scoped schema: many independent events, one persisted active pointer.
+const eventsTable = `CREATE TABLE events (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL CHECK (length(trim(name)) > 0),
+  date TEXT NOT NULL CHECK (date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
+  place TEXT NOT NULL CHECK (length(trim(place)) > 0),
+  history TEXT NOT NULL,
+  phase TEXT NOT NULL DEFAULT 'drawing' ${phaseCheck},
+  lastTransitionAt TEXT,
+  theme TEXT NOT NULL DEFAULT '${DEFAULT_THEME}' ${themeCheck},
+  createdAt TEXT NOT NULL
+)`;
+const activeEventTable = `CREATE TABLE active_event (
+  slot INTEGER PRIMARY KEY CHECK (slot = 1),
+  event_id TEXT NOT NULL REFERENCES events(id)
+)`;
+function auditTableV4Sql(name: string): string {
+  return `CREATE TABLE ${name} (
+  event_id TEXT NOT NULL REFERENCES events(id),
+  sequence INTEGER NOT NULL,
+  transitionAt TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  from_phase TEXT NOT NULL,
+  to_phase TEXT NOT NULL,
+  PRIMARY KEY (event_id, sequence)
+)`;
+}
+const auditTableV4 = auditTableV4Sql('phase_audit');
+const PLACEHOLDER_NAME = 'Evento actual';
+const PLACEHOLDER_PLACE = 'Sin especificar';
+
 type StoredEvent = EventSnapshot & { readonly phase: GamePhase; readonly lastTransitionAt: string | null };
+export type EventSummary = {
+  readonly id: string;
+  readonly name: string;
+  readonly date: string;
+  readonly place: string;
+  readonly phase: GamePhase;
+  readonly createdAt: string;
+  readonly active: boolean;
+};
 export type PhaseAuditEntry = {
   readonly sequence: number;
   readonly transitionAt: string;
@@ -39,6 +79,19 @@ function canonicalTime(value: unknown): value is string {
     new Date(value).toISOString() === value;
 }
 
+function canonicalDate(value: unknown): value is string {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+function localDateToday(): string {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
 
 function existed(path: string): boolean {
   try {
@@ -162,16 +215,111 @@ function validateV3(db: DatabaseSync): void {
   }
 }
 
+function validateV4(db: DatabaseSync): void {
+  const normalize = (sql: string) => sql.replace(/[\s"`\[\]]/g, '').toUpperCase();
+  const eventsSql = db.prepare("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'events'").get()?.sql;
+  if (typeof eventsSql !== 'string' || normalize(eventsSql) !== normalize(eventsTable)) {
+    throw new Error('Invalid event schema: events table missing or malformed');
+  }
+  const activeSql = db.prepare("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'active_event'")
+    .get()?.sql;
+  if (typeof activeSql !== 'string' || normalize(activeSql) !== normalize(activeEventTable)) {
+    throw new Error('Invalid event schema: active_event table missing or malformed');
+  }
+  const auditSql = db.prepare("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'phase_audit'")
+    .get()?.sql;
+  if (typeof auditSql !== 'string' || normalize(auditSql) !== normalize(auditTableV4)) {
+    throw new Error('Invalid event schema: phase audit table missing or malformed');
+  }
+  for (const guard of auditGuards) {
+    const name = guard.split(' ')[2];
+    const sql = db.prepare("SELECT sql FROM sqlite_schema WHERE name = ? AND type = 'trigger'").get(name)?.sql;
+    if (typeof sql !== 'string' || normalize(sql) !== normalize(guard)) {
+      throw new Error('Invalid event schema: phase audit guard missing or malformed');
+    }
+  }
+  const activeCount = db.prepare('SELECT count(*) AS count FROM active_event').get()?.count as number;
+  const eventsCount = db.prepare('SELECT count(*) AS count FROM events').get()?.count as number;
+  if (activeCount > 1) throw new Error('Invalid active event: multiple active event pointers');
+  if (eventsCount > 0 && activeCount === 0) {
+    throw new Error('Invalid active event: missing pointer while events exist');
+  }
+  if (activeCount === 1) {
+    const eventId = db.prepare('SELECT event_id FROM active_event WHERE slot = 1').get()?.event_id ?? null;
+    const exists = db.prepare('SELECT 1 FROM events WHERE id = ?').get(eventId);
+    if (!exists) throw new Error('Invalid active event: dangling pointer');
+  }
+}
+
+function readActiveEventId(db: DatabaseSync): string | null {
+  const rows = db.prepare('SELECT event_id FROM active_event WHERE slot = 1').all();
+  if (rows.length > 1) throw new Error('Invalid active event: multiple active event pointers');
+  if (rows.length === 0) {
+    const total = db.prepare('SELECT count(*) AS count FROM events').get()?.count as number;
+    if (total > 0) throw new Error('Invalid active event: missing pointer while events exist');
+    return null;
+  }
+  return rows[0].event_id as string;
+}
+
+function readEventRow(db: DatabaseSync, id: string) {
+  const rows = db.prepare(`SELECT id, name, date, place, history, phase, lastTransitionAt, theme, createdAt
+    FROM events WHERE id = ?`).all(id);
+  if (rows.length !== 1) throw new Error('Invalid active event: dangling pointer');
+  const row = rows[0];
+  if (!canonicalDate(row.date)) throw new Error('Invalid event metadata: date');
+  if (!canonicalTime(row.createdAt)) throw new Error('Invalid event metadata: createdAt');
+  if (typeof row.name !== 'string' || row.name.trim() === '') throw new Error('Invalid event metadata: name');
+  if (typeof row.place !== 'string' || row.place.trim() === '') throw new Error('Invalid event metadata: place');
+  return row;
+}
+
+const MAX_META_LENGTH = 120;
+
+function validateEventMeta(meta: { name: unknown; date: unknown; place: unknown }):
+    { name: string; date: string; place: string } {
+  const rawName = meta?.name;
+  const name = typeof rawName === 'string' ? rawName.trim() : null;
+  if (name === null || name === '' || name.length > MAX_META_LENGTH) throw new Error('Invalid event name');
+  const rawPlace = meta?.place;
+  const place = typeof rawPlace === 'string' ? rawPlace.trim() : null;
+  if (place === null || place === '' || place.length > MAX_META_LENGTH) throw new Error('Invalid event place');
+  if (!canonicalDate(meta?.date)) throw new Error('Invalid event date');
+  return { name, date: meta.date, place };
+}
+
+type EventSummaryRow = { id: string; name: string; date: string; place: string; phase: GamePhase; createdAt: string };
+
+function toSummary(row: EventSummaryRow, activeId: string | null): EventSummary {
+  return Object.freeze({
+    id: row.id, name: row.name, date: row.date, place: row.place,
+    phase: row.phase, createdAt: row.createdAt, active: activeId !== null && row.id === activeId,
+  });
+}
+
+function readEventSummaryRows(db: DatabaseSync): EventSummaryRow[] {
+  const rows = db.prepare('SELECT id, name, date, place, phase, createdAt FROM events ORDER BY createdAt, id').all();
+  return rows.map((row) => {
+    if (!canonicalDate(row.date)) throw new Error('Invalid event metadata: date');
+    if (!canonicalTime(row.createdAt)) throw new Error('Invalid event metadata: createdAt');
+    if (typeof row.name !== 'string' || row.name.trim() === '') throw new Error('Invalid event metadata: name');
+    if (typeof row.place !== 'string' || row.place.trim() === '') throw new Error('Invalid event metadata: place');
+    return { id: row.id as string, name: row.name as string, date: row.date as string,
+      place: row.place as string, phase: row.phase as GamePhase, createdAt: row.createdAt as string };
+  });
+}
+
 function readTheme(db: DatabaseSync): ThemeId {
-  const rows = db.prepare('SELECT theme FROM current_event WHERE id = 1').all();
-  if (rows.length === 0) return DEFAULT_THEME;
-  const value = rows[0].theme;
+  const id = readActiveEventId(db);
+  if (id === null) return DEFAULT_THEME;
+  const value = readEventRow(db, id).theme;
   if (!isThemeId(value)) throw new Error('Invalid stored theme');
   return value;
 }
 
-function replayAudit(db: DatabaseSync): PhaseAuditEntry[] {
-  const rows = db.prepare('SELECT sequence, transitionAt, kind, from_phase, to_phase FROM phase_audit ORDER BY sequence').all();
+function replayAudit(db: DatabaseSync, eventId: string): PhaseAuditEntry[] {
+  const rows = db.prepare(`SELECT sequence, transitionAt, kind, from_phase, to_phase
+    FROM phase_audit WHERE event_id = ? ORDER BY sequence`).all(eventId);
   let phase: GamePhase = 'drawing';
   let previous: string | null = null;
   return rows.map((row, index) => {
@@ -192,16 +340,10 @@ function replayAudit(db: DatabaseSync): PhaseAuditEntry[] {
 }
 
 function readEvent(db: DatabaseSync): StoredEvent | null {
-  const rows = db.prepare('SELECT id, history, phase, lastTransitionAt FROM current_event').all();
-  if (rows.length > 1 || (rows.length === 1 && rows[0].id !== 1)) {
-    throw new Error('Invalid event history: unexpected event rows');
-  }
-  const audit = replayAudit(db);
-  if (rows.length === 0) {
-    if (audit.length !== 0) throw new Error('Invalid phase audit: missing current event');
-    return null;
-  }
-  const row = rows[0];
+  const id = readActiveEventId(db);
+  if (id === null) return null;
+  const row = readEventRow(db, id);
+  const audit = replayAudit(db, id);
   const history = decode(row.history);
   const last = audit.at(-1);
   if (row.phase !== (last?.to_phase ?? 'drawing') ||
@@ -210,6 +352,86 @@ function readEvent(db: DatabaseSync): StoredEvent | null {
   }
   return { calledNumbers: history.calledNumbers, phase: row.phase as GamePhase,
     lastTransitionAt: row.lastTransitionAt as string | null };
+}
+
+// Legacy (v3, singleton) reads, used only while validating data before the v3 → v4 migration copy.
+function replayLegacyAudit(db: DatabaseSync): PhaseAuditEntry[] {
+  const rows = db.prepare('SELECT sequence, transitionAt, kind, from_phase, to_phase FROM phase_audit ORDER BY sequence').all();
+  let phase: GamePhase = 'drawing';
+  let previous: string | null = null;
+  return rows.map((row, index) => {
+    if (row.sequence !== index + 1 || row.from_phase !== phase || !canonicalTime(row.transitionAt) ||
+        (previous !== null && row.transitionAt <= previous)) {
+      throw new Error('Invalid phase audit: sequence, source phase, or timestamp');
+    }
+    let target: GamePhase;
+    try { target = transitionPhase({ phase }, row.kind as PhaseTransitionIntent).phase; }
+    catch { throw new Error('Invalid phase audit: illegal intent'); }
+    if (row.to_phase !== target) throw new Error('Invalid phase audit: target phase mismatch');
+    const entry: PhaseAuditEntry = { sequence: index + 1, transitionAt: row.transitionAt,
+      kind: row.kind as PhaseTransitionIntent, from_phase: phase, to_phase: target };
+    phase = target;
+    previous = row.transitionAt;
+    return entry;
+  });
+}
+
+type LegacyEvent = {
+  readonly rawHistory: string;
+  readonly phase: GamePhase;
+  readonly lastTransitionAt: string | null;
+  readonly theme: string;
+  readonly audit: readonly PhaseAuditEntry[];
+};
+
+function readLegacyEvent(db: DatabaseSync): LegacyEvent | null {
+  const rows = db.prepare('SELECT id, history, phase, lastTransitionAt, theme FROM current_event').all();
+  if (rows.length > 1 || (rows.length === 1 && rows[0].id !== 1)) {
+    throw new Error('Invalid event history: unexpected event rows');
+  }
+  const audit = replayLegacyAudit(db);
+  if (rows.length === 0) {
+    if (audit.length !== 0) throw new Error('Invalid phase audit: missing current event');
+    return null;
+  }
+  const row = rows[0];
+  decode(row.history);
+  const last = audit.at(-1);
+  if (row.phase !== (last?.to_phase ?? 'drawing') ||
+      row.lastTransitionAt !== (last?.transitionAt ?? null)) {
+    throw new Error('Invalid phase audit: current state does not match history');
+  }
+  return { rawHistory: row.history as string, phase: row.phase as GamePhase,
+    lastTransitionAt: row.lastTransitionAt as string | null, theme: row.theme as string, audit };
+}
+
+// v3 → v4: validate the legacy singleton fully, copy it into one event-scoped row (with
+// placeholder metadata) and its audit trail, point active_event at it, then drop the old tables.
+function migrateV3ToV4(db: DatabaseSync): void {
+  const legacy = readLegacyEvent(db);
+  db.exec(eventsTable);
+  db.exec(activeEventTable);
+  db.exec(auditTableV4Sql('phase_audit_new'));
+  if (legacy !== null) {
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    const date = localDateToday();
+    db.prepare(`INSERT INTO events (id, name, date, place, history, phase, lastTransitionAt, theme, createdAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(id, PLACEHOLDER_NAME, date, PLACEHOLDER_PLACE, legacy.rawHistory, legacy.phase,
+        legacy.lastTransitionAt, legacy.theme, now);
+    for (const entry of legacy.audit) {
+      db.prepare(`INSERT INTO phase_audit_new (event_id, sequence, transitionAt, kind, from_phase, to_phase)
+        VALUES (?, ?, ?, ?, ?, ?)`).run(id, entry.sequence, entry.transitionAt, entry.kind, entry.from_phase, entry.to_phase);
+    }
+    db.prepare('INSERT INTO active_event (slot, event_id) VALUES (1, ?)').run(id);
+  }
+  db.exec('DROP TRIGGER phase_audit_no_update');
+  db.exec('DROP TRIGGER phase_audit_no_delete');
+  db.exec('DROP TABLE phase_audit');
+  db.exec('DROP TABLE current_event');
+  db.exec('ALTER TABLE phase_audit_new RENAME TO phase_audit');
+  db.exec(auditGuards.join(';'));
 }
 
 export function createEventStore(path: string) {
@@ -222,13 +444,11 @@ export function createEventStore(path: string) {
       try {
         candidate.exec('BEGIN IMMEDIATE');
         try {
-          candidate.exec(`CREATE TABLE current_event (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
-            history TEXT NOT NULL
-          )`);
-          extendSchema(candidate);
-          extendV3Schema(candidate);
-          candidate.exec('PRAGMA user_version = 3; COMMIT');
+          candidate.exec(eventsTable);
+          candidate.exec(activeEventTable);
+          candidate.exec(auditTableV4);
+          candidate.exec(auditGuards.join(';'));
+          candidate.exec('PRAGMA user_version = 4; COMMIT');
         } catch (error) {
           try { candidate.exec('ROLLBACK'); } catch { /* Preserve the original error. */ }
           throw error;
@@ -243,17 +463,18 @@ export function createEventStore(path: string) {
   }
   const db = new DatabaseSync(path);
   try {
+    db.exec('PRAGMA foreign_keys = ON');
     db.exec('PRAGMA busy_timeout = 0');
     // A deferred read transaction pins version, schema, and state to one snapshot
     // without claiming the writer lock held by an independent connection.
     db.exec('BEGIN');
     try {
       const observed = db.prepare('PRAGMA user_version').get()?.user_version;
-      if (observed !== 1 && observed !== 2 && observed !== VERSION) {
+      if (observed !== 1 && observed !== 2 && observed !== 3 && observed !== VERSION) {
         throw new Error(`Unsupported event schema version: ${String(observed)}`);
       }
       if (observed === VERSION) {
-        validateV3(db);
+        validateV4(db);
         readEvent(db);
         db.exec('COMMIT');
       } else {
@@ -273,15 +494,23 @@ export function createEventStore(path: string) {
           // Updating the row also detects any failing write before the version is published.
           if (rows.length === 1) db.exec("UPDATE current_event SET phase = 'drawing', lastTransitionAt = NULL WHERE id = 1");
           extendV3Schema(db);
-          db.exec('PRAGMA user_version = 3');
+          validateV3(db);
+          migrateV3ToV4(db);
+          db.exec('PRAGMA user_version = 4');
         } else if (version === 2) {
           validateV2(db);
           extendV3Schema(db);
-          db.exec('PRAGMA user_version = 3');
+          validateV3(db);
+          migrateV3ToV4(db);
+          db.exec('PRAGMA user_version = 4');
+        } else if (version === 3) {
+          validateV3(db);
+          migrateV3ToV4(db);
+          db.exec('PRAGMA user_version = 4');
         } else if (version !== VERSION) {
           throw new Error(`Unsupported event schema version: ${String(version)}`);
         }
-        validateV3(db);
+        validateV4(db);
         readEvent(db);
         db.exec('COMMIT');
       }
@@ -325,20 +554,23 @@ export function createEventStore(path: string) {
     saveTheme(theme: unknown): ThemeId {
       if (!isThemeId(theme)) throw new Error('Unknown theme');
       return transaction(() => {
-        const rows = db.prepare('SELECT id FROM current_event WHERE id = 1').all();
-        if (rows.length === 0) throw new Error('Current event does not exist');
-        db.prepare('UPDATE current_event SET theme = ? WHERE id = 1').run(theme);
+        const id = readActiveEventId(db);
+        if (id === null) throw new Error('Current event does not exist');
+        db.prepare('UPDATE events SET theme = ? WHERE id = ?').run(theme, id);
         return readTheme(db);
       });
     },
     readAudit(): PhaseAuditEntry[] {
       return readSnapshot(() => {
+        const id = readActiveEventId(db);
         readEvent(db);
-        return replayAudit(db);
+        return id === null ? [] : replayAudit(db, id);
       });
     },
     transitionPhase(intent: PhaseTransitionIntent, transitionAt: string): StoredEvent {
       return transaction(() => {
+        const id = readActiveEventId(db);
+        if (id === null) throw new Error('Current event does not exist');
         const current = readEvent(db);
         if (current === null) throw new Error('Current event does not exist');
         const phase = transitionPhase(current, intent).phase;
@@ -346,26 +578,31 @@ export function createEventStore(path: string) {
             (current.lastTransitionAt !== null && transitionAt <= current.lastTransitionAt)) {
           throw new Error('Invalid phase transition timestamp');
         }
-        const sequence = replayAudit(db).length + 1;
-        db.prepare('UPDATE current_event SET phase = ?, lastTransitionAt = ? WHERE id = 1')
-          .run(phase, transitionAt);
-        db.prepare(`INSERT INTO phase_audit (sequence, transitionAt, kind, from_phase, to_phase)
-          VALUES (?, ?, ?, ?, ?)`).run(sequence, transitionAt, intent, current.phase, phase);
+        const sequence = replayAudit(db, id).length + 1;
+        db.prepare('UPDATE events SET phase = ?, lastTransitionAt = ? WHERE id = ?')
+          .run(phase, transitionAt, id);
+        db.prepare(`INSERT INTO phase_audit (event_id, sequence, transitionAt, kind, from_phase, to_phase)
+          VALUES (?, ?, ?, ?, ?, ?)`).run(id, sequence, transitionAt, intent, current.phase, phase);
         return { ...current, phase, lastTransitionAt: transitionAt };
       });
     },
     create(): StoredEvent {
       return transaction(() => {
         if (readEvent(db) !== null) throw new Error('Current event already exists');
-        const event: StoredEvent = { calledNumbers: [], phase: 'drawing', lastTransitionAt: null };
-        db.prepare('INSERT INTO current_event (id, history) VALUES (1, ?)').run('[]');
-        return event;
+        const id = randomUUID();
+        const now = new Date().toISOString();
+        const date = localDateToday();
+        db.prepare(`INSERT INTO events (id, name, date, place, history, createdAt)
+          VALUES (?, ?, ?, ?, '[]', ?)`).run(id, PLACEHOLDER_NAME, date, PLACEHOLDER_PLACE, now);
+        db.prepare('INSERT INTO active_event (slot, event_id) VALUES (1, ?)').run(id);
+        return { calledNumbers: [], phase: 'drawing', lastTransitionAt: null };
       });
     },
     update(transition: (current: StoredEvent) => EventSnapshot): StoredEvent {
       return transaction(() => {
+        const id = readActiveEventId(db);
         const current = readEvent(db);
-        if (current === null) throw new Error('Current event does not exist');
+        if (current === null || id === null) throw new Error('Current event does not exist');
         const baseline = [...current.calledNumbers];
         const phase = current.phase;
         const lastTransitionAt = current.lastTransitionAt;
@@ -381,8 +618,46 @@ export function createEventStore(path: string) {
             baseline.some((number, index) => next.calledNumbers[index] !== number)) {
           throw new Error('Invalid event transition: called history cannot be rewritten');
         }
-        db.prepare('UPDATE current_event SET history = ? WHERE id = 1').run(JSON.stringify(next.calledNumbers));
+        db.prepare('UPDATE events SET history = ? WHERE id = ?').run(JSON.stringify(next.calledNumbers), id);
         return { calledNumbers: next.calledNumbers, phase, lastTransitionAt };
+      });
+    },
+    listEvents(): EventSummary[] {
+      return readSnapshot(() => {
+        const activeId = readActiveEventId(db);
+        return readEventSummaryRows(db).map((row) => toSummary(row, activeId));
+      });
+    },
+    createEvent(meta: { name: unknown; date: unknown; place: unknown }): EventSummary {
+      const { name, date, place } = validateEventMeta(meta);
+      return transaction(() => {
+        const activeId = readActiveEventId(db);
+        const id = randomUUID();
+        const now = new Date().toISOString();
+        db.prepare(`INSERT INTO events (id, name, date, place, history, createdAt)
+          VALUES (?, ?, ?, ?, '[]', ?)`).run(id, name, date, place, now);
+        const resultingActiveId = activeId === null ? id : activeId;
+        if (activeId === null) {
+          db.prepare('INSERT INTO active_event (slot, event_id) VALUES (1, ?)').run(id);
+        }
+        return toSummary({ id, name, date, place, phase: 'drawing', createdAt: now }, resultingActiveId);
+      });
+    },
+    selectEvent(id: unknown): EventSummary {
+      if (typeof id !== 'string') throw new Error('Invalid event id');
+      return transaction(() => {
+        const rows = db.prepare('SELECT id, name, date, place, phase, createdAt FROM events WHERE id = ?').all(id);
+        if (rows.length !== 1) throw new Error('Unknown event id');
+        if (!canonicalDate(rows[0].date)) throw new Error('Invalid event metadata: date');
+        if (!canonicalTime(rows[0].createdAt)) throw new Error('Invalid event metadata: createdAt');
+        if (typeof rows[0].name !== 'string' || rows[0].name.trim() === '') throw new Error('Invalid event metadata: name');
+        if (typeof rows[0].place !== 'string' || rows[0].place.trim() === '') throw new Error('Invalid event metadata: place');
+        const row = rows[0] as EventSummaryRow;
+        const currentActive = readActiveEventId(db);
+        if (currentActive !== id) {
+          db.prepare('UPDATE active_event SET event_id = ? WHERE slot = 1').run(id);
+        }
+        return toSummary(row, id);
       });
     },
     close(): void { db.close(); },
