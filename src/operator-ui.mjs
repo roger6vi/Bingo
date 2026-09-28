@@ -6,6 +6,7 @@ import './components/bingo-call-history.mjs';
 import './components/bingo-draw-controls.mjs';
 import './components/bingo-dialog.mjs';
 import './components/bingo-event-list.mjs';
+import './components/bingo-tongo-control.mjs';
 import './screen.css';
 import { createOperatorController } from './operator-controller.mjs';
 import { createManualDrawHandler } from './manual-draw.mjs';
@@ -13,6 +14,7 @@ import { createEventsController, today } from './events-controller.mjs';
 import { bindTabs } from './operator-tabs.mjs';
 import { applyTheme, createThemeController, DEFAULT_THEME, revealAfter, THEME_LABELS } from './theme-controller.mjs';
 import { bindSettings } from './settings-ui.mjs';
+import { createTongoController, tongoPlayable } from './tongo.mjs';
 
 function required(id, type) {
   const element = document.getElementById(id);
@@ -67,14 +69,19 @@ let drawLocks = { manualDisabled: true, digitalDisabled: true, reloadDisabled: f
 let themePending = true;
 let eventsPending = false;
 let eventListRef = null;
+// While Tongo is requested or playing, every other live action waits; it is offered only during play.
+let tongoBusy = false;
+let gameState = null;
+const tongoControl = required('tongo-control', HTMLElement);
 function applyLocks() {
-  const locked = selecting || activating;
+  const locked = selecting || activating || tongoBusy;
+  tongoControl.disabled = locked || !tongoPlayable(gameState);
   controls.manualDisabled = locked || drawLocks.manualDisabled;
   controls.digitalDisabled = locked || drawLocks.digitalDisabled;
   controls.reloadDisabled = locked || drawLocks.reloadDisabled;
   settings.setLocked(locked || themePending);
   // A second selection must not start until the first one's dependent panels have re-read.
-  if (eventListRef !== null) eventListRef.disabled = eventsPending || activating;
+  if (eventListRef !== null) eventListRef.disabled = eventsPending || activating || tongoBusy;
 }
 
 openPublic.addEventListener('click', () => window.desktop.openPublic());
@@ -90,7 +97,7 @@ window.desktop.onPublicStatus((pauseSuggested) => {
 const controller = createOperatorController(window.desktop, {
   bind: ({ manual, digital, reload }) => {
     controls.addEventListener('click', (event) => {
-      if (selecting || activating) return;
+      if (selecting || activating || tongoBusy) return;
       const action = event.composedPath().find((node) => node?.id === 'draw-manual' || node?.id === 'draw-digital' || node?.id === 'reload-event');
       if (action?.id === 'draw-manual') createManualDrawHandler(controls.manualInput, manual)();
       else if (action?.id === 'draw-digital') digital();
@@ -113,6 +120,7 @@ const controller = createOperatorController(window.desktop, {
     eventError.message = state.error ?? '';
     eventError.tone = 'error';
     eventError.hidden = !state.error;
+    gameState = state;
     drawLocks = { manualDisabled: state.manualDisabled, digitalDisabled: state.digitalDisabled,
       reloadDisabled: state.reloadDisabled };
     applyLocks();
@@ -123,6 +131,18 @@ const controller = createOperatorController(window.desktop, {
   },
 });
 void controller.start();
+
+const tongo = createTongoController(window.desktop, {
+  render: ({ busy, progress, error }) => {
+    tongoBusy = busy;
+    tongoControl.progress = progress;
+    tongoControl.error = error;
+    applyLocks();
+  },
+});
+tongoControl.addEventListener('tongo-play', () => {
+  if (!tongoBusy && !tongoControl.disabled) void tongo.play();
+});
 
 const themeStatus = required('theme-status', HTMLElement);
 const themes = createThemeController(window.desktop, {
@@ -184,7 +204,7 @@ const events = createEventsController(window.desktop, {
 }, () => Promise.all([controller.resync(), themes.start()]));
 // events.select resolves only after resync() and the theme re-read settle.
 eventList.addEventListener('event-select', async (event) => {
-  if (activating) return;
+  if (activating || tongoBusy) return;
   // Selecting another event would replace the draft: offer Save, Discard, or Cancel first.
   if (await settings.confirmLeave() !== true || activating) return;
   activating = true;
