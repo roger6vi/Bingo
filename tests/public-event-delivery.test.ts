@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  createPublicEventDelivery, PUBLIC_EVENT_CHANNEL, PUBLIC_META_CHANNEL, PUBLIC_THEME_CHANNEL, type PublicEventMeta,
+  createPublicEventDelivery, PUBLIC_EVENT_CHANNEL, PUBLIC_META_CHANNEL, PUBLIC_PRESENTATION_CHANNEL, PUBLIC_THEME_CHANNEL,
+  type PublicEventMeta,
 } from '../src/public-event-delivery.ts';
 import type { EventSnapshot } from '../src/event-core.ts';
 
@@ -203,4 +204,24 @@ test('a metadata send that closes the window stops the attach before event state
   } };
   delivery.attachAfterLoad(window);
   assert.deepEqual(messages, [PUBLIC_THEME_CHANNEL, PUBLIC_META_CHANNEL]);
+});
+
+test('a presentation reaches only the live current window, reports delivery, and is never replayed on attach', () => {
+  const f = fixture();
+  const tongo = { kind: 'tongo', id: 1, durationMs: 3000 } as const;
+  assert.equal(f.delivery.publishPresentation(tongo), false);
+  const first = f.target();
+  f.delivery.attachAfterLoad(first);
+  assert.equal(f.delivery.publishPresentation(tongo), true);
+  assert.deepEqual(first.messages.at(-1), { channel: PUBLIC_PRESENTATION_CHANNEL, result: tongo });
+  const reloaded = f.target();
+  f.delivery.attachAfterLoad(reloaded);
+  assert.deepEqual(reloaded.messages.map(({ channel }) => channel), [PUBLIC_EVENT_CHANNEL]);
+  reloaded.failSend();
+  assert.equal(f.delivery.publishPresentation({ ...tongo, id: 2 }), false);
+  const closed = f.target();
+  f.delivery.attachAfterLoad(closed);
+  closed.destroy();
+  assert.equal(f.delivery.publishPresentation({ ...tongo, id: 3 }), false);
+  assert.equal(first.messages.filter(({ channel }) => channel === PUBLIC_PRESENTATION_CHANNEL).length, 1);
 });

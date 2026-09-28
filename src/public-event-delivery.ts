@@ -1,12 +1,14 @@
 import type { EventSnapshot } from './event-core';
 import type { GamePhase } from './game-phase';
 import type { ThemeId } from './theme';
+import type { TongoPresentation } from './tongo-ipc';
 
 type PhaseSnapshot = EventSnapshot & { readonly phase: GamePhase; readonly lastTransitionAt: string | null };
 
 export const PUBLIC_EVENT_CHANNEL = 'public:event-state';
 export const PUBLIC_THEME_CHANNEL = 'public:theme';
 export const PUBLIC_META_CHANNEL = 'public:event-meta';
+export const PUBLIC_PRESENTATION_CHANNEL = 'public:presentation';
 
 // The active event's committed name, date, and place; null when it cannot be read.
 export type PublicEventMeta = { readonly name: string; readonly date: string; readonly place: string } | null;
@@ -16,9 +18,10 @@ export type PublicEventResult =
   | { ok: false; code: 'event_unavailable' | 'storage_failure'; message: string };
 
 type Store = { load(): PhaseSnapshot | null };
+type Message = PublicEventResult | ThemeId | PublicEventMeta | TongoPresentation;
 type Target = {
   isDestroyed(): boolean;
-  send(channel: string, result: PublicEventResult | ThemeId | PublicEventMeta): void;
+  send(channel: string, result: Message): void;
 };
 
 const success = (snapshot: PhaseSnapshot): PublicEventResult => ({
@@ -32,8 +35,7 @@ export function createPublicEventDelivery(
 ) {
   let current: Target | null = null;
 
-  function send(target: Target, result: PublicEventResult | ThemeId | PublicEventMeta,
-    channel = PUBLIC_EVENT_CHANNEL): void {
+  function send(target: Target, result: Message, channel = PUBLIC_EVENT_CHANNEL): void {
     try {
       if (target.isDestroyed()) {
         if (current === target) current = null;
@@ -92,6 +94,14 @@ export function createPublicEventDelivery(
     // After the active event's name, date, or place commit.
     publishMeta(): void {
       if (current !== null) sendMeta(current);
+    },
+    // Transient and never resent on attach, so a reloaded or reopened window cannot replay it.
+    // Reports whether the current window accepted it.
+    publishPresentation(presentation: TongoPresentation): boolean {
+      const target = current;
+      if (target === null) return false;
+      send(target, presentation, PUBLIC_PRESENTATION_CHANNEL);
+      return current === target;
     },
     // After the active event changes, resend its theme, metadata, and committed state in reveal order.
     publishActive(theme: ThemeId): void {
