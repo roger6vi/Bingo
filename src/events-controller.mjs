@@ -47,7 +47,10 @@ export function createEventsController(api, view, onSelected) {
       } else {
         stale = loaded;
         error = result?.ok === false && typeof result.message === 'string' ? result.message : invalidUpdate;
-        if (result?.ok === false && result.selected === true) outcome = 'committed';
+        // From the select channel, ok:true means the selection committed even if the list is unusable.
+        if ((kind === 'select' && result?.ok === true) || (result?.ok === false && result.selected === true)) {
+          outcome = 'committed';
+        }
       }
     } catch {
       stale = loaded;

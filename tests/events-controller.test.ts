@@ -101,3 +101,12 @@ test('validEvents and today', () => {
     [{ ...summary('a'), phase: 'x' }], [{ ...summary('a'), name: ' ' }]]) assert.equal(validEvents(bad), false);
   assert.equal(today(new Date(2026, 0, 5, 23, 30)), '2026-01-05');
 });
+
+test('an ok select reply with an invalid list still counts as committed and refreshes dependents', async () => {
+  const f = fixture();
+  await f.controller.start();
+  f.responses.select = async () => ({ ok: true, events: [{ id: 'b' }] });
+  assert.equal(await f.controller.select('b'), false);
+  assert.deepEqual(f.calls.slice(-2), ['select:b', 'dependents']);
+  assert.equal(f.last().stale, true);
+});

@@ -40,12 +40,16 @@ let selecting = false;
 let activating = false;
 let drawLocks = { manualDisabled: true, digitalDisabled: true, reloadDisabled: false };
 let themePending = true;
+let eventsPending = false;
+let eventListRef = null;
 function applyLocks() {
   const locked = selecting || activating;
   controls.manualDisabled = locked || drawLocks.manualDisabled;
   controls.digitalDisabled = locked || drawLocks.digitalDisabled;
   controls.reloadDisabled = locked || drawLocks.reloadDisabled;
   themeSelect.disabled = locked || themePending;
+  // A second selection must not start until the first one's dependent panels have re-read.
+  if (eventListRef !== null) eventListRef.disabled = eventsPending || activating;
 }
 
 openPublic.addEventListener('click', () => window.desktop.openPublic());
@@ -110,6 +114,7 @@ void themes.start();
 
 bindTabs(document.querySelector('[role="tablist"]'));
 const eventList = required('event-list', HTMLElement);
+eventListRef = eventList;
 const eventsStatus = required('events-status', HTMLElement);
 const eventsError = required('events-error', HTMLElement);
 const reloadEvents = required('reload-events', HTMLElement);
@@ -125,8 +130,8 @@ const events = createEventsController(window.desktop, {
     eventList.events = list;
     eventList.loaded = loaded;
     selecting = pending === 'select';
+    eventsPending = pending !== null;
     applyLocks();
-    eventList.disabled = pending !== null;
     reloadEvents.disabled = pending !== null;
     createSubmit.disabled = pending !== null;
     eventsStatus.message = pending === 'select' ? 'Activando evento' : pending === 'create' ? 'Creando evento'
@@ -146,9 +151,11 @@ const events = createEventsController(window.desktop, {
 }, () => Promise.all([controller.resync(), themes.start()]));
 // events.select resolves only after resync() and the theme re-read settle.
 eventList.addEventListener('event-select', async (event) => {
+  if (activating) return;
   activating = true;
   applyLocks();
   try { await events.select(event.detail.id); }
+  catch { /* Controllers report their own errors; never leave the rejection unhandled. */ }
   finally {
     activating = false;
     applyLocks();
