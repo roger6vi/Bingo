@@ -27,6 +27,8 @@ const stylesheet = (href) => new Promise((resolve, reject) => {
 async function loadOperator() {
   const page = new DOMParser().parseFromString(await (await fetch(new URL('../../src/operator.html', import.meta.url))).text(), 'text/html');
   const main = document.importNode(page.querySelector('main'), true);
+  // Browser-only tests cannot resolve Electron's local simulator protocol; keep its message sink inert.
+  main.querySelector('#public-simulator').src = 'about:blank';
   document.body.append(main);
   const links = await Promise.all(['pixel-classic', 'high-contrast']
     .map((name) => stylesheet(new URL(`../../src/generated/${name}.css`, import.meta.url).href)));
