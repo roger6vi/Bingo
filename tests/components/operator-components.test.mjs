@@ -18,6 +18,10 @@ it('operator page exposes shared panels and interactive components', async () =>
   expect(page.querySelectorAll('#panel-bingo bingo-panel')).to.have.length(3);
   expect(page.querySelectorAll('#panel-settings .active-event-banner, #panel-bingo .active-event-banner')).to.have.length(2);
   expect(page.querySelector('#panel-events bingo-event-list#event-list')).not.to.equal(null);
+  for (const selector of ['[role="tablist"]', '#panel-events', '#panel-settings']) {
+    expect(page.querySelector(selector).getAttribute('lang')).to.equal('es');
+  }
+  expect([...page.querySelectorAll('.active-event-banner')].every((banner) => banner.lang === 'es')).to.equal(true);
   expect(page.querySelector('#panel-events input#event-date[type="date"][required]')).not.to.equal(null);
   expect(page.querySelector('#panel-bingo bingo-draw-controls#draw-controls')).not.to.equal(null);
   expect(page.querySelector('label[for="theme-select"]').textContent).to.equal('Theme for both windows');
@@ -359,6 +363,10 @@ it('operator tabs follow WAI-ARIA selection by pointer and keyboard with a rovin
 
 it('event list marks the committed active event, offers selection for others, and shows an empty state', async () => {
   const list = await fixture(html`<bingo-event-list></bingo-event-list>`);
+  expect(list.shadowRoot.textContent).to.include('no disponible todavía');
+  expect(list.shadowRoot.textContent).not.to.include('Todavía no hay eventos');
+  list.loaded = true;
+  await list.updateComplete;
   expect(list.shadowRoot.textContent).to.include('Todavía no hay eventos');
   list.events = [
     { id: 'a', name: 'Verbena', date: '2026-09-28', place: 'Plaza', phase: 'drawing', active: true },

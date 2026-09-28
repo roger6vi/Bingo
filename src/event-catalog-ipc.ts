@@ -8,7 +8,7 @@ export const CATALOG_CHANNELS = Object.freeze({
 
 export type CatalogResult =
   | { ok: true; events: EventSummary[] }
-  | { ok: false; code: 'invalid_request' | 'storage_failure'; message: string };
+  | { ok: false; code: 'invalid_request' | 'storage_failure'; message: string; selected?: true };
 
 type CatalogRequest = { sender: unknown; senderFrame: unknown };
 type CatalogStore = {
@@ -67,6 +67,8 @@ export function registerEventCatalogIpc(
     // The pointer has committed; delivery to either window cannot undo the selection.
     try { notifySelected?.(); }
     catch { /* Delivery is best effort after persistence commits. */ }
-    return list('The event was selected, but the list could not be read. Reload the events.');
+    // Tell the operator the selection committed even when the refreshed list cannot be read.
+    const result = list('The event was selected, but the list could not be read. Reload the events.');
+    return result.ok ? result : { ...result, selected: true };
   });
 }

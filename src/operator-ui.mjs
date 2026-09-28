@@ -32,6 +32,18 @@ const phaseLabels = {
   checking_bingo: 'Checking bingo', bingo_declared: 'Bingo declared', finished: 'Finished',
 };
 const eventError = required('event-error', HTMLElement);
+const themeSelect = required('theme-select', HTMLSelectElement);
+
+// While an event select is in flight, writes could land on the newly active event unnoticed.
+let selecting = false;
+let drawLocks = { manualDisabled: true, digitalDisabled: true, reloadDisabled: false };
+let themePending = true;
+function applyLocks() {
+  controls.manualDisabled = selecting || drawLocks.manualDisabled;
+  controls.digitalDisabled = selecting || drawLocks.digitalDisabled;
+  controls.reloadDisabled = selecting || drawLocks.reloadDisabled;
+  themeSelect.disabled = selecting || themePending;
+}
 
 openPublic.addEventListener('click', () => window.desktop.openPublic());
 movePublic.addEventListener('click', () => window.desktop.movePublicToSecondary());
@@ -46,6 +58,7 @@ window.desktop.onPublicStatus((pauseSuggested) => {
 const controller = createOperatorController(window.desktop, {
   bind: ({ manual, digital, reload }) => {
     controls.addEventListener('click', (event) => {
+      if (selecting) return;
       const action = event.composedPath().find((node) => node?.id === 'draw-manual' || node?.id === 'draw-digital' || node?.id === 'reload-event');
       if (action?.id === 'draw-manual') createManualDrawHandler(controls.manualInput, manual)();
       else if (action?.id === 'draw-digital') digital();
@@ -68,14 +81,13 @@ const controller = createOperatorController(window.desktop, {
     eventError.message = state.error ?? '';
     eventError.tone = 'error';
     eventError.hidden = !state.error;
-    controls.manualDisabled = state.manualDisabled;
-    controls.digitalDisabled = state.digitalDisabled;
-    controls.reloadDisabled = state.reloadDisabled;
+    drawLocks = { manualDisabled: state.manualDisabled, digitalDisabled: state.digitalDisabled,
+      reloadDisabled: state.reloadDisabled };
+    applyLocks();
   },
 });
 void controller.start();
 
-const themeSelect = required('theme-select', HTMLSelectElement);
 const themeStatus = required('theme-status', HTMLElement);
 const themes = createThemeController(window.desktop, {
   render: ({ theme, pending, error }) => {
@@ -83,13 +95,14 @@ const themes = createThemeController(window.desktop, {
     if (theme !== null) applyTheme(document.documentElement, theme);
     else if (error !== null && !document.documentElement.dataset.theme) applyTheme(document.documentElement, DEFAULT_THEME);
     themeSelect.value = theme ?? DEFAULT_THEME;
-    themeSelect.disabled = pending;
+    themePending = pending;
+    applyLocks();
     themeStatus.message = error ?? (pending ? 'Saving theme' : theme === null ? 'Waiting for theme'
       : `Current theme: ${THEME_LABELS[theme]}`);
     themeStatus.tone = error ? 'error' : 'info';
   },
 });
-themeSelect.addEventListener('change', () => { void themes.select(themeSelect.value); });
+themeSelect.addEventListener('change', () => { if (!selecting) void themes.select(themeSelect.value); });
 void themes.start();
 
 bindTabs(document.querySelector('[role="tablist"]'));
@@ -107,6 +120,9 @@ eventDate.value = today();
 const events = createEventsController(window.desktop, {
   render: ({ events: list, loaded, pending, stale, error, active }) => {
     eventList.events = list;
+    eventList.loaded = loaded;
+    selecting = pending === 'select';
+    applyLocks();
     eventList.disabled = pending !== null;
     reloadEvents.disabled = pending !== null;
     createSubmit.disabled = pending !== null;

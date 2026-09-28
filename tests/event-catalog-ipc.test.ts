@@ -87,6 +87,10 @@ test('select commits before notifying both windows; failures neither notify nor 
   f.setFailure('notify');
   assert.equal((f.invoke(CATALOG_CHANNELS.select, ['a']) as { ok: boolean }).ok, true);
   f.setFailure('list');
+  f.calls.length = 0;
+  assert.deepEqual(f.invoke(CATALOG_CHANNELS.select, ['b']), { ok: false, code: 'storage_failure',
+    message: 'The event was selected, but the list could not be read. Reload the events.', selected: true });
+  assert.deepEqual(f.calls, ['select:b', 'notify', 'list']);
   assert.deepEqual(f.invoke(CATALOG_CHANNELS.list), { ok: false, code: 'storage_failure',
     message: 'Could not read the events. Try again.' });
   f.setFailure('create');

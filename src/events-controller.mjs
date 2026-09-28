@@ -29,11 +29,13 @@ export function createEventsController(api, view, onSelected) {
   const render = () => view.render({ events: events.map((event) => ({ ...event })), loaded, pending, stale, error,
     active: events.find((event) => event.active) ?? null });
 
+  // Outcome: 'accepted', 'rejected', 'committed' (selected but the list was unreadable),
+  // 'unknown' (the request never acknowledged), or 'skipped' (another request was pending).
   async function request(kind, operation) {
-    if (pending !== null) return false;
+    if (pending !== null) return 'skipped';
     pending = kind;
     render();
-    let accepted = false;
+    let outcome = 'rejected';
     try {
       const result = await operation();
       if (result?.ok === true && validEvents(result.events)) {
@@ -41,30 +43,33 @@ export function createEventsController(api, view, onSelected) {
         loaded = true;
         stale = false;
         error = null;
-        accepted = true;
+        outcome = 'accepted';
       } else {
         stale = loaded;
         error = result?.ok === false && typeof result.message === 'string' ? result.message : invalidUpdate;
+        if (result?.ok === false && result.selected === true) outcome = 'committed';
       }
     } catch {
       stale = loaded;
       error = connectionError;
+      outcome = 'unknown';
     } finally {
       pending = null;
       render();
     }
-    return accepted;
+    return outcome;
   }
 
   return {
-    start: () => request('list', () => api.listEvents()),
-    create: (meta) => request('create', () => api.createEvent(meta)),
-    // Dependent panels re-read committed state only after the selection is acknowledged.
+    start: async () => (await request('list', () => api.listEvents())) === 'accepted',
+    create: async (meta) => (await request('create', () => api.createEvent(meta))) === 'accepted',
+    // Dependent panels re-read committed state whenever the active event may have changed:
+    // an acknowledged selection, one that committed without a readable list, or one with no answer.
     select: async (id) => {
       if (events.find((event) => event.id === id)?.active === true) return false;
-      const accepted = await request('select', () => api.selectEvent(id));
-      if (accepted) await onSelected();
-      return accepted;
+      const outcome = await request('select', () => api.selectEvent(id));
+      if (outcome === 'accepted' || outcome === 'committed' || outcome === 'unknown') await onSelected();
+      return outcome === 'accepted';
     },
   };
 }

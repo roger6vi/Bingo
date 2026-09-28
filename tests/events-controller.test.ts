@@ -59,8 +59,25 @@ test('failed selection keeps the committed list stale with an error, then recove
   f.responses.select = async () => { throw new Error('ipc'); };
   await f.controller.select('b');
   assert.match(f.last().error!, /Could not connect/);
+  assert.equal(f.calls.at(-1), 'dependents', 'an unanswered select may have committed');
   await f.controller.start();
   assert.deepEqual([f.last().stale, f.last().error], [false, null]);
+});
+
+test('a committed selection whose list could not be read still refreshes dependent panels', async () => {
+  const f = fixture();
+  await f.controller.start();
+  const message = 'The event was selected, but the list could not be read. Reload the events.';
+  f.responses.select = async () => ({ ok: false, code: 'storage_failure', message, selected: true });
+  assert.equal(await f.controller.select('b'), false);
+  assert.deepEqual(f.calls, ['list', 'select:b', 'dependents']);
+  assert.deepEqual([f.last().pending, f.last().stale, f.last().error], [null, true, message]);
+  f.responses.select = async () => { throw new Error('ipc'); };
+  await f.controller.select('b');
+  assert.deepEqual(f.calls.slice(-2), ['select:b', 'dependents'], 'an unanswered select may have committed');
+  f.responses.select = async () => ({ ok: false, code: 'invalid_request', message: 'Invalid event request.' });
+  await f.controller.select('b');
+  assert.deepEqual(f.calls.slice(-2), ['dependents', 'select:b'], 'a rejected select does not refresh');
 });
 
 test('invalid acknowledgements are rejected and concurrent requests are ignored', async () => {

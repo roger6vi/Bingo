@@ -9,12 +9,12 @@
   <bingo-shell>
   <main>
     <h1>Operator console</h1>
-    <div role="tablist" aria-label="Espacio de trabajo" class="operator-tabs">
+    <div role="tablist" lang="es" aria-label="Espacio de trabajo" class="operator-tabs">
       <button type="button" role="tab" id="tab-events" aria-controls="panel-events" aria-selected="true">Eventos</button>
       <button type="button" role="tab" id="tab-settings" aria-controls="panel-settings" aria-selected="false">Configuración</button>
       <button type="button" role="tab" id="tab-bingo" aria-controls="panel-bingo" aria-selected="false">Bingo</button>
     </div>
-    <div role="tabpanel" id="panel-events" aria-labelledby="tab-events" tabindex="0">
+    <div role="tabpanel" lang="es" id="panel-events" aria-labelledby="tab-events" tabindex="0">
       <div class="operator-layout">
         <bingo-panel heading="Eventos">
           <bingo-status id="events-status"></bingo-status>
@@ -35,12 +35,12 @@
         </bingo-panel>
       </div>
     </div>
-    <div role="tabpanel" id="panel-settings" aria-labelledby="tab-settings" tabindex="0" hidden>
-      <bingo-status class="active-event-banner"></bingo-status>
+    <div role="tabpanel" lang="es" id="panel-settings" aria-labelledby="tab-settings" tabindex="0" hidden>
+      <bingo-status class="active-event-banner" lang="es"></bingo-status>
       <p>La configuración del evento activo llegará en la siguiente entrega.</p>
     </div>
     <div role="tabpanel" id="panel-bingo" aria-labelledby="tab-bingo" tabindex="0" hidden>
-      <bingo-status class="active-event-banner"></bingo-status>
+      <bingo-status class="active-event-banner" lang="es"></bingo-status>
       <div class="operator-layout">
         <bingo-panel heading="Current event">
           <bingo-status id="phase-status"></bingo-status>
