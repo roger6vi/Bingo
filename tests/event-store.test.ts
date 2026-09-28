@@ -40,7 +40,7 @@ test('only explicit creation creates the current event; duplicates fail and reop
     assert.throws(() => reopened.create(), /exist|already/i);
     assert.deepEqual(reopened.update((event) => drawManual(event, 45)).calledNumbers, [90, 1, 45]);
   } finally { reopened.close(); }
-  withDb(path, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 1));
+  withDb(path, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 2));
 });
 
 test('a fresh Node process recovers exact history and appends to it', (t) => {
@@ -145,8 +145,8 @@ test('simultaneous first opens never observe a partially initialized database', 
   const firstResultPending = message(first, 'version');
   fs.writeFileSync(release, 'go');
   const firstResult = await firstResultPending;
-  assert.deepEqual(secondResult, { version: 1, empty: true });
-  assert.deepEqual(firstResult, { version: 1, empty: true });
+  assert.deepEqual(secondResult, { version: 2, empty: true });
+  assert.deepEqual(firstResult, { version: 2, empty: true });
   assert.deepEqual(fs.readdirSync(join(path, '..')).sort(), ['event.sqlite', 'release']);
 });
 
@@ -209,22 +209,18 @@ test('malformed stored history and read errors fail closed without replacing the
   try { store.create(); } finally { store.close(); }
   for (const history of ['not json', '[1,1]', '[0]', '[1.5]', '[91]', '{}']) {
     withDb(path, (db) => db.prepare('UPDATE current_event SET history = ?').run(history));
-    const reopened = createEventStore(path);
-    try {
-      assert.throws(() => reopened.load(), /invalid|history|event/i);
-      assert.throws(() => reopened.update((event) => drawManual(event, 4)), /invalid|history|event/i);
-    } finally { reopened.close(); }
+    assert.throws(() => createEventStore(path), /invalid|history|event/i);
     withDb(path, (db) => assert.equal(db.prepare('SELECT history FROM current_event').get()?.history, history));
   }
   withDb(path, (db) => db.exec('DROP TABLE current_event'));
   assert.throws(() => createEventStore(path), /schema|table|invalid/i);
 });
 
-test('unsupported version and existing unknown database never initialize as version 1', (t) => {
+test('unsupported version and existing unknown database never initialize as version 2', (t) => {
   const path = fixture(t);
-  withDb(path, (db) => db.exec('PRAGMA user_version = 2'));
+  withDb(path, (db) => db.exec('PRAGMA user_version = 3'));
   assert.throws(() => createEventStore(path), /version|unsupported/i);
-  withDb(path, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 2));
+  withDb(path, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 3));
 
   const unknown = join(fs.realpathSync(join(path, '..')), 'unknown.sqlite');
   withDb(unknown, (db) => db.exec('CREATE TABLE unrelated (value INTEGER)'));
@@ -275,6 +271,138 @@ test('version-1 schemas missing mandatory constraints are rejected without alter
   const compatible = createEventStore(equivalent);
   try { assert.deepEqual(compatible.create().calledNumbers, []); }
   finally { compatible.close(); }
+});
+
+function v1(path: string, history = '[90,1]') {
+  withDb(path, (db) => {
+    db.exec(`CREATE TABLE current_event (
+      id INTEGER PRIMARY KEY CHECK (id = 1), history TEXT NOT NULL
+    ); PRAGMA user_version = 1`);
+    db.prepare('INSERT INTO current_event (id, history) VALUES (1, ?)').run(history);
+  });
+}
+
+test('valid v1 migrates once, preserves ordered calls, and rejects a persisted injected audit row', (t) => {
+  const path = fixture(t);
+  v1(path);
+  for (let open = 0; open < 2; open++) {
+    const store = createEventStore(path);
+    try {
+      assert.deepEqual(store.load(), { calledNumbers: open === 0 ? [90, 1] : [90, 1, 45],
+        phase: 'drawing', lastTransitionAt: null });
+      if (open === 0) assert.deepEqual(store.update((event) => drawManual(event, 45)),
+        { calledNumbers: [90, 1, 45], phase: 'drawing', lastTransitionAt: null });
+    } finally { store.close(); }
+  }
+  withDb(path, (db) => {
+    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 2);
+    assert.equal(db.prepare('SELECT history FROM current_event').get()?.history, '[90,1,45]');
+    assert.equal(db.prepare('SELECT count(*) AS count FROM phase_audit').get()?.count, 0);
+    assert.throws(() => db.exec(`INSERT INTO phase_audit
+      (transitionAt, kind, from_phase, to_phase) VALUES ('2025-01-01T00:00:00.000Z', 'begin_line_check', 'drawing', 'checking_line');
+      UPDATE phase_audit SET kind = 'finish'`), /audit|immutable|update/i);
+    // The INSERT committed before the rejected UPDATE; it must remain on disk.
+    assert.equal(db.prepare('SELECT count(*) AS count FROM phase_audit').get()?.count, 1);
+  });
+  assert.throws(() => createEventStore(path), /invalid phase audit/i);
+});
+
+test('fresh v2 starts in drawing with null timestamp and guarded empty audit', (t) => {
+  const path = fixture(t);
+  const store = createEventStore(path);
+  try {
+    assert.equal(store.load(), null);
+    assert.deepEqual(store.create(), { calledNumbers: [], phase: 'drawing', lastTransitionAt: null });
+  } finally { store.close(); }
+  withDb(path, (db) => {
+    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 2);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM phase_audit').get()?.count, 0);
+    assert.ok(db.prepare("SELECT name FROM sqlite_schema WHERE type='trigger' AND name='phase_audit_no_delete'").get());
+  });
+  const reopened = createEventStore(path);
+  try { assert.deepEqual(reopened.load(), { calledNumbers: [], phase: 'drawing', lastTransitionAt: null }); }
+  finally { reopened.close(); }
+});
+
+test('invalid v1 history and failed migration leave version and row unchanged', (t) => {
+  const path = fixture(t);
+  v1(path, '[90,90]');
+  assert.throws(() => createEventStore(path), /invalid|history/i);
+  withDb(path, (db) => {
+    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 1);
+    assert.equal(db.prepare('SELECT history FROM current_event').get()?.history, '[90,90]');
+    db.exec("UPDATE current_event SET history = '[90,1]'");
+    db.exec(`CREATE TRIGGER reject_migration BEFORE UPDATE ON current_event
+      BEGIN SELECT RAISE(ABORT, 'migration interrupted'); END`);
+  });
+  assert.throws(() => createEventStore(path), /migration interrupted/);
+  withDb(path, (db) => {
+    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 1);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM sqlite_schema WHERE name = \'phase_audit\'').get()?.count, 0);
+    db.exec('DROP TRIGGER reject_migration');
+  });
+  const store = createEventStore(path);
+  try { assert.deepEqual(store.load()?.calledNumbers, [90, 1]); }
+  finally { store.close(); }
+});
+
+test('opening valid v2 under an independent writer lock reads the same ordered snapshot without mutation', (t) => {
+  const path = fixture(t);
+  const initial = createEventStore(path);
+  try {
+    initial.create();
+    initial.update((event) => drawManual(event, 90));
+    initial.update((event) => drawManual(event, 1));
+  } finally { initial.close(); }
+  withDb(path, (writer) => {
+    const before = writer.prepare('SELECT id, history, phase, lastTransitionAt FROM current_event').all();
+    writer.exec('BEGIN IMMEDIATE');
+    try {
+      const reopened = createEventStore(path);
+      try {
+        assert.deepEqual(reopened.load(), { calledNumbers: [90, 1], phase: 'drawing', lastTransitionAt: null });
+      } finally { reopened.close(); }
+      assert.deepEqual(writer.prepare('SELECT id, history, phase, lastTransitionAt FROM current_event').all(), before);
+      assert.equal(writer.prepare('PRAGMA user_version').get()?.user_version, 2);
+      assert.equal(writer.prepare('SELECT count(*) AS count FROM phase_audit').get()?.count, 0);
+    } finally { writer.exec('ROLLBACK'); }
+  });
+  const final = createEventStore(path);
+  try { assert.deepEqual(final.load(), { calledNumbers: [90, 1], phase: 'drawing', lastTransitionAt: null }); }
+  finally { final.close(); }
+});
+
+test('migration contention leaves v1 intact until the winner can commit', (t) => {
+  const path = fixture(t);
+  v1(path);
+  withDb(path, (db) => {
+    db.exec('BEGIN IMMEDIATE');
+    try { assert.throws(() => createEventStore(path), /locked|busy/i); }
+    finally { db.exec('ROLLBACK'); }
+  });
+  withDb(path, (db) => {
+    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 1);
+    assert.equal(db.prepare('SELECT history FROM current_event').get()?.history, '[90,1]');
+  });
+  const winner = createEventStore(path);
+  const concurrent = createEventStore(path);
+  try {
+    assert.deepEqual(winner.load(), concurrent.load());
+    assert.deepEqual(winner.load()?.calledNumbers, [90, 1]);
+  } finally { winner.close(); concurrent.close(); }
+});
+
+test('malformed v2 phase, missing audit guards, and inconsistent empty audit fail closed', (t) => {
+  const path = fixture(t);
+  const store = createEventStore(path);
+  try { store.create(); } finally { store.close(); }
+  withDb(path, (db) => db.exec("UPDATE current_event SET phase = 'line_declared'"));
+  assert.throws(() => createEventStore(path), /invalid|audit|phase/i);
+  withDb(path, (db) => {
+    db.exec("UPDATE current_event SET phase = 'drawing'");
+    db.exec('DROP TRIGGER phase_audit_no_delete');
+  });
+  assert.throws(() => createEventStore(path), /invalid|audit|schema/i);
 });
 
 test('contention fails without overwriting a newer state, and stale store reads inside transaction', (t) => {
