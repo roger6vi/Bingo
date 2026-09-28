@@ -8,7 +8,7 @@ export const CATALOG_CHANNELS = Object.freeze({
 
 export type CatalogResult =
   | { ok: true; events: EventSummary[] }
-  | { ok: false; code: 'invalid_request' | 'storage_failure'; message: string; selected?: true };
+  | { ok: false; code: 'invalid_request' | 'storage_failure'; message: string; selected?: true; created?: true };
 
 type CatalogRequest = { sender: unknown; senderFrame: unknown };
 type CatalogStore = {
@@ -59,7 +59,9 @@ export function registerEventCatalogIpc(
     const { name, date, place } = args[0];
     try { store.createEvent({ name, date, place }); }
     catch { return { ok: false, code: 'storage_failure', message: 'Could not create the event. Try again.' }; }
-    return list('The event was created, but the list could not be read. Reload the events.');
+    // Tell the operator the event exists even when the refreshed list cannot be read, so it is not recreated.
+    const result = list('The event was created, but the list could not be read. Reload the events.');
+    return result.ok ? result : { ...result, created: true };
   });
   registrar.handle(CATALOG_CHANNELS.select, (event, ...args) => {
     authorize(event);

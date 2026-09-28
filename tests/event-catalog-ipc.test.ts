@@ -96,3 +96,10 @@ test('select commits before notifying both windows; failures neither notify nor 
   f.setFailure('create');
   assert.equal(JSON.stringify(f.invoke(CATALOG_CHANNELS.create, [meta])).includes('secret'), false);
 });
+
+test('a committed create whose list cannot be read reports created: true', () => {
+  const f = fixture();
+  f.setFailure('list');
+  assert.deepEqual(f.invoke(CATALOG_CHANNELS.create, [meta]), { ok: false, code: 'storage_failure',
+    message: 'The event was created, but the list could not be read. Reload the events.', created: true });
+});

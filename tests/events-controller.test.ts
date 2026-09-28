@@ -110,3 +110,12 @@ test('an ok select reply with an invalid list still counts as committed and refr
   assert.deepEqual(f.calls.slice(-2), ['select:b', 'dependents']);
   assert.equal(f.last().stale, true);
 });
+
+test('a create that committed without a readable list reports success so the form is not resubmitted', async () => {
+  const f = fixture();
+  await f.controller.start();
+  f.responses.create = async () => ({ ok: false, code: 'storage_failure', message: 'unreadable', created: true });
+  assert.equal(await f.controller.create({ name: 'N', place: 'P', date: '2026-09-28' }), true);
+  assert.equal(f.last().stale, true);
+  assert.equal(f.last().error, 'unreadable');
+});

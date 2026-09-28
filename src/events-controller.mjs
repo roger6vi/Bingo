@@ -29,7 +29,7 @@ export function createEventsController(api, view, onSelected) {
   const render = () => view.render({ events: events.map((event) => ({ ...event })), loaded, pending, stale, error,
     active: events.find((event) => event.active) ?? null });
 
-  // Outcome: 'accepted', 'rejected', 'committed' (selected but the list was unreadable),
+  // Outcome: 'accepted', 'rejected', 'committed' (selected or created but the list was unreadable),
   // 'unknown' (the request never acknowledged), or 'skipped' (another request was pending).
   async function request(kind, operation) {
     if (pending !== null) return 'skipped';
@@ -48,7 +48,8 @@ export function createEventsController(api, view, onSelected) {
         stale = loaded;
         error = result?.ok === false && typeof result.message === 'string' ? result.message : invalidUpdate;
         // From the select channel, ok:true means the selection committed even if the list is unusable.
-        if ((kind === 'select' && result?.ok === true) || (result?.ok === false && result.selected === true)) {
+        if ((kind === 'select' && result?.ok === true) || (result?.ok === false &&
+            (result.selected === true || (kind === 'create' && result.created === true)))) {
           outcome = 'committed';
         }
       }
@@ -65,7 +66,8 @@ export function createEventsController(api, view, onSelected) {
 
   return {
     start: async () => (await request('list', () => api.listEvents())) === 'accepted',
-    create: async (meta) => (await request('create', () => api.createEvent(meta))) === 'accepted',
+    // A committed create must not look failed, or the operator would submit the form again.
+    create: async (meta) => ['accepted', 'committed'].includes(await request('create', () => api.createEvent(meta))),
     // Dependent panels re-read committed state whenever the active event may have changed:
     // an acknowledged selection, one that committed without a readable list, or one with no answer.
     select: async (id) => {
