@@ -122,3 +122,23 @@ test('a save whose event changed meanwhile is not acknowledged and does not save
   assert.equal(f.calls.some((call) => call.startsWith('theme:')), false);
   assert.deepEqual([f.last().draft?.id, f.last().dirty], ['b', false]);
 });
+
+test('a theme-only save that throws reports a theme error, not a metadata error', async () => {
+  const f = fixture();
+  f.controller.setCommittedTheme('high-contrast');
+  f.controller.setCommittedEvent(event());
+  f.controller.edit('theme', 'pixel-classic');
+  f.replies.theme = async () => { throw new Error('ipc gone'); };
+  assert.equal(await f.controller.save(), false);
+  assert.equal(f.last().error, SAVE_ERRORS.theme);
+  assert.deepEqual(f.calls, ['theme:pixel-classic']);
+});
+
+test('metadata can still be saved when the committed theme could not be read', async () => {
+  const f = fixture();
+  f.controller.setCommittedEvent(event());
+  f.controller.edit('name', 'Gran Bingo');
+  assert.equal(f.last().canSave, true);
+  assert.equal(await f.controller.save(), true);
+  assert.deepEqual(f.calls, ['meta:a:{"name":"Gran Bingo","date":"2026-08-15","place":"Plaza"}']);
+});

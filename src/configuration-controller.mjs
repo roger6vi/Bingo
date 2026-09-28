@@ -19,7 +19,8 @@ export function validateDraft(draft) {
   if (!validText(draft.name)) errors.name = 'Escribe un nombre de 1 a 120 caracteres.';
   if (!validDate(draft.date)) errors.date = 'Elige una fecha válida.';
   if (!validText(draft.place)) errors.place = 'Escribe un lugar de 1 a 120 caracteres.';
-  if (!validTheme(draft.theme)) errors.theme = 'Elige un tema.';
+  // null means the committed theme could not be read; metadata stays saveable while the theme is untouched.
+  if (draft.theme !== null && !validTheme(draft.theme)) errors.theme = 'Elige un tema.';
   return errors;
 }
 
@@ -66,6 +67,7 @@ export function createConfigurationController({ saveMeta, saveTheme }, view) {
     render();
     const id = committed.id;
     let metaSaved = false;
+    let stage = 'meta';
     try {
       if (changed(META_FIELDS)) {
         const meta = { name: draft.name.trim(), date: draft.date, place: draft.place.trim() };
@@ -81,6 +83,7 @@ export function createConfigurationController({ saveMeta, saveTheme }, view) {
         }
       }
       if (committed?.id === id && changed(['theme'])) {
+        stage = 'theme';
         const theme = draft.theme;
         if (!await saveTheme(theme)) {
           error = metaSaved ? SAVE_ERRORS.themeAfterMeta : SAVE_ERRORS.theme;
@@ -91,7 +94,7 @@ export function createConfigurationController({ saveMeta, saveTheme }, view) {
       }
       return committed?.id === id && !dirty();
     } catch {
-      error = metaSaved ? SAVE_ERRORS.themeAfterMeta : SAVE_ERRORS.meta;
+      error = stage === 'meta' ? SAVE_ERRORS.meta : metaSaved ? SAVE_ERRORS.themeAfterMeta : SAVE_ERRORS.theme;
       return false;
     } finally {
       pending = false;
