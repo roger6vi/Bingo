@@ -1,0 +1,22 @@
+{
+  "$schema": "./node_modules/app-builder-lib/scheme.json",
+  "appId": "io.github.roger6vi.bingo",
+  "productName": "Bingo",
+  "extraMetadata": { "productName": "Bingo" },
+  "copyright": "Copyright © 2026 roger6vi",
+  "directories": { "output": "release" },
+  "files": ["package.json", "dist/**/*", "!dist/**/*.map", "!node_modules/**/*"],
+  "asar": true,
+  "npmRebuild": false,
+  "mac": {
+    "category": "public.app-category.entertainment",
+    "target": [
+      { "target": "dmg", "arch": ["arm64", "x64"] },
+      { "target": "zip", "arch": ["arm64", "x64"] }
+    ],
+    "hardenedRuntime": true,
+    "notarize": true,
+    "minimumSystemVersion": "12.0"
+  },
+  "linux": { "target": "dir", "executableName": "bingo" }
+}

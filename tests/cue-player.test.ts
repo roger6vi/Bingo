@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { CUE_SETTINGS_KEY, createCuePlayer, describeCueStatus, readCueSettings } from '../src/cue-player.mjs';
+import { RATE, generateCueBuffers } from '../scripts/generate-cue-audio.mjs';
 
 type State = { muted: boolean; volume: number; status: { kind: string; milestone: string | null; preview?: boolean } };
 
@@ -129,5 +130,37 @@ test('bundled cue sources are local generated WAV files large enough to be emitt
     assert.equal(wav.toString('ascii', 0, 4), 'RIFF');
     assert.equal(wav.toString('ascii', 8, 12), 'WAVE');
     assert.ok(wav.length > 4096, 'above Vite\'s inline limit, so the CSP never sees a data: URL');
+  }
+});
+
+test('committed cue WAVs satisfy the PCM header contract and exactly match the generator, byte for byte', () => {
+  const root = path.resolve(import.meta.dirname, '..');
+  // generateCueBuffers() only computes bytes in memory; nothing is written to disk by this test.
+  const generated = generateCueBuffers();
+  for (const cue of ['line', 'bingo', 'final']) {
+    const committed = readFileSync(path.join(root, `assets/cues/${cue}.wav`));
+
+    // RIFF/WAVE container and fmt chunk id, matching the 44-byte canonical PCM header this generator writes.
+    assert.equal(committed.toString('ascii', 0, 4), 'RIFF');
+    assert.equal(committed.readUInt32LE(4), committed.length - 8, `${cue}: RIFF chunk size`);
+    assert.equal(committed.toString('ascii', 8, 12), 'WAVE');
+    assert.equal(committed.toString('ascii', 12, 16), 'fmt ', `${cue}: fmt chunk id`);
+    assert.equal(committed.readUInt32LE(16), 16, `${cue}: fmt chunk size (PCM)`);
+
+    // PCM format contract: audio format 1 (PCM, no compression), 1 channel (mono), 22050 Hz, 16-bit depth.
+    assert.equal(committed.readUInt16LE(20), 1, `${cue}: audio format must be PCM`);
+    assert.equal(committed.readUInt16LE(22), 1, `${cue}: channel count must be mono`);
+    assert.equal(committed.readUInt32LE(24), RATE, `${cue}: sample rate must be 22050 Hz`);
+    assert.equal(committed.readUInt16LE(34), 16, `${cue}: bit depth must be 16-bit`);
+    assert.equal(committed.readUInt32LE(28), RATE * 2, `${cue}: byte rate must match rate * blockAlign`);
+    assert.equal(committed.readUInt16LE(32), 2, `${cue}: block align must match mono 16-bit frames`);
+
+    // data subchunk id and declared size, consistent with the header's own accounting.
+    assert.equal(committed.toString('ascii', 36, 40), 'data', `${cue}: data chunk id`);
+    assert.equal(committed.readUInt32LE(40), committed.length - 44, `${cue}: data chunk size`);
+
+    // Deterministic equivalence: the committed asset is exactly what the generator produces today,
+    // so regenerating never silently drifts from what is bundled and shipped.
+    assert.ok(committed.equals(generated[cue]), `${cue}: committed WAV must byte-for-byte match scripts/generate-cue-audio.mjs`);
   }
 });

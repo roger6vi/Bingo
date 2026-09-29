@@ -4,8 +4,34 @@ export const semanticVariable = (key) => `--bingo-${key.replaceAll('.', '-')}`;
 
 export const sourcePaths = {
   reference: 'tokens/reference.json',
-  themes: ['pixel-classic', 'high-contrast'],
+  themes: ['jules', 'light', 'high-contrast'],
+  // The default theme also carries the reference variables and the :root fallback.
+  defaultTheme: 'jules',
 };
+
+// Declared text/background pairs, checked in every theme. Minimums follow WCAG 2.2:
+// text AA 4.5:1 (AAA 7:1 in high-contrast), non-text UI 3:1 (4.5:1 in high-contrast).
+// A translucent background is composited over color.canvas, a translucent foreground over its background.
+export const contrastMinimums = { text: 4.5, ui: 3 };
+export const strictContrastMinimums = { 'high-contrast': { text: 7, ui: 4.5 } };
+const textPairs = [
+  ['text', 'canvas'], ['text', 'surface'], ['text', 'surface-raised'], ['text', 'surface-sunken'],
+  ['muted', 'canvas'], ['muted', 'surface'],
+  ['on-accent', 'accent'], ['on-accent', 'accent-hover'], ['on-accent', 'accent-active'],
+  ['info', 'surface'], ['success', 'surface'], ['warning', 'surface'], ['error', 'surface'], ['error', 'canvas'],
+  ['call-uncalled', 'call-uncalled-surface'], ['call-called', 'call-called-surface'], ['call-latest', 'call-latest-surface'],
+  ['on-celebration', 'celebration'], ['prize', 'surface'],
+  ...Array.from({ length: 8 }, (_, index) => ['on-tie', `tie-${index + 1}`]),
+];
+const uiPairs = [
+  ['focus', 'canvas'], ['focus', 'surface'], ['border-strong', 'canvas'], ['border-strong', 'surface'],
+  // A called number must stand out from an uncalled one without relying on its label.
+  ['accent', 'surface'], ['call-called-surface', 'call-uncalled-surface'],
+];
+export const contrastPairs = [
+  ...textPairs.map(([foreground, background]) => ({ foreground: `color.${foreground}`, background: `color.${background}`, role: 'text' })),
+  ...uiPairs.map(([foreground, background]) => ({ foreground: `color.${foreground}`, background: `color.${background}`, role: 'ui' })),
+];
 
 // Forbid complete hyphen-delimited component names in semantic paths and
 // consumed --bingo-* variables, without rejecting words such as color.accent.
@@ -32,7 +58,8 @@ function flatten(tree, prefix = '', result = {}, semantic = false) {
 // shadow grammar is deliberately small: unknown syntax fails rather than letting
 // named colors, gradients or functional colors through a keyword denylist.
 const semanticColor = /var\(--bingo-color-[a-z][\w-]*\)/g;
-const length = '(?:0|[+-]?(?:\\d*\\.)?\\d+(?:px|em|rem|vh|vw|%))';
+// Lengths may also be semantic dimension variables (never color or reference variables).
+const length = '(?:0|[+-]?(?:\\d*\\.)?\\d+(?:px|em|rem|vh|vw|%)|var\\(--bingo-(?:space|border-width|elevation)-[a-z][\\w-]*\\))';
 const borderParts = new RegExp(`^(?:(?:${length}|none|hidden|dotted|dashed|solid|double|groove|ridge|inset|outset)\\s*)*$`, 'i');
 const shadowParts = new RegExp(`^(?:(?:${length}|inset)\\s*)+$`, 'i');
 
@@ -72,33 +99,78 @@ function validateScreenColors(css) {
   }
 }
 
+function parseColor(value, key) {
+  const match = typeof value === 'string' && /^#([\da-f]{6})([\da-f]{2})?$/i.exec(value);
+  if (!match) throw new Error(`Contrast color must be #rrggbb or #rrggbbaa: ${key}`);
+  const channels = match[1].match(/../g).map((hex) => parseInt(hex, 16) / 255);
+  return { rgb: channels, alpha: match[2] ? parseInt(match[2], 16) / 255 : 1 };
+}
+
+const over = (top, bottom) => top.rgb.map((channel, index) => channel * top.alpha + bottom[index] * (1 - top.alpha));
+const luminance = (rgb) => rgb
+  .map((channel) => (channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4))
+  .reduce((sum, channel, index) => sum + channel * [0.2126, 0.7152, 0.0722][index], 0);
+
+export function contrastRatio(foreground, background, canvas) {
+  const base = canvas.alpha === 1 ? canvas.rgb : null;
+  if (!base) throw new Error('color.canvas must be opaque');
+  const back = over(background, base);
+  const [light, dark] = [luminance(over(foreground, back)), luminance(back)].sort((a, b) => b - a);
+  return (light + 0.05) / (dark + 0.05);
+}
+
+function validateContrast(theme, semantic, refs) {
+  const resolve = (key) => {
+    const token = semantic[key];
+    if (!token || token.$type !== 'color') throw new Error(`Contrast pair references missing color: ${theme} ${key}`);
+    const target = token.$value.slice(1, -1);
+    return parseColor(refs[target].$value, target);
+  };
+  const minimums = { ...contrastMinimums, ...strictContrastMinimums[theme] };
+  const canvas = resolve('color.canvas');
+  for (const { foreground, background, role } of contrastPairs) {
+    const ratio = contrastRatio(resolve(foreground), resolve(background), canvas);
+    if (ratio < minimums[role]) {
+      throw new Error(`Contrast ${ratio.toFixed(2)}:1 below ${minimums[role]}:1 in ${theme}: ${foreground} on ${background}`);
+    }
+  }
+}
+
 export function validateTokenContracts({ reference, themes, css, ...layers }) {
   if (Object.keys(layers).length) throw new Error('Component or extra token layer forbidden');
   const refs = flatten(reference);
   for (const [key, token] of Object.entries(refs)) {
     if (typeof token.$value === 'string' && /^\{.*\}$/.test(token.$value)) throw new Error(`Reference must be raw: ${key}`);
   }
-  const classic = flatten(themes['pixel-classic'], '', {}, true);
-  const contrast = flatten(themes['high-contrast'], '', {}, true);
-  const keys = Object.keys(classic).sort();
-  if (keys.length === 0 || keys.join('|') !== Object.keys(contrast).sort().join('|')) {
-    throw new Error('Semantic keys differ between themes');
+  const names = Object.keys(themes);
+  if (names.length < 2) throw new Error('At least two themes are required');
+  const semantic = Object.fromEntries(names.map((theme) => [theme, flatten(themes[theme], '', {}, true)]));
+  const keys = Object.keys(semantic[names[0]]).sort();
+  for (const theme of names) {
+    if (keys.length === 0 || keys.join('|') !== Object.keys(semantic[theme]).sort().join('|')) {
+      throw new Error(`Semantic keys differ between themes: ${theme}`);
+    }
   }
-  let differences = 0;
   for (const key of keys) {
-    const first = classic[key];
-    const second = contrast[key];
-    if (first.$type !== second.$type) throw new Error(`Semantic type mismatch: ${key}`);
-    for (const token of [first, second]) {
+    for (const theme of names) {
+      const token = semantic[theme][key];
+      if (token.$type !== semantic[names[0]][key].$type) throw new Error(`Semantic type mismatch: ${key}`);
       const alias = typeof token.$value === 'string' && /^\{([a-z][\w-]*(?:\.[a-z][\w-]*)+)\}$/.exec(token.$value);
       if (!alias) throw new Error(`Semantic value must be a reference alias: ${key}`);
       if (!refs[alias[1]] || refs[alias[1]].$type !== token.$type) {
         throw new Error(`Invalid reference or type: ${key} -> ${alias[1]}`);
       }
     }
-    if (first.$value !== second.$value) differences++;
   }
-  if (!differences) throw new Error('Themes must differ intentionally');
+  let differences = 0;
+  for (const [index, first] of names.entries()) {
+    for (const second of names.slice(index + 1)) {
+      const changed = keys.filter((key) => semantic[first][key].$value !== semantic[second][key].$value).length;
+      if (!changed) throw new Error(`Themes must differ intentionally: ${first} and ${second}`);
+      differences += changed;
+    }
+  }
+  for (const theme of names) validateContrast(theme, semantic[theme], refs);
   if (/--bingo-reference-[\w-]+/.test(css)) throw new Error('Screen consumes reference variable');
   for (const [, name] of css.matchAll(/--bingo-([\w-]+)/gi)) {
     if (componentSegment.test(name)) {
@@ -106,7 +178,7 @@ export function validateTokenContracts({ reference, themes, css, ...layers }) {
     }
   }
   validateScreenColors(css);
-  return { keys, referenceKeys: Object.keys(refs).sort(), differences };
+  return { keys, referenceKeys: Object.keys(refs).sort(), differences, themes: names };
 }
 
 export function loadContracts() {
@@ -120,5 +192,5 @@ export function loadContracts() {
 
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
   const result = validateTokenContracts(loadContracts());
-  console.log(`Validated ${result.referenceKeys.length} reference and ${result.keys.length} semantic tokens in two themes`);
+  console.log(`Validated ${result.referenceKeys.length} reference and ${result.keys.length} semantic tokens in ${result.themes.length} themes (${result.themes.join(', ')}) with ${contrastPairs.length} contrast pairs each`);
 }

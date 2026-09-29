@@ -1,17 +1,22 @@
 import { LitElement, css, html } from 'lit';
 
 class BingoNumber extends LitElement {
-  static properties = { value: { type: Number }, emptyLabel: { type: String }, compact: { type: Boolean } };
+  static properties = {
+    value: { type: Number }, emptyLabel: { type: String }, compact: { type: Boolean }, latest: { type: Boolean, reflect: true },
+  };
   static styles = css`
     :host { display: inline-block; max-width: 100%; }
     span {
       display: inline-grid; place-items: center;
       max-width: 100%; box-sizing: border-box;
       padding: var(--bingo-space-inset-compact);
-      border: 2px solid var(--bingo-color-accent);
-      box-shadow: var(--bingo-space-small) var(--bingo-space-small) 0 var(--bingo-color-border);
-      color: var(--bingo-color-text);
+      border: var(--bingo-border-width-strong) solid var(--bingo-color-accent);
+      border-radius: var(--bingo-radius-control);
+      box-shadow: var(--bingo-elevation-raised) var(--bingo-elevation-raised) 0 var(--bingo-color-shadow);
+      color: var(--bingo-color-call-called);
+      background: var(--bingo-color-call-called-surface);
     }
+    :host([latest]) span.drawn { color: var(--bingo-color-call-latest); background: var(--bingo-color-call-latest-surface); }
     span.drawn {
       min-width: 2.5ch;
       font: var(--bingo-font-emphasis) var(--bingo-font-display)/var(--bingo-font-tight) var(--bingo-font-body);
@@ -24,7 +29,7 @@ class BingoNumber extends LitElement {
       overflow-wrap: anywhere;
     }
   `;
-  constructor() { super(); this.value = null; this.emptyLabel = 'Waiting for draw'; this.compact = false; }
+  constructor() { super(); this.value = null; this.emptyLabel = 'Waiting for draw'; this.compact = false; this.latest = false; }
   render() { return html`<span class=${this.value === null ? 'empty' : this.compact ? 'drawn compact' : 'drawn'}>${this.value === null ? this.emptyLabel : this.value}</span>`; }
 }
 

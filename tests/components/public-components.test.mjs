@@ -128,10 +128,12 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
     expect(document.documentElement.dataset.theme).to.equal(undefined);
     receiveTheme('high-contrast');
     expect(document.documentElement.dataset.theme).to.equal('high-contrast');
-    for (const invalid of ['body{}', 'https://example.com/x.css', '../generated/x.css', 'dark', null]) receiveTheme(invalid);
+    for (const invalid of ['body{}', 'https://example.com/x.css', '../generated/x.css', 'dark', null, 'pixel-classic']) receiveTheme(invalid);
     expect(document.documentElement.dataset.theme).to.equal('high-contrast');
-    receiveTheme('pixel-classic');
-    expect(document.documentElement.dataset.theme).to.equal('pixel-classic');
+    receiveTheme('light');
+    expect(document.documentElement.dataset.theme).to.equal('light');
+    receiveTheme('jules');
+    expect(document.documentElement.dataset.theme).to.equal('jules');
     const heading = shell.querySelector('h1');
     const details = shell.querySelector('#event-details');
     expect([heading.textContent, details.hidden]).to.deep.equal(['Current event', true]);
@@ -164,16 +166,16 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
   }
 });
 
-it('uses both generated themes, wraps at narrow widths, and computes reduced motion', async () => {
+it('uses the three generated themes, wraps at narrow widths, and computes reduced motion', async () => {
   const response = await fetch(new URL('../../src/screen.css', import.meta.url));
   expect(response.ok).to.equal(true);
   const screenCss = await response.text();
-  const imports = /^@import '\.\/generated\/pixel-classic\.css';\s*@import '\.\/generated\/high-contrast\.css';\s*/;
+  const imports = /^@import '@fontsource-variable\/roboto-mono\/wght\.css';\s*@import '\.\/generated\/jules\.css';\s*@import '\.\/generated\/light\.css';\s*@import '\.\/generated\/high-contrast\.css';\s*/;
   expect(screenCss).to.match(imports);
   const stylesheet = document.createElement('style');
   stylesheet.textContent = screenCss.replace(imports, '');
   document.head.append(stylesheet);
-  const themeSheets = await Promise.all(['pixel-classic', 'high-contrast'].map((name) => new Promise((resolve, reject) => {
+  const themeSheets = await Promise.all(['jules', 'light', 'high-contrast'].map((name) => new Promise((resolve, reject) => {
     const link = document.createElement('link');
     link.rel = 'stylesheet';
     link.href = new URL(`../../src/generated/${name}.css`, import.meta.url).href;
@@ -192,17 +194,32 @@ it('uses both generated themes, wraps at narrow widths, and computes reduced mot
   expect(getComputedStyle(last).outlineStyle).to.equal('solid');
   expect(getComputedStyle(items(board)[0]).outlineStyle).to.equal('none');
   try {
-    for (const theme of ['pixel-classic', 'high-contrast']) {
-      document.documentElement.dataset.theme = theme;
-      const accent = getComputedStyle(board).getPropertyValue('--bingo-color-accent').trim();
-      expect(accent).not.to.equal('');
+    const resolve = (name) => {
       const probe = document.createElement('span');
-      probe.style.color = accent;
+      probe.style.color = getComputedStyle(board).getPropertyValue(name).trim();
       document.body.append(probe);
-      expect(getComputedStyle(last).outlineColor).to.equal(getComputedStyle(probe).color);
+      const color = getComputedStyle(probe).color;
       probe.remove();
+      return color;
+    };
+    const chip = (item) => getComputedStyle(item.querySelector('bingo-number').shadowRoot.querySelector('span'));
+    const shapes = {};
+    for (const theme of ['jules', 'light', 'high-contrast']) {
+      document.documentElement.dataset.theme = theme;
+      expect(getComputedStyle(board).getPropertyValue('--bingo-color-accent').trim()).not.to.equal('');
+      expect(getComputedStyle(last).outlineColor).to.equal(resolve('--bingo-color-accent'));
+      expect([chip(last).color, chip(last).backgroundColor])
+        .to.deep.equal([resolve('--bingo-color-call-latest'), resolve('--bingo-color-call-latest-surface')], theme);
+      expect([chip(items(board)[0]).color, chip(items(board)[0]).backgroundColor])
+        .to.deep.equal([resolve('--bingo-color-call-called'), resolve('--bingo-color-call-called-surface')], theme);
+      shapes[theme] = { radius: chip(last).borderTopLeftRadius, font: getComputedStyle(document.body).fontFamily };
       await expect(board).to.be.accessible();
     }
+    // Same components, different token values: jules is square and set in bundled Roboto Mono.
+    expect(shapes.jules.radius).to.equal('0px');
+    expect(shapes.jules.font).to.match(/^"?Roboto Mono Variable"?,/);
+    expect(shapes.light.radius).not.to.equal('0px');
+    expect(shapes.light.font).not.to.match(/Roboto Mono/);
     board.style.width = '80px';
     expect(items(board)[1].getBoundingClientRect().top).to.be.greaterThan(items(board)[0].getBoundingClientRect().top);
     board.style.width = '900px';

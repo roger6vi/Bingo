@@ -1,18 +1,21 @@
 // Regenerates the bundled cue sounds in assets/cues/. The tones are synthesized here, so the WAV files
 // are original project assets with no third-party licence. Run: node scripts/generate-cue-audio.mjs
+// The generation logic is also exported so tests can recompute the exact bytes in memory and compare
+// them against the committed assets, without writing anything to disk.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
-const RATE = 22050;
+export const RATE = 22050;
 const AMPLITUDE = 0.3;
 // Each cue is a short sequence of [frequency Hz, seconds] notes.
-const CUES = {
+export const CUES = {
   line: [[660, 0.16], [880, 0.24]],
   bingo: [[523, 0.14], [659, 0.14], [784, 0.14], [1047, 0.36]],
   final: [[784, 0.2], [659, 0.2], [523, 0.5]],
 };
 
-function wav(notes) {
+export function wav(notes) {
   const samples = [];
   for (const [frequency, seconds] of notes) {
     const length = Math.round(seconds * RATE);
@@ -40,6 +43,16 @@ function wav(notes) {
   return Buffer.concat([header, data]);
 }
 
-const directory = path.resolve(import.meta.dirname, '../assets/cues');
-mkdirSync(directory, { recursive: true });
-for (const [name, notes] of Object.entries(CUES)) writeFileSync(path.join(directory, `${name}.wav`), wav(notes));
+// Recomputes every cue's WAV bytes in memory; deterministic given fixed CUES/RATE/AMPLITUDE.
+export function generateCueBuffers() {
+  return Object.fromEntries(Object.entries(CUES).map(([name, notes]) => [name, wav(notes)]));
+}
+
+// Only write to disk when this file runs as the CLI entrypoint, never when imported by tests, so
+// importing this module for its pure functions leaves no generated repository mutations.
+const isMain = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isMain) {
+  const directory = path.resolve(import.meta.dirname, '../assets/cues');
+  mkdirSync(directory, { recursive: true });
+  for (const [name, buffer] of Object.entries(generateCueBuffers())) writeFileSync(path.join(directory, `${name}.wav`), buffer);
+}

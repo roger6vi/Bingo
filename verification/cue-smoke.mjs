@@ -2,18 +2,18 @@
 // (e.g. `xvfb-run -a node verification/cue-smoke.mjs`). It always uses a fresh temporary
 // --user-data-dir, never the real profile, and deletes it afterwards.
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { _electron as electron } from 'playwright';
 import { createEventStore } from '../src/event-store.ts';
+import { launchArgs, profilePrefix } from './electron-smoke.mjs';
 
-const root = path.resolve(import.meta.dirname, '..');
 const executablePath = createRequire(import.meta.url)('electron');
-const profile = mkdtempSync(path.join(tmpdir(), 'bingo-cue-smoke-'));
-const rootArgs = process.getuid?.() === 0 ? ['--no-sandbox'] : [];
-const launch = () => electron.launch({ executablePath, args: [root, `--user-data-dir=${profile}`, ...rootArgs] });
+// launchArgs refuses any profile that is not a fresh smoke directory in the OS temp dir.
+const profile = realpathSync(mkdtempSync(path.join(tmpdir(), profilePrefix)));
+const launch = () => electron.launch({ executablePath, args: launchArgs(profile), timeout: 30_000 });
 const step = (name) => console.log(`✓ ${name}`);
 const cueStatus = (page) => page.locator('#cue-status').evaluate((element) => element.message);
 const t = (s) => `2026-09-28T20:00:0${s}.000Z`;
@@ -32,26 +32,26 @@ try {
     HTMLMediaElement.prototype.play = function (...args) { window.__plays++; window.__src = this.src; return original.apply(this, args); }; });
   await operator.click('#tab-bingo');
   await operator.waitForFunction(() => document.querySelector('#event-summary').count === 2);
-  assert.equal(await operator.locator('#phase-status').evaluate((e) => e.message), 'Current phase: Line declared');
-  assert.match(await cueStatus(operator), /Nothing plays at startup/);
+  assert.equal(await operator.locator('#phase-status').evaluate((e) => e.message), 'Fase: Línea cantada');
+  assert.match(await cueStatus(operator), /No suena nada al abrir ni al recargar/);
   assert.equal(await operator.evaluate(() => window.__plays), 0);
   step('committed line milestone does not replay at startup');
 
-  await operator.locator('#cue-test').click();
-  await operator.waitForFunction(() => /^Test cue (played|sound unavailable)/.test(document.querySelector('#cue-status').message));
-  assert.equal(await cueStatus(operator), 'Test cue played: Line declared');
+  await operator.locator('#cue-test button').click();
+  await operator.waitForFunction(() => /^(Aviso de prueba|No se pudo)/.test(document.querySelector('#cue-status').message));
+  assert.equal(await cueStatus(operator), 'Aviso de prueba: Línea cantada');
   assert.match(await operator.evaluate(() => window.__src),
     /^file:\/\/.*\/dist\/renderer\/assets\/line-[\w-]+\.wav$/);
   step('built file:// operator page plays the bundled line cue under the offline CSP');
 
-  await operator.fill('#cue-volume', '30');
-  await operator.locator('#cue-mute').check();
+  await operator.fill('#public-volume', '30');
+  await operator.locator('#cue-mute button').click();
   await operator.reload();
   await operator.click('#tab-bingo');
   await operator.waitForFunction(() => document.querySelector('#event-summary').count === 2);
-  assert.equal(await operator.locator('#cue-mute').isChecked(), true);
-  assert.equal(await operator.inputValue('#cue-volume'), '30');
-  assert.match(await cueStatus(operator), /Nothing plays at startup/);
+  assert.equal(await operator.locator('#cue-mute').textContent(), 'Activar');
+  assert.equal(await operator.inputValue('#public-volume'), '30');
+  assert.match(await cueStatus(operator), /No suena nada al abrir ni al recargar/);
   step('mute/volume persist across renderer reload with no replay');
 
   const [publicWindow] = await Promise.all([app.waitForEvent('window'), operator.locator('#open-public button').click()]);
@@ -67,8 +67,8 @@ try {
   operator = await app.firstWindow();
   await operator.click('#tab-bingo');
   await operator.waitForFunction(() => document.querySelector('#event-summary').count === 2);
-  assert.equal(await operator.locator('#cue-mute').isChecked(), true);
-  assert.match(await cueStatus(operator), /Nothing plays at startup/);
+  assert.equal(await operator.locator('#cue-mute').textContent(), 'Activar');
+  assert.match(await cueStatus(operator), /No suena nada al abrir ni al recargar/);
   step('relaunch keeps cue settings and does not replay the milestone');
   await app.close();
 } finally {

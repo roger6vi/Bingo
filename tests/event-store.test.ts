@@ -5,16 +5,30 @@ import * as fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import test from 'node:test';
+import test, { after } from 'node:test';
 import { drawManual } from '../src/event-core.ts';
 import { createEventStore } from '../src/event-store.ts';
 import { DEFAULT_THEME, THEME_IDS } from '../src/theme.ts';
 
-function fixture(t: { after: (cleanup: () => void) => void }) {
+// Current event schema version. The theme allow-list migration is self-contained, so only this
+// constant and the source VERSION change if it is renumbered at merge time.
+const SCHEMA_VERSION = 5;
+// Theme allow-list and default frozen into the v2–v4 schemas.
+const LEGACY_THEME_IDS = ['pixel-classic', 'high-contrast'];
+const LEGACY_DEFAULT_THEME = 'pixel-classic';
+
+// Fixture directories are removed once, after every test in this file has closed its stores. Removing
+// a directory inside a per-test hook races that test's own `store.close()` hooks (hooks run in
+// registration order), and Windows refuses to delete a SQLite file that is still open.
+const fixtureDirectories: string[] = [];
+after(() => {
+  for (const directory of fixtureDirectories) fs.rmSync(directory, { recursive: true, force: true });
+});
+
+function fixture(_t?: unknown) {
   const directory = fs.mkdtempSync(join(tmpdir(), 'bingo-event-store-'));
-  const path = join(directory, 'event.sqlite');
-  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
-  return path;
+  fixtureDirectories.push(directory);
+  return join(directory, 'event.sqlite');
 }
 
 function withDb(path: string, action: (db: DatabaseSync) => void) {
@@ -42,7 +56,7 @@ test('only explicit creation creates the current event; duplicates fail and reop
     assert.throws(() => reopened.create(), /exist|already/i);
     assert.deepEqual(reopened.update((event) => drawManual(event, 45)).calledNumbers, [90, 1, 45]);
   } finally { reopened.close(); }
-  withDb(path, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 4));
+  withDb(path, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, SCHEMA_VERSION));
 });
 
 test('a fresh Node process recovers exact history and appends to it', (t) => {
@@ -147,8 +161,8 @@ test('simultaneous first opens never observe a partially initialized database', 
   const firstResultPending = message(first, 'version');
   fs.writeFileSync(release, 'go');
   const firstResult = await firstResultPending;
-  assert.deepEqual(secondResult, { version: 4, empty: true });
-  assert.deepEqual(firstResult, { version: 4, empty: true });
+  assert.deepEqual(secondResult, { version: SCHEMA_VERSION, empty: true });
+  assert.deepEqual(firstResult, { version: SCHEMA_VERSION, empty: true });
   assert.deepEqual(fs.readdirSync(join(path, '..')).sort(), ['event.sqlite', 'release']);
 });
 
@@ -218,11 +232,11 @@ test('malformed stored history and read errors fail closed without replacing the
   assert.throws(() => createEventStore(path), /schema|table|invalid/i);
 });
 
-test('unsupported version and existing unknown database never initialize as version 4', (t) => {
+test('unsupported version and existing unknown database never initialize as the current version', (t) => {
   const path = fixture(t);
-  withDb(path, (db) => db.exec('PRAGMA user_version = 5'));
+  withDb(path, (db) => db.exec(`PRAGMA user_version = ${SCHEMA_VERSION + 1}`));
   assert.throws(() => createEventStore(path), /version|unsupported/i);
-  withDb(path, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 5));
+  withDb(path, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, SCHEMA_VERSION + 1));
 
   const unknown = join(fs.realpathSync(join(path, '..')), 'unknown.sqlite');
   withDb(unknown, (db) => db.exec('CREATE TABLE unrelated (value INTEGER)'));
@@ -298,7 +312,7 @@ test('valid v1 migrates once to v4, preserves ordered calls, and rejects a persi
     } finally { store.close(); }
   }
   withDb(path, (db) => {
-    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 4);
+    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, SCHEMA_VERSION);
     const row = db.prepare('SELECT id, name, date, place, history FROM events').get();
     eventId = row?.id;
     assert.equal(row?.name, 'Evento actual');
@@ -326,7 +340,7 @@ test('valid v1 migrates directly to v4, preserving ordered calls with the defaul
     assert.equal(store.loadTheme(), DEFAULT_THEME);
   } finally { store.close(); }
   withDb(path, (db) => {
-    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 4);
+    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, SCHEMA_VERSION);
     const row = db.prepare('SELECT theme, name, place FROM events').get();
     assert.equal(row?.theme, DEFAULT_THEME);
     assert.equal(row?.name, 'Evento actual');
@@ -382,7 +396,7 @@ test('valid v2 migrates to v4, preserving history, phase, and audit with the def
     assert.equal(store.loadTheme(), DEFAULT_THEME);
   } finally { store.close(); }
   withDb(path, (db) => {
-    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 4);
+    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, SCHEMA_VERSION);
     const row = db.prepare('SELECT id, theme, name, place FROM events').get();
     assert.equal(row?.theme, DEFAULT_THEME);
     assert.equal(row?.name, 'Evento actual');
@@ -405,7 +419,7 @@ test('migrating to v4 is idempotent: reopening a migrated database keeps the sam
   try { assert.deepEqual(second.load()?.calledNumbers, [90, 1, 45]); }
   finally { second.close(); }
   withDb(path, (db) => {
-    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 4);
+    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, SCHEMA_VERSION);
     assert.equal(db.prepare('SELECT count(*) AS count FROM events').get()?.count, 1);
     assert.equal(db.prepare('SELECT id FROM events').get()?.id, firstId);
     assert.equal(db.prepare('SELECT event_id FROM active_event WHERE slot = 1').get()?.event_id, firstId);
@@ -414,7 +428,7 @@ test('migrating to v4 is idempotent: reopening a migrated database keeps the sam
 
 function v3(path: string, options: { history?: string; phase?: string; lastTransitionAt?: string | null;
   theme?: string } = {}) {
-  const { history = '[90,1]', phase = 'drawing', lastTransitionAt = null, theme = DEFAULT_THEME } = options;
+  const { history = '[90,1]', phase = 'drawing', lastTransitionAt = null, theme = LEGACY_DEFAULT_THEME } = options;
   withDb(path, (db) => {
     db.exec(`CREATE TABLE current_event (
       id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -422,7 +436,7 @@ function v3(path: string, options: { history?: string; phase?: string; lastTrans
       phase TEXT NOT NULL DEFAULT 'drawing' CHECK (phase IN ('drawing', 'checking_line', 'line_declared',
         'checking_bingo', 'bingo_declared', 'finished')),
       lastTransitionAt TEXT,
-      theme TEXT NOT NULL DEFAULT '${DEFAULT_THEME}' CHECK (theme IN (${THEME_IDS.map((id) => `'${id}'`).join(', ')}))
+      theme TEXT NOT NULL DEFAULT '${LEGACY_DEFAULT_THEME}' CHECK (theme IN (${LEGACY_THEME_IDS.map((id) => `'${id}'`).join(', ')}))
     );
     CREATE TABLE phase_audit (
       sequence INTEGER PRIMARY KEY,
@@ -508,11 +522,11 @@ test('phase audit sequences are scoped per event and an inactive event never aff
   void activeId;
 });
 
-test('unsupported version 5 is rejected outright', (t) => {
+test('an unsupported future version is rejected outright', (t) => {
   const path = fixture(t);
-  withDb(path, (db) => db.exec('PRAGMA user_version = 5'));
+  withDb(path, (db) => db.exec(`PRAGMA user_version = ${SCHEMA_VERSION + 1}`));
   assert.throws(() => createEventStore(path), /version|unsupported/i);
-  withDb(path, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 5));
+  withDb(path, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, SCHEMA_VERSION + 1));
 });
 
 test('fresh v4 starts in drawing with null timestamp, the default theme, and guarded empty audit', (t) => {
@@ -525,7 +539,7 @@ test('fresh v4 starts in drawing with null timestamp, the default theme, and gua
     assert.equal(store.loadTheme(), DEFAULT_THEME);
   } finally { store.close(); }
   withDb(path, (db) => {
-    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 4);
+    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, SCHEMA_VERSION);
     const row = db.prepare('SELECT id, theme, name, place, date FROM events').get();
     assert.equal(row?.theme, DEFAULT_THEME);
     assert.equal(row?.name, 'Evento actual');
@@ -557,7 +571,7 @@ test('v4 rejects missing and wrong phase defaults before creating a current even
     assert.throws(() => createEventStore(file), /invalid event schema/i, name);
     withDb(file, (db) => {
       assert.equal(db.prepare('SELECT count(*) AS count FROM events').get()?.count, 0);
-      assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 4);
+      assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, SCHEMA_VERSION);
     });
   }
 });
@@ -583,7 +597,7 @@ test('v4 rejects missing, wrong, or nullable theme column definitions before cre
     assert.throws(() => createEventStore(file), /invalid event schema/i, name);
     withDb(file, (db) => {
       assert.equal(db.prepare('SELECT count(*) AS count FROM events').get()?.count, 0);
-      assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 4);
+      assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, SCHEMA_VERSION);
     });
   }
 });
@@ -627,7 +641,7 @@ test('opening valid v4 under an independent writer lock reads the same ordered s
         assert.deepEqual(reopened.load(), { calledNumbers: [90, 1], phase: 'drawing', lastTransitionAt: null });
       } finally { reopened.close(); }
       assert.deepEqual(writer.prepare('SELECT id, history, phase, lastTransitionAt FROM events').all(), before);
-      assert.equal(writer.prepare('PRAGMA user_version').get()?.user_version, 4);
+      assert.equal(writer.prepare('PRAGMA user_version').get()?.user_version, SCHEMA_VERSION);
       assert.equal(writer.prepare('SELECT count(*) AS count FROM phase_audit').get()?.count, 0);
     } finally { writer.exec('ROLLBACK'); }
   });
@@ -850,18 +864,142 @@ test('contention fails without overwriting a newer state, and stale store reads 
   finally { reopened.close(); }
 });
 
+// A v4 database exactly as the v4 schema wrote it, with two events, one active, and audit rows.
+function v4(path: string, themes: { active: string; other: string }) {
+  const ids = { active: randomUUID(), other: randomUUID() };
+  withDb(path, (db) => {
+    db.exec(`CREATE TABLE events (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL CHECK (length(trim(name)) > 0),
+      date TEXT NOT NULL CHECK (date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
+      place TEXT NOT NULL CHECK (length(trim(place)) > 0),
+      history TEXT NOT NULL,
+      phase TEXT NOT NULL DEFAULT 'drawing' CHECK (phase IN ('drawing', 'checking_line', 'line_declared',
+        'checking_bingo', 'bingo_declared', 'finished')),
+      lastTransitionAt TEXT,
+      theme TEXT NOT NULL DEFAULT '${LEGACY_DEFAULT_THEME}' CHECK (theme IN (${LEGACY_THEME_IDS.map((id) => `'${id}'`).join(', ')})),
+      createdAt TEXT NOT NULL
+    );
+    CREATE TABLE active_event (
+      slot INTEGER PRIMARY KEY CHECK (slot = 1),
+      event_id TEXT NOT NULL REFERENCES events(id)
+    );
+    CREATE TABLE phase_audit (
+      event_id TEXT NOT NULL REFERENCES events(id),
+      sequence INTEGER NOT NULL,
+      transitionAt TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      from_phase TEXT NOT NULL,
+      to_phase TEXT NOT NULL,
+      PRIMARY KEY (event_id, sequence)
+    );
+    CREATE TRIGGER phase_audit_no_update BEFORE UPDATE ON phase_audit
+      BEGIN SELECT RAISE(ABORT, 'phase audit is immutable'); END;
+    CREATE TRIGGER phase_audit_no_delete BEFORE DELETE ON phase_audit
+      BEGIN SELECT RAISE(ABORT, 'phase audit is immutable'); END;
+    PRAGMA user_version = 4;`);
+    const insert = db.prepare(`INSERT INTO events (id, name, date, place, history, phase, lastTransitionAt, theme, createdAt)
+      VALUES (?, ?, '2026-08-15', 'Plaza', ?, ?, ?, ?, ?)`);
+    insert.run(ids.active, 'Verbena', '[90,1]', 'checking_line', '2026-01-01T00:00:01.000Z', themes.active, '2026-01-01T00:00:00.000Z');
+    insert.run(ids.other, 'Fiesta', '[]', 'drawing', null, themes.other, '2026-01-02T00:00:00.000Z');
+    db.prepare('INSERT INTO active_event (slot, event_id) VALUES (1, ?)').run(ids.active);
+    db.prepare(`INSERT INTO phase_audit (event_id, sequence, transitionAt, kind, from_phase, to_phase)
+      VALUES (?, 1, '2026-01-01T00:00:01.000Z', 'begin_line_check', 'drawing', 'checking_line')`).run(ids.active);
+  });
+  return ids;
+}
+
+const schemaOf = (db: DatabaseSync) => db.prepare(`SELECT type, name, sql FROM sqlite_schema
+  WHERE name NOT LIKE 'sqlite_%' ORDER BY name`).all()
+  .map((row) => ({ ...row, sql: String(row.sql).replace(/[\s"`\[\]]/g, '') }));
+
+test('v4 migrates retired pixel-classic to jules in one transaction, keeping events, pointer, audit and guards', (t) => {
+  const path = fixture(t);
+  const ids = v4(path, { active: 'pixel-classic', other: 'high-contrast' });
+  const store = createEventStore(path);
+  try {
+    assert.equal(store.loadTheme(), 'jules');
+    assert.deepEqual(store.load()?.calledNumbers, [90, 1]);
+    assert.equal(store.load()?.phase, 'checking_line');
+    assert.equal(store.readAudit().length, 1);
+    assert.deepEqual(store.listEvents().map(({ id, name, active }) => ({ id, name, active })),
+      [{ id: ids.active, name: 'Verbena', active: true }, { id: ids.other, name: 'Fiesta', active: false }]);
+  } finally { store.close(); }
+  const fresh = join(fs.realpathSync(join(path, '..')), 'fresh.sqlite');
+  createEventStore(fresh).close();
+  withDb(fresh, (freshDb) => withDb(path, (db) => {
+    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, SCHEMA_VERSION);
+    assert.deepEqual(db.prepare('SELECT id, theme FROM events ORDER BY createdAt').all().map((row) => ({ ...row })),
+      [{ id: ids.active, theme: 'jules' }, { id: ids.other, theme: 'high-contrast' }]);
+    assert.deepEqual(schemaOf(db), schemaOf(freshDb), 'the migrated schema equals a fresh one');
+    assert.throws(() => db.exec("UPDATE events SET theme = 'pixel-classic'"), /CHECK/);
+    assert.throws(() => db.exec('DELETE FROM phase_audit'), /immutable/);
+    db.exec('PRAGMA foreign_keys = ON');
+    assert.throws(() => db.prepare(`INSERT INTO phase_audit (event_id, sequence, transitionAt, kind, from_phase, to_phase)
+      VALUES ('missing', 1, '2026-01-01T00:00:00.000Z', 'begin_line_check', 'drawing', 'checking_line')`).run(), /FOREIGN KEY/);
+    assert.equal(db.prepare("SELECT count(*) AS count FROM sqlite_temp_schema").get()?.count, 0);
+  }));
+});
+
+test('a v3 database reaches the current schema with its stored theme migrated', (t) => {
+  for (const [stored, expected] of [['pixel-classic', 'jules'], ['high-contrast', 'high-contrast']]) {
+    const path = fixture(t);
+    v3(path, { theme: stored });
+    const store = createEventStore(path);
+    try { assert.equal(store.loadTheme(), expected, stored); } finally { store.close(); }
+    withDb(path, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, SCHEMA_VERSION));
+  }
+});
+
+test('an unknown stored v4 theme fails closed and leaves the v4 database unchanged', (t) => {
+  const path = fixture(t);
+  v4(path, { active: 'pixel-classic', other: 'high-contrast' });
+  withDb(path, (db) => {
+    db.exec('PRAGMA ignore_check_constraints = 1');
+    db.exec("UPDATE events SET theme = 'legacy-blue' WHERE name = 'Fiesta'");
+  });
+  const before = { schema: '', rows: '' };
+  withDb(path, (db) => {
+    before.schema = JSON.stringify(schemaOf(db));
+    before.rows = JSON.stringify(db.prepare('SELECT * FROM events ORDER BY id').all());
+  });
+  assert.throws(() => createEventStore(path), /CHECK constraint failed/);
+  withDb(path, (db) => {
+    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 4);
+    assert.equal(JSON.stringify(schemaOf(db)), before.schema);
+    assert.equal(JSON.stringify(db.prepare('SELECT * FROM events ORDER BY id').all()), before.rows);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM phase_audit').get()?.count, 1);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM active_event').get()?.count, 1);
+  });
+});
+
+test('a v4 theme migration blocked by another writer leaves the database at v4 and succeeds later', (t) => {
+  const path = fixture(t);
+  v4(path, { active: 'pixel-classic', other: 'pixel-classic' });
+  const writer = new DatabaseSync(path);
+  writer.exec('BEGIN IMMEDIATE');
+  try { assert.throws(() => createEventStore(path), /locked|busy/i); }
+  finally { writer.exec('ROLLBACK'); writer.close(); }
+  withDb(path, (db) => {
+    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 4);
+    assert.deepEqual(db.prepare('SELECT DISTINCT theme FROM events').all().map((row) => row.theme), ['pixel-classic']);
+  });
+  const store = createEventStore(path);
+  try { assert.equal(store.loadTheme(), 'jules'); } finally { store.close(); }
+});
+
 test('the theme allow-list matches the generated semantic token themes', () => {
   const themes = fs.readdirSync(new URL('../tokens/semantic/', import.meta.url))
     .map((file) => file.replace(/\.json$/, '')).sort();
   assert.deepEqual([...THEME_IDS].sort(), themes);
 });
 
-test('a saved theme defaults to pixel-classic and recovers each registered theme after reopening', (t) => {
+test('a saved theme defaults to jules and recovers each registered theme after reopening', (t) => {
   const path = fixture(t);
   const initial = createEventStore(path);
-  try { initial.create(); assert.equal(initial.loadTheme(), DEFAULT_THEME); }
+  try { initial.create(); assert.equal(initial.loadTheme(), 'jules'); }
   finally { initial.close(); }
-  for (const theme of ['high-contrast', 'pixel-classic'] as const) {
+  for (const theme of ['high-contrast', 'light', 'jules'] as const) {
     const store = createEventStore(path);
     try { assert.equal(store.saveTheme(theme), theme); } finally { store.close(); }
     const reopened = createEventStore(path);
@@ -876,7 +1014,7 @@ test('saveTheme rejects CSS, URLs, paths, unknown names, and non-strings without
   store.create();
   store.saveTheme('high-contrast');
   for (const value of ['body{color:red}', 'https://example.com/theme.css', '../generated/high-contrast.css',
-    '/etc/passwd', 'High-Contrast', 'dark', '', ' pixel-classic', null, 1, { theme: 'pixel-classic' }]) {
+    '/etc/passwd', 'High-Contrast', 'dark', '', ' light', 'pixel-classic', null, 1, { theme: 'light' }]) {
     assert.throws(() => store.saveTheme(value), /Unknown theme/);
   }
   assert.equal(store.loadTheme(), 'high-contrast');
@@ -901,7 +1039,7 @@ test('a locked write leaves the last committed theme unchanged', (t) => {
   store.saveTheme('high-contrast');
   const other = new DatabaseSync(path);
   other.exec('BEGIN IMMEDIATE');
-  try { assert.throws(() => store.saveTheme('pixel-classic'), /locked|busy/i); }
+  try { assert.throws(() => store.saveTheme('light'), /locked|busy/i); }
   finally { other.exec('ROLLBACK'); other.close(); }
   assert.equal(store.loadTheme(), 'high-contrast');
 });
@@ -926,7 +1064,7 @@ test('theme allow-list changes require a schema version bump', (t) => {
   createEventStore(path).close();
   withDb(path, (db) => assert.deepEqual(
     { version: db.prepare('PRAGMA user_version').get()?.user_version, themes: [...THEME_IDS] },
-    { version: 4, themes: ['pixel-classic', 'high-contrast'] },
+    { version: SCHEMA_VERSION, themes: ['jules', 'light', 'high-contrast'] },
     'THEME_IDS changed without a matching event schema migration',
   ));
 });

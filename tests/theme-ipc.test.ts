@@ -37,26 +37,26 @@ test('get returns the committed theme; unreadable storage falls back to the defa
   assert.deepEqual(f.invoke(THEME_CHANNELS.get), { ok: true, theme: 'high-contrast' });
   assert.deepEqual(f.invoke(THEME_CHANNELS.get, ['extra']), invalid);
   const broken = fixture('unreadable');
-  assert.deepEqual(broken.invoke(THEME_CHANNELS.get), { ok: true, theme: 'pixel-classic' });
+  assert.deepEqual(broken.invoke(THEME_CHANNELS.get), { ok: true, theme: 'jules' });
   assert.equal(broken.stored(), 'unreadable');
 });
 
 test('set acknowledges and publishes only committed allow-listed themes', () => {
   const f = fixture();
-  assert.deepEqual(f.invoke(THEME_CHANNELS.set, ['pixel-classic']), { ok: true, theme: 'pixel-classic' });
-  assert.deepEqual(f.notified, ['pixel-classic']);
-  assert.equal(f.theme.current(), 'pixel-classic');
-  for (const args of [[], ['dark'], ['body{}'], ['file:///tmp/x.css'], ['pixel-classic', 'x'], [{}]]) {
+  assert.deepEqual(f.invoke(THEME_CHANNELS.set, ['jules']), { ok: true, theme: 'jules' });
+  assert.deepEqual(f.notified, ['jules']);
+  assert.equal(f.theme.current(), 'jules');
+  for (const args of [[], ['dark'], ['body{}'], ['file:///tmp/x.css'], ['jules', 'x'], [{}], ['pixel-classic']]) {
     assert.deepEqual(f.invoke(THEME_CHANNELS.set, args), invalid);
   }
-  assert.deepEqual(f.notified, ['pixel-classic']);
-  assert.equal(f.stored(), 'pixel-classic');
+  assert.deepEqual(f.notified, ['jules']);
+  assert.equal(f.stored(), 'jules');
 });
 
 test('write failure preserves the last committed theme and does not publish', () => {
   const f = fixture();
   f.failSave();
-  const result = f.invoke(THEME_CHANNELS.set, ['pixel-classic']);
+  const result = f.invoke(THEME_CHANNELS.set, ['jules']);
   assert.deepEqual(result, { ok: false, code: 'storage_failure', message: 'Could not save the theme. Try again.' });
   assert.equal(JSON.stringify(result).includes('secret'), false);
   assert.deepEqual(f.notified, []);
@@ -65,15 +65,15 @@ test('write failure preserves the last committed theme and does not publish', ()
 
 test('only the operator main frame at its page URL may read or set the theme', () => {
   const f = fixture();
-  assert.throws(() => f.invoke(THEME_CHANNELS.set, ['pixel-classic'], {}), /Unauthorized/);
+  assert.throws(() => f.invoke(THEME_CHANNELS.set, ['jules'], {}), /Unauthorized/);
   assert.throws(() => f.invoke(THEME_CHANNELS.get, [], undefined, {}), /Unauthorized/);
-  assert.throws(() => f.invoke(THEME_CHANNELS.set, ['pixel-classic'], undefined, null), /Unauthorized/);
+  assert.throws(() => f.invoke(THEME_CHANNELS.set, ['jules'], undefined, null), /Unauthorized/);
   assert.equal(f.stored(), 'high-contrast');
 });
 
 test('reload re-reads the active event theme and falls back to the default when unreadable', () => {
   const f = fixture('high-contrast');
-  f.invoke(THEME_CHANNELS.set, ['pixel-classic']);
-  assert.equal(f.theme.reload(), 'pixel-classic');
-  assert.deepEqual(f.invoke(THEME_CHANNELS.get), { ok: true, theme: 'pixel-classic' });
+  f.invoke(THEME_CHANNELS.set, ['jules']);
+  assert.equal(f.theme.reload(), 'jules');
+  assert.deepEqual(f.invoke(THEME_CHANNELS.get), { ok: true, theme: 'jules' });
 });

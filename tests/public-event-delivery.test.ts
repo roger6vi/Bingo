@@ -124,7 +124,7 @@ test('destroyed late attach cannot replace newer target; failed sends are isolat
 });
 
 test('theme is sent before event state on attach, published to the current window, and recovered on reopen', () => {
-  let theme: 'pixel-classic' | 'high-contrast' = 'high-contrast';
+  let theme: 'jules' | 'high-contrast' = 'high-contrast';
   const delivery = createPublicEventDelivery({ load: () => snapshot([7]) }, () => theme);
   const target = () => {
     const messages: Message[] = [];
@@ -134,15 +134,15 @@ test('theme is sent before event state on attach, published to the current windo
   delivery.attachAfterLoad(first);
   assert.deepEqual(first.messages.map(({ channel }) => channel), [PUBLIC_THEME_CHANNEL, PUBLIC_EVENT_CHANNEL]);
   assert.equal(first.messages[0].result, 'high-contrast');
-  theme = 'pixel-classic';
-  delivery.publishTheme('pixel-classic');
-  assert.deepEqual(first.messages[2], { channel: PUBLIC_THEME_CHANNEL, result: 'pixel-classic' });
+  theme = 'jules';
+  delivery.publishTheme('jules');
+  assert.deepEqual(first.messages[2], { channel: PUBLIC_THEME_CHANNEL, result: 'jules' });
   delivery.detachIfCurrent(first);
-  delivery.publishTheme('pixel-classic');
+  delivery.publishTheme('jules');
   assert.equal(first.messages.length, 3);
   const reopened = target();
   delivery.attachAfterLoad(reopened);
-  assert.deepEqual(reopened.messages[0], { channel: PUBLIC_THEME_CHANNEL, result: 'pixel-classic' });
+  assert.deepEqual(reopened.messages[0], { channel: PUBLIC_THEME_CHANNEL, result: 'jules' });
 });
 
 test('publishActive resends theme then the newly active event marked eventChanged', () => {
@@ -157,7 +157,7 @@ test('publishActive resends theme then the newly active event marked eventChange
     { channel: PUBLIC_EVENT_CHANNEL, result: { ok: true, snapshot: snapshot([7]), eventChanged: true } },
   ]);
   f.failRead();
-  f.delivery.publishActive('pixel-classic');
+  f.delivery.publishActive('jules');
   assert.deepEqual(window.messages.at(-1)?.result, { ok: false, code: 'storage_failure',
     message: 'Could not read the current event. Try again.' });
 });
@@ -180,7 +180,7 @@ test('committed event metadata is sent between theme and state, republished on e
   meta = { name: 'Gran Bingo', date: '2026-08-16', place: 'Club' };
   delivery.publishMeta();
   assert.deepEqual(messages.at(-1), { channel: PUBLIC_META_CHANNEL, result: meta });
-  delivery.publishActive('pixel-classic');
+  delivery.publishActive('jules');
   assert.deepEqual(messages.slice(-3).map(({ channel }) => channel),
     [PUBLIC_THEME_CHANNEL, PUBLIC_META_CHANNEL, PUBLIC_EVENT_CHANNEL]);
   failMeta = true;
@@ -194,7 +194,7 @@ test('committed event metadata is sent between theme and state, republished on e
 });
 
 test('a metadata send that closes the window stops the attach before event state', () => {
-  const delivery = createPublicEventDelivery({ load: () => snapshot([7]) }, () => 'pixel-classic',
+  const delivery = createPublicEventDelivery({ load: () => snapshot([7]) }, () => 'jules',
     () => ({ name: 'N', date: '2026-08-15', place: 'P' }));
   const messages: string[] = [];
   const window = { isDestroyed: () => false, send: (channel: string) => {

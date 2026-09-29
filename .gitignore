@@ -6,3 +6,7 @@
 node_modules/
 dist/
 /src/generated/
+/verification/artifacts/
+
+# Packaged installers
+release/

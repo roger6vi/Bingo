@@ -32,7 +32,7 @@ for (const page of ['operator', 'public']) {
   test(`${page} page has CSP and only local, external renderer resources`, () => {
     const html = text(`dist/renderer/${page}.html`);
     assert.ok(html.includes(`content="${pageCsp[page]}"`), 'exact offline CSP');
-    assert.match(html, /<bingo-shell\b/);
+    assert.match(html, page === 'operator' ? /<bingo-app-shell\b/ : /<bingo-shell\b/);
     assert.doesNotMatch(html, /<(?:script|style)\b[^>]*>\s*[^<\s]/i);
     assert.doesNotMatch(html, /\bhttps?:\/\/|(?:src|href)="(?:\/\/|data:|javascript:)/i);
     assert.doesNotMatch(html, /\b(?:autoplay|unsafe-inline|unsafe-eval)\b/i);
@@ -64,13 +64,21 @@ test('built operator shell bundles shared presentation under the offline CSP', (
   const html = text('dist/renderer/operator.html');
   const js = readdirSync(path.join(renderer, 'assets'))
     .filter((file) => file.endsWith('.js')).map((file) => text(`dist/renderer/assets/${file}`)).join('\n');
-  for (const name of ['panel', 'status', 'number', 'operator-summary', 'call-history']) {
+  for (const name of ['app-shell', 'tabs', 'tab-panel', 'side-rail', 'operator-board', 'panel', 'status', 'number',
+    'operator-summary', 'call-history', 'text-field', 'date-field', 'select-field', 'form-actions']) {
     assert.ok(js.includes(`bingo-${name}`), `bundled ${name} registration`);
   }
-  assert.match(html, /<main>[\s\S]*<h1>Operator console<\/h1>/);
+  assert.match(html, /<html lang="es">/);
+  assert.match(html, /<bingo-app-shell class="operator-app">[\s\S]*<h1>Consola del operador<\/h1>[\s\S]*<main class="app-main">/);
   assert.match(html, /<bingo-operator-summary id="event-summary"/);
+  assert.match(html, /<bingo-operator-board id="operator-board"><\/bingo-operator-board>/);
   assert.match(html, /<bingo-call-history id="called-numbers"/);
   assert.doesNotMatch(html, /<ol id="called-numbers"|id="stale-warning"/);
+  // Every operator form control is a shared, form-associated Lit component; the volume slider is the
+  // one deliberate native control left in the page.
+  assert.doesNotMatch(html, /<select\b/, 'the theme picker is a shared component');
+  assert.match(html, /<input id="public-volume" type="range"/);
+  assert.equal((html.match(/<input\b/g) ?? []).length, 1, 'only the volume range remains a native input');
 });
 
 test('public sample is bundled under renderer and remains opt-in', () => {
@@ -86,27 +94,53 @@ test('public sample is bundled under renderer and remains opt-in', () => {
   assert.doesNotMatch(html, /\bautoplay\b/i);
 });
 
-test('both pages bundle both generated theme shells and semantic contracts', () => {
+test('both pages bundle the three generated themes and semantic contracts', () => {
   const css = readdirSync(path.join(renderer, 'assets'))
     .filter((file) => file.endsWith('.css')).map((file) => text(`dist/renderer/assets/${file}`)).join('\n');
-  assert.match(css, /:root,\s*\[data-theme=["']?pixel-classic["']?\]/);
-  assert.match(css, /\[data-theme=["']?high-contrast["']?\]/);
+  assert.match(css, /:root,\s*\[data-theme=["']?jules["']?\]/);
+  for (const theme of ['light', 'high-contrast']) assert.match(css, new RegExp(`\\[data-theme=["']?${theme}["']?\\]`));
+  assert.doesNotMatch(css, /pixel-classic/);
   for (const key of ['color-canvas', 'color-surface', 'color-text', 'color-muted',
-    'color-accent', 'color-danger', 'color-focus', 'color-border', 'space-layout',
-    'font-body', 'radius-surface', 'motion-normal']) {
+    'color-accent', 'color-error', 'color-focus', 'color-border', 'space-layout',
+    'font-body', 'radius-surface', 'motion-normal', 'motion-easing', 'color-tie-1']) {
     assert.ok(css.includes(`--bingo-${key}:`), key);
   }
+  assert.match(css, /--bingo-reference-motion-ease-standard:\s*cubic-bezier\(0?\.2,\s*0,\s*0,\s*1\)/, 'DTCG cubicBezier arrays become CSS');
   for (const page of ['operator', 'public']) {
     const html = text(`dist/renderer/${page}.html`);
     const styles = [...html.matchAll(/href="(\.\/[^\"]+\.css)"/g)]
       .map((match) => text(`dist/renderer/${match[1].slice(2)}`)).join('\n');
-    assert.match(styles, /\[data-theme=["']?high-contrast["']?\]/, `${page} includes theme CSS`);
+    for (const theme of ['jules', 'light', 'high-contrast']) {
+      assert.match(styles, new RegExp(`\\[data-theme=["']?${theme}["']?\\]`), `${page} includes ${theme} CSS`);
+    }
     assert.match(styles, /--bingo-color-canvas:/, `${page} includes semantic CSS`);
   }
 });
 
+test('Roboto Mono is bundled as local font files, never fetched or inlined', () => {
+  const assets = readdirSync(path.join(renderer, 'assets'));
+  const css = assets.filter((file) => file.endsWith('.css')).map((file) => text(`dist/renderer/assets/${file}`)).join('\n');
+  const faces = [...css.matchAll(/@font-face\s*\{([^}]*)\}/g)].map((match) => match[1]);
+  assert.ok(faces.some((face) => /font-family:\s*["']?Roboto Mono Variable/.test(face)), 'Roboto Mono @font-face');
+  for (const face of faces) {
+    for (const [, url] of face.matchAll(/url\(["']?([^"')]+)["']?\)/g)) {
+      assert.match(url, /^\.\/[\w.-]+\.woff2$/, `relative local font: ${url}`);
+      assert.ok(statSync(path.join(renderer, 'assets', url.slice(2))).size > 0, `emitted font: ${url}`);
+    }
+  }
+  assert.ok(assets.some((file) => /^roboto-mono-latin-wght-normal-[\w-]+\.woff2$/.test(file)), 'latin subset emitted');
+});
+
+test('the development-only gallery is never packaged', () => {
+  const files = readdirSync(renderer, { recursive: true }).map(String);
+  assert.deepEqual(files.filter((file) => /gallery/i.test(file)), []);
+  for (const file of files.filter((name) => /\.(?:html|js)$/.test(name))) {
+    assert.doesNotMatch(text(`dist/renderer/${file}`), /gallery/i, file);
+  }
+});
+
 test('generated token outputs remain ignored and untracked', () => {
-  for (const file of ['src/generated/pixel-classic.css', 'src/generated/high-contrast.css']) {
+  for (const file of ['src/generated/jules.css', 'src/generated/light.css', 'src/generated/high-contrast.css']) {
     assert.ok(statSync(path.join(root, file)).size > 0);
     assert.equal(execFileSync('git', ['check-ignore', file], { cwd: root, encoding: 'utf8' }).trim(), file);
     assert.equal(execFileSync('git', ['ls-files', file], { cwd: root, encoding: 'utf8' }).trim(), '');

@@ -1,6 +1,6 @@
 import StyleDictionary from 'style-dictionary';
 import { transformTypes } from 'style-dictionary/enums';
-import { semanticVariable } from './scripts/token-contract.mjs';
+import { semanticVariable, sourcePaths } from './scripts/token-contract.mjs';
 
 const variable = (path) => semanticVariable(path.join('.'));
 StyleDictionary.registerTransform({
@@ -9,17 +9,20 @@ StyleDictionary.registerTransform({
   transform: (token) => variable(token.path),
 });
 
+// DTCG cubicBezier values are arrays; every other reference value is already CSS text.
+const cssValue = ({ $type, $value }) => ($type === 'cubicBezier' ? `cubic-bezier(${$value.join(', ')})` : $value);
+
 StyleDictionary.registerFormat({
   name: 'bingo/theme',
   format: ({ dictionary, options }) => {
-    const reference = options.theme === 'pixel-classic';
-    const selectors = reference ? ':root, [data-theme="pixel-classic"]' : '[data-theme="high-contrast"]';
+    const reference = options.theme === sourcePaths.defaultTheme;
+    const selectors = reference ? `:root, [data-theme="${options.theme}"]` : `[data-theme="${options.theme}"]`;
     const tokens = dictionary.allTokens.filter((token) => reference || token.path[0] === 'semantic');
     const lines = tokens.map((token) => {
       const name = variable(token.path[0] === 'semantic' ? token.path.slice(1) : token.path);
       const value = token.path[0] === 'semantic'
         ? `var(${variable(token.original.$value.slice(1, -1).split('.'))})`
-        : token.original.$value;
+        : cssValue(token.original);
       return `  ${name}: ${value};`;
     });
     return `${selectors} {\n${lines.join('\n')}\n}\n`;
