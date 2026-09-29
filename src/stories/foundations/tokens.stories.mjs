@@ -74,7 +74,7 @@ export const Typography = {
   </table>
   <div class="sb-section" style="margin-top: 1.5rem">
     <p class="sb-caption">Body · --bingo-font-size / --bingo-font-line</p>
-    <p style="margin: 0">Evento activo: Bingo solidario de primavera — 2026-10-03, Casal del barrio</p>
+    <p style="margin: 0">Bingo solidario de primavera — 2026-10-03, Casal del barrio</p>
   </div>
   <div class="sb-section">
     <p class="sb-caption">Emphasis · --bingo-font-emphasis</p>

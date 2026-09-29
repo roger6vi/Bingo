@@ -36,7 +36,7 @@ There are exactly **two token layers**. There are no component tokens.
 | `space` | `none`, `xxs` 0.125rem, `xs` 0.25rem, `sm` 0.35rem, `md` 0.7rem, `base` 1rem, `lg` 1.5rem, `xl` 2rem, `xxl` 3rem, `xxxl` 4rem |
 | `size` | `content` 70rem |
 | `font` | Families `family-system`, `family-mono` (bundled Roboto Mono Variable); sizes `size-sm…xl`, `size-display`; weights `weight-regular/medium/bold`; line heights `line-tight/normal`; letter spacing `tracking-normal/wide/wider` |
-| `radius` | `none` 0, `sm` 0.25rem, `md` 0.5rem |
+| `radius` | `none` 0, `sm` 0.25rem, `md` 0.5rem (every theme maps `radius.surface` and `radius.control` to `none`: the UI has no rounded corners) |
 | `border-width` | `thin` 1px, `thick` 2px, `heavy` 4px |
 | `elevation` | Hard pixel-shadow offsets `flat`, `sm`, `md` |
 | `motion` | Durations `instant/fast/normal/slow`; easings `ease-standard`, `ease-linear` (cubicBezier) |
@@ -86,7 +86,7 @@ Exactly three themes are registered. Components are identical across them.
 | Id | Intent | Character |
 | --- | --- | --- |
 | `jules` (default) | Evening events and projection with brand character | Original work inspired by the visual language of jules.google: near-black indigo canvas `#09051c`, deep violet surfaces `#1d0245`, lavender accent `#d0b9ff`, translucent violets `#642cc2`/`#7f4cd6`, highlights in pink `#ff79c6`, yellow `#ffd236` and cyan `#00d2ef`; Roboto Mono Variable throughout; square corners; `image-rendering: pixelated`. No copied assets or logos. |
-| `light` | Bright rooms and daytime projection | Near-white canvas, white surfaces, navy text, blue accent, system UI font, soft radii. |
+| `light` | Bright rooms and daytime projection | Near-white canvas, white surfaces, navy text, blue accent, system UI font, square corners. |
 | `high-contrast` | Accessibility and difficult projectors | Black canvas and surfaces, white text, yellow accent, cyan focus; AAA text contrast; square corners. |
 
 Fonts are bundled locally (`@fontsource-variable/roboto-mono`, OFL-1.1) and never fetched at runtime.
@@ -325,7 +325,7 @@ committed persistence snapshots (presentation never acknowledges its own intent)
   **States:** unavailable (disabled), ready, pending (disabled), playing (progress, same size).
 - **Accessibility:** native button activation; the help text follows the button in reading order;
   the progress bar is labelled.
-- **Tokens:** `color.accent`, `font.emphasis`, `space.small`.
+- **Tokens:** `color.accent`, `color.surface`, `font.emphasis`, `radius.control`, `space.small`.
 
 ### Specified, not implemented
 

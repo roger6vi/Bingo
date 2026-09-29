@@ -62,8 +62,8 @@
     "tracking": { "$type": "dimension", "$value": "{font.tracking-wide}" }
   },
   "radius": {
-    "surface": { "$type": "dimension", "$value": "{radius.md}" },
-    "control": { "$type": "dimension", "$value": "{radius.sm}" }
+    "surface": { "$type": "dimension", "$value": "{radius.none}" },
+    "control": { "$type": "dimension", "$value": "{radius.none}" }
   },
   "border-width": {
     "default": { "$type": "dimension", "$value": "{border-width.thin}" },
