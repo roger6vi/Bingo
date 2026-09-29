@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 
-const read = (file: string) => readFileSync(path.resolve(import.meta.dirname, '..', file), 'utf8');
+const read = (file: string) => readFileSync(path.resolve(import.meta.dirname, '..', file), 'utf8').replaceAll('\r\n', '\n');
 const workflow = read('.github/workflows/windows-package.yml');
 const config = read('electron-builder.win.yml');
 const smoke = read('verification/packaged-smoke.mjs');
@@ -14,7 +14,9 @@ test('Windows packaging lives in its own workflow on a least-privilege windows-l
   assert.equal((workflow.match(/^    runs-on: /gm) ?? []).length, 1);
   assert.match(workflow, /^    runs-on: windows-latest$/m);
   assert.match(workflow, /node-version: '24'/);
+  assert.match(workflow, /^    - run: git config --global core\.autocrlf false\n    - uses: actions\/checkout@v4$/m);
   assert.match(workflow, /^      run: npm ci$/m);
+  assert.match(workflow, /- name: Test source\n      if: \$\{\{ !cancelled\(\) \}\}\n      run: npm test\n$/);
   assert.doesNotMatch(workflow, /\b(?:continue-on-error|npm publish|secrets\.)|--publish always/);
   assert.doesNotMatch(read('.github/workflows/ci.yml'), /windows/i, 'ci.yml stays Ubuntu-only');
 });
