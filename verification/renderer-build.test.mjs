@@ -141,6 +141,14 @@ test('the development-only gallery is never packaged', () => {
   }
 });
 
+test('Storybook and stories are never bundled into the renderer', () => {
+  const files = readdirSync(renderer, { recursive: true }).map(String);
+  assert.deepEqual(files.filter((file) => /stories|storybook/i.test(file)), []);
+  for (const file of files.filter((name) => /\.(?:html|js)$/.test(name))) {
+    assert.doesNotMatch(text(`dist/renderer/${file}`), /storybook|\.stories\b/i, file);
+  }
+});
+
 test('generated token outputs remain ignored and untracked', () => {
   for (const file of ['src/generated/jules.css', 'src/generated/light.css', 'src/generated/high-contrast.css']) {
     assert.ok(statSync(path.join(root, file)).size > 0);
@@ -163,9 +171,12 @@ test('theme selection keeps an operator-only setter, a receive-only sandboxed pu
   const publicPreload = text('dist/public-preload.js');
   assert.match(publicPreload, /exposeInMainWorld\('publicTheme'/);
   assert.match(publicPreload, /exposeInMainWorld\('publicEventMeta'/);
+  assert.match(publicPreload, /exposeInMainWorld\('publicEventPrizes'/);
   assert.doesNotMatch(publicPreload, /ipcRenderer\.(?:send|invoke|sendSync)\b/);
   assert.match(text('dist/preload.js'), /invoke\('theme:set', theme\)/);
   assert.match(text('dist/preload.js'), /invoke\('events:update', id, meta\)/);
+  assert.match(text('dist/preload.js'), /invoke\('prizes:update', id, prizes\)/);
+  assert.match(main, /registerPrizeIpc\)\(electron_1\.ipcMain, store, operatorOnly/);
   const css = readdirSync(path.join(renderer, 'assets'))
     .filter((file) => file.endsWith('.css')).map((file) => text(`dist/renderer/assets/${file}`)).join('\n');
   assert.match(css, /html:not\(\[data-theme\]\) body\s*\{\s*visibility:\s*hidden/);
@@ -201,4 +212,24 @@ test('operator cue sounds are emitted as local files, referenced by the operator
   }
   assert.doesNotMatch(js, /data:audio\//);
   assert.doesNotMatch(bundle('public-'), /\.wav\b/, 'the public window loads no cue sounds');
+});
+
+test('Tongo keeps an operator-only trigger and a receive-only, never-replayed public signal', () => {
+  const main = text('dist/main.js');
+  assert.match(main, /registerTongoIpc\)\(electron_1\.ipcMain, store, \{ authorize: operatorOnly, publish: publicDelivery\.publishPresentation \}\)/);
+  assert.match(main, /publicDelivery\.publishCommitted, tongo\.playing\)/);
+  assert.match(text('dist/preload.js'), /playTongo: \(\) => electron_1\.ipcRenderer\.invoke\('tongo:play'\)/);
+  const publicPreload = text('dist/public-preload.js');
+  assert.match(publicPreload, /exposeInMainWorld\('publicPresentation'/);
+  assert.match(publicPreload, /'public:presentation'/);
+  assert.doesNotMatch(publicPreload, /tongo:play|ipcRenderer\.(?:send|invoke|sendSync)\b/);
+});
+
+test('the bundled public page ships the Tongo overlay but never the trigger', () => {
+  assert.match(text('dist/renderer/public.html'), /<bingo-tongo id="tongo" lang="es"><\/bingo-tongo>/);
+  const assets = readdirSync(path.join(renderer, 'assets')).filter((file) => file.endsWith('.js'));
+  const bundle = assets.map((file) => text(`dist/renderer/assets/${file}`)).join('\n');
+  assert.match(bundle, /customElements\.define\("bingo-tongo"/);
+  assert.match(bundle, /publicPresentation/);
+  assert.doesNotMatch(bundle, /tongo:play/);
 });

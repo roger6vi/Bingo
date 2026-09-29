@@ -299,6 +299,21 @@ committed persistence snapshots (presentation never acknowledges its own intent)
   `opacity.scrim`, `border-width.strong`, `radius.surface`, `elevation.raised`, `space.layout`,
   `space.section`, `font.body`, `font.size`, `font.line`, `font.emphasis`.
 
+### `bingo-tongo` (public)
+- **Purpose:** the transient public Tongo overlay shown for a few seconds after the operator reports
+  a claim that was rejected outside the app. It never changes the game: the board stays in the DOM
+  underneath and reappears unchanged when `active` clears. **Anatomy:** scrim → card with the word
+  "¡Tongo!" and a note → visually hidden live region.
+- **Properties:** `active` (reflected boolean). **States:** idle, active, reduced-motion (static).
+- **Accessibility:** a persistent polite `role="status"` region announces it once when it appears;
+  the card is `aria-hidden` (the announcement carries the text); `pointer-events: none`, so it never
+  traps focus or input; all motion is dropped under `prefers-reduced-motion`.
+- **Tokens:** `border-width.strong`, `color.error`, `color.overlay`, `color.shadow`, `color.surface`,
+  `color.text`, `elevation.raised`, `font.body`, `font.display`, `font.emphasis`, `font.line`,
+  `font.size-large`, `font.tight`, `font.tracking`, `layer.overlay`, `motion.easing`,
+  `motion.normal`, `motion.slow`, `opacity.scrim`, `radius.surface`, `space.layout`,
+  `space.section`, `space.wide`.
+
 ### Specified, not implemented
 
 These entries fix the contract for roadmap components; they are not built yet.

@@ -107,6 +107,11 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
     receiveMeta = callback;
     return () => { unsubscribed++; };
   } };
+  let receivePresentation;
+  window.publicPresentation = { subscribe: (callback) => {
+    receivePresentation = callback;
+    return () => { unsubscribed++; };
+  } };
   try {
     const entry = new URL('../../src/public-ui.mjs', import.meta.url);
     const response = await fetch(entry);
@@ -155,13 +160,26 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
     await phase.updateComplete;
     expect(phase.shadowRoot.querySelector('[role="status"]').textContent).to.equal('Current phase: Line declared');
     await expect(phase).to.be.accessible();
+    // Tongo overlays the unchanged board, then clears; repeats and junk never replay it.
+    const tongo = shell.querySelector('#tongo');
+    const board = () => [...shell.querySelector('#called-numbers').calledNumbers];
+    const before = [board(), phase.message, status.message];
+    receivePresentation({ kind: 'tongo', id: 1, durationMs: 500 });
+    expect(tongo.active).to.equal(true);
+    expect([board(), phase.message, status.message]).to.deep.equal(before);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(tongo.active).to.equal(false);
+    for (const ignored of [{ kind: 'tongo', id: 1, durationMs: 500 }, { kind: 'tongo', id: 2 }, 'tongo']) receivePresentation(ignored);
+    expect(tongo.active).to.equal(false);
+    expect([board(), phase.message, status.message]).to.deep.equal(before);
     window.dispatchEvent(new Event('pagehide'));
-    expect(unsubscribed).to.equal(3);
+    expect(unsubscribed).to.equal(4);
   } finally {
     shell.remove();
     delete window.publicEvent;
     delete window.publicTheme;
     delete window.publicEventMeta;
+    delete window.publicPresentation;
     delete document.documentElement.dataset.theme;
   }
 });

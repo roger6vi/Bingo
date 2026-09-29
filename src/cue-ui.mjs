@@ -4,9 +4,9 @@ import { createCuePlayer, describeCueStatus } from './cue-player.mjs';
 import { createMilestoneTracker } from './cue-registry.mjs';
 import { CUE_SOURCES } from './cue-sources.mjs';
 
-export function bindCueControls({ mute, volume, test, status }, { sources = CUE_SOURCES, createAudio, storage }) {
+export function bindCueControls({ mute, volume, test, status }, { sources = CUE_SOURCES, createAudio, storage, schedule, cancel }) {
   const tracker = createMilestoneTracker();
-  const player = createCuePlayer({ sources, createAudio, storage, onChange: (state) => {
+  const player = createCuePlayer({ sources, createAudio, storage, schedule, cancel, onChange: (state) => {
     mute.checked = state.muted;
     volume.value = String(Math.round(state.volume * 100));
     volume.setAttribute('aria-valuetext', `${Math.round(state.volume * 100)}%`);
@@ -23,6 +23,16 @@ export function bindCueControls({ mute, volume, test, status }, { sources = CUE_
     observe(snapshot) {
       const milestone = tracker.observe(snapshot);
       if (milestone !== null) void player.play(milestone);
+    },
+    // Wraps the operator's Tongo request so no cue overlaps the public presentation window.
+    async playTongo(request) {
+      player.hold();
+      let result;
+      try { result = await request(); }
+      catch (error) { player.release(); throw error; }
+      if (result?.ok === true) player.hold(result.presentation.durationMs);
+      else player.release();
+      return result;
     },
   };
 }
