@@ -191,12 +191,17 @@ body:has(> .operator-app) { padding: 0; overflow: hidden; }
   min-height: 0;
 }
 .rail-heading {
-  margin: 0 0 0.625rem;
+  margin: 0 0 0.375rem;
   color: var(--bingo-color-muted);
   font-size: 0.75rem; font-weight: var(--bingo-font-emphasis);
   letter-spacing: 0.08em; text-transform: uppercase;
 }
+.bingo-rail { --rail-inset: 0.625rem 0.875rem; }
 .rail-note { margin: 0.5rem 0 0; color: var(--bingo-color-muted); font-size: 0.75rem; }
+.board-zone bingo-operator-board { height: 100%; }
+.last-calls { margin-top: 0.5rem; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.public-controls bingo-button::part(button) { min-height: 2rem; }
 .rail-section bingo-status { margin-top: 0.5rem; }
 .claim-buttons { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0.5rem; }
 .claim-buttons bingo-button { display: block; }

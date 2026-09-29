@@ -1,4 +1,4 @@
-// Isolated Electron smoke of the built app (#59, #72): `npm run test:smoke`, or in CI
+// Isolated Electron smoke of the built app (#59, #72, #77, #78): `npm run test:smoke`, or in CI
 // `xvfb-run -a npm run test:smoke`. It rebuilds when dist/ is missing or older than its sources, and on
 // Linux without a display re-runs itself under `xvfb-run -a`. Every launch uses a fresh temporary
 // --user-data-dir that is verified before and after startup; the real profile is never used and the
@@ -231,10 +231,18 @@ async function smoke() {
       await operator.click('#tab-events');
     });
 
-    await step('committed draw reaches the public window', async () => {
+    await step('manual call from the 1–90 board reaches the public window', async () => {
+      // Manual mode: the board shows 42 as called only after the acknowledged draw.
       await operator.click('#tab-bingo');
-      await operator.locator('#draw-digital button').click();
+      const cell = operator.locator('#operator-board [data-number="42"]');
+      assert.equal(await cell.getAttribute('data-state'), 'uncalled');
+      await cell.click();
       await operator.waitForFunction(() => document.querySelector('#event-summary').count === 1);
+      assert.equal(await cell.getAttribute('data-state'), 'latest');
+      assert.equal(await cell.getAttribute('aria-label'), 'Número 42, última bola cantada');
+      // Playwright refuses to click aria-disabled elements; force the click to prove the cell is inert.
+      await cell.click({ force: true });
+      assert.equal(await operator.locator('#event-summary').evaluate((summary) => summary.count), 1, 'a called number is inert');
       [publicWindow] = await Promise.all([app.waitForEvent('window'), operator.locator('#open-public button').click()]);
       await publicWindow.waitForFunction(() => document.querySelectorAll('#called-numbers').length === 1 &&
         document.querySelector('#called-count').value === '1' && document.querySelector('#event-name').textContent === 'Evento actual');
@@ -329,6 +337,17 @@ async function smoke() {
       assert.equal(await operator.locator('#event-summary').evaluate((summary) => summary.count), 1);
       await operator.waitForFunction(() => document.querySelector('#event-list').events?.length === 2);
       assert.equal((await eventList(operator)).find((event) => event.active)?.name, 'Verbena de prueba');
+      assert.equal(await operator.locator('#operator-board [data-number="42"]').getAttribute('data-state'), 'latest');
+    });
+
+    await step('digital draw with a read-only board', async () => {
+      await operator.click('#tab-bingo');
+      await operator.locator('#draw-controls label', { hasText: 'Digital' }).click();
+      assert.equal(await operator.locator('#operator-board').evaluate((board) => board.readonly), true);
+      await operator.locator('#draw-digital button').click();
+      await operator.waitForFunction(() => document.querySelector('#event-summary').count === 2);
+      assert.equal(await operator.locator('#operator-board [data-state="latest"]').count(), 1);
+      assert.equal(await operator.locator('#operator-board [data-number="42"]').getAttribute('data-state'), 'called');
     });
     await close(app);
 

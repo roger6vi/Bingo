@@ -100,13 +100,14 @@
 
       <bingo-tab-panel id="panel-bingo" aria-labelledby="tab-bingo" hidden>
         <div class="bingo-workspace">
-          <bingo-panel class="board-zone" heading="Historial de la partida" compact fill>
-            <bingo-call-history id="called-numbers"></bingo-call-history>
+          <bingo-panel class="board-zone" heading="Tablero 1–90" compact fill>
+            <bingo-operator-board id="operator-board"></bingo-operator-board>
           </bingo-panel>
           <bingo-side-rail class="bingo-rail" label="Controles de la partida">
             <section class="rail-section" aria-labelledby="rail-latest-heading">
               <h2 id="rail-latest-heading" class="rail-heading">Última bola</h2>
               <bingo-operator-summary id="event-summary"></bingo-operator-summary>
+              <bingo-call-history id="called-numbers" class="last-calls" limit="8"></bingo-call-history>
             </section>
             <section class="rail-section" aria-labelledby="rail-draw-heading">
               <h2 id="rail-draw-heading" class="rail-heading">Sorteo</h2>
@@ -120,7 +121,7 @@
                 <bingo-button id="claim-bingo" disabled>Bingo</bingo-button>
                 <bingo-button id="claim-tiebreak" class="claim-wide" disabled>Sorteo de empate</bingo-button>
               </div>
-              <p id="claims-note" class="rail-note">Se activan cuando la partida lo permita.</p>
+              <p id="claims-note" class="visually-hidden">Se activan cuando la partida lo permita.</p>
             </section>
             <section slot="footer" class="rail-section" aria-labelledby="rail-public-heading">
               <h2 id="rail-public-heading" class="rail-heading">Pantalla pública</h2>
