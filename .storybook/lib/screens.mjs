@@ -22,6 +22,7 @@ import '../../src/components/bingo-text-field.mjs';
 import '../../src/components/bingo-date-field.mjs';
 import '../../src/components/bingo-select-field.mjs';
 import '../../src/components/bingo-form-actions.mjs';
+import '../../src/components/bingo-tongo.mjs';
 import operatorSource from '../../src/operator.html?raw';
 import publicSource from '../../src/public.html?raw';
 import sampleVideoUrl from '../../assets/sample.mp4?url';
@@ -195,7 +196,7 @@ export function operatorScreen(options) {
 /* ---------------------------------------------------------------- Public display */
 
 export const publicDefaults = {
-  meta: ACTIVE_EVENT, calledNumbers: [], phase: 'drawing', loaded: true, stale: false, error: null,
+  meta: ACTIVE_EVENT, calledNumbers: [], phase: 'drawing', loaded: true, stale: false, error: null, tongo: false,
 };
 
 export function publicScreen(options) {
@@ -218,6 +219,8 @@ export function publicScreen(options) {
     : (state.error ? '' : 'Waiting for event state'), state.stale ? 'warning' : 'info', Boolean(state.error && !state.loaded));
   status($('event-error'), state.error ?? '', 'error', !state.error);
   $('sample-video-source').src = sampleVideoUrl;
+  // The transient Tongo overlay, as public-ui.mjs shows it while a signal plays.
+  $('tongo').active = state.tongo;
   return container;
 }
 

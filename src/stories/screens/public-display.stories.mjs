@@ -14,6 +14,7 @@ export default {
     loaded: { control: 'boolean' },
     stale: { control: 'boolean' },
     error: { control: 'text' },
+    tongo: { control: 'boolean', description: 'Transient Tongo overlay over the unchanged board (~3 s in the app).' },
   },
   render: (args) => publicScreen(args),
 };
@@ -39,3 +40,5 @@ export const DraftPreview = {
   name: 'Draft preview (simulator)',
   args: { meta: { ...ACTIVE_EVENT, name: 'Bingo solidario de otoño', place: 'Parroquia de San Miguel' }, calledNumbers: draws(34) },
 };
+
+export const Tongo = { name: 'Tongo · invalid claim', args: { calledNumbers: draws(34), tongo: true } };
