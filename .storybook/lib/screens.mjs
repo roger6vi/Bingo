@@ -107,8 +107,8 @@ export function operatorScreen(options) {
   $('create-event-submit').disabled = pending !== null;
   $('create-event-actions').pending = pending === 'create';
   $('event-date').value = '2026-10-03';
-  status($('active-event-banner'), active ? `Evento activo: ${active.name} — ${active.date}, ${active.place}`
-    : loaded ? 'Ningún evento activo. Elige uno en Eventos.' : 'Cargando evento activo', active && !stale ? 'info' : 'warning');
+  status($('active-event-banner'), active ? `${active.name} — ${active.date}, ${active.place}`
+    : loaded ? 'Ningún evento seleccionado. Elige uno en Eventos.' : 'Cargando evento', active && !stale ? 'info' : 'warning');
 
   // Bingo
   const game = state.game;

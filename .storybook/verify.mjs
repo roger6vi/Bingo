@@ -4,7 +4,8 @@
 //  2. every story renders in every registered theme without console errors;
 //  3. axe-core (the engine behind the a11y addon, same defaults: `region` off) reports no violations;
 //  4. nothing is requested from outside the local server (Storybook must work offline);
-//  5. composed screens render (and are checked) at their reference viewport: operator screens at 1280×720, the
+//  5. every element in the story (shadow roots included) has square corners: all radii compute to 0px;
+//  6. composed screens render (and are checked) at their reference viewport: operator screens at 1280×720, the
 //     public display at 1920×1080. Components render at 1280×720 (one viewport per story, not a matrix).
 // Every failure names the story, theme, viewport and assertion.
 // Options: --stories <substring> filters story ids; --screenshots <dir> saves every render; --failures <dir>
@@ -142,6 +143,23 @@ for (const story of stories) {
         }
       });
       errors.push(...violations);
+      const rounded = await page.evaluate(() => {
+        const found = [];
+        const walk = (root) => {
+          for (const element of root.querySelectorAll('*')) {
+            if (element.shadowRoot) walk(element.shadowRoot);
+            // Never-rendered elements (media sources, a select field's light-DOM options) carry UA radii in newer Chromium.
+            if (['source', 'track', 'script', 'style', 'template', 'link', 'meta'].includes(element.localName)
+              || (element.localName === 'option' && element.parentElement?.localName === 'bingo-select-field')) continue;
+            const style = getComputedStyle(element);
+            const radii = [style.borderTopLeftRadius, style.borderTopRightRadius, style.borderBottomRightRadius, style.borderBottomLeftRadius];
+            if (radii.some((radius) => radius !== '0px')) found.push(`${element.localName}${element.id ? `#${element.id}` : ''} (${radii.join(' ')})`);
+          }
+        };
+        walk(document.querySelector('#storybook-root'));
+        return found;
+      });
+      errors.push(...rounded.slice(0, 3).map((element) => `rounded corner: ${element}`));
     } catch (error) {
       errors.push(`verification error: ${error.message.split('\n')[0]}`);
     }
@@ -163,5 +181,5 @@ if (failures.length) {
 }
 console.log(`Storybook verified: ${stories.length} stories × ${sourcePaths.themes.length} themes (${checked} renders; `
   + `${counts.component} component stories @ 1280×720, ${counts.operator} operator screens @ 1280×720, `
-  + `${counts.public} public screens @ 1920×1080), no a11y violations, no console errors, no external requests, `
+  + `${counts.public} public screens @ 1920×1080), no a11y violations, no console errors, no external requests, no rounded corners, `
   + 'every component has stories.');

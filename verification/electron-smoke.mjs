@@ -284,7 +284,7 @@ async function smoke() {
       assert.equal(await publicWindow.locator('#event-name').textContent(), 'Evento actual');
       assert.equal(await publicWindow.evaluate(() => document.documentElement.dataset.theme), 'jules');
       assert.equal(await operator.evaluate(() => document.documentElement.dataset.theme), 'jules');
-      assert.match(await banner(operator), /^Evento activo: Evento actual/);
+      assert.match(await banner(operator), /^Evento actual — /);
     });
 
     await step('receive-only public boundary and bridge-free simulator', async () => {
@@ -320,7 +320,7 @@ async function smoke() {
         document.documentElement.dataset.theme === 'high-contrast');
       assert.equal(await publicWindow.locator('#called-count').evaluate((output) => output.value), '1');
       assert.equal(await operator.evaluate(() => document.documentElement.dataset.theme), 'high-contrast');
-      assert.match(await banner(operator), /^Evento activo: Verbena de prueba — \d{4}-\d{2}-\d{2}, Plaza Mayor$/);
+      assert.match(await banner(operator), /^Verbena de prueba — \d{4}-\d{2}-\d{2}, Plaza Mayor$/);
     });
 
     await step('event creation and selection', async () => {
@@ -338,7 +338,7 @@ async function smoke() {
       await publicWindow.waitForFunction(() => document.querySelector('#event-name').textContent === 'Segundo evento' &&
         document.querySelector('#called-count').value === '0');
       await operator.waitForFunction(() => document.querySelector('#event-summary').count === 0);
-      assert.match(await banner(operator), /^Evento activo: Segundo evento — \d{4}-\d{2}-\d{2}, Salón social$/);
+      assert.match(await banner(operator), /^Segundo evento — \d{4}-\d{2}-\d{2}, Salón social$/);
       // Re-activating the first event restores its committed history everywhere.
       await operator.getByRole('button', { name: 'Activar «Verbena de prueba»' }).click();
       await publicWindow.waitForFunction(() => document.querySelector('#event-name').textContent === 'Verbena de prueba' &&

@@ -235,10 +235,9 @@ it('uses the three generated themes, wraps at narrow widths, and computes reduce
       shapes[theme] = { radius: chip(last).borderTopLeftRadius, font: getComputedStyle(document.body).fontFamily };
       await expect(board).to.be.accessible();
     }
-    // Same components, different token values: jules is square and set in bundled Roboto Mono.
-    expect(shapes.jules.radius).to.equal('0px');
+    // Same components, different token values: every theme is square; jules is set in bundled Roboto Mono.
+    expect(Object.values(shapes).map((shape) => shape.radius)).to.deep.equal(['0px', '0px', '0px']);
     expect(shapes.jules.font).to.match(/^"?Roboto Mono Variable"?,/);
-    expect(shapes.light.radius).not.to.equal('0px');
     expect(shapes.light.font).not.to.match(/Roboto Mono/);
     board.style.width = '80px';
     expect(items(board)[1].getBoundingClientRect().top).to.be.greaterThan(items(board)[0].getBoundingClientRect().top);

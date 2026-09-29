@@ -233,8 +233,8 @@ const events = createEventsController(desktop, {
     eventsError.hidden = !error;
     // A stale list may predate an acknowledged save; the store rejects a draft for an inactive event anyway.
     if (!stale) settings.config.setCommittedEvent(active);
-    banner.message = active ? `Evento activo: ${active.name} — ${active.date}, ${active.place}`
-      : loaded ? 'Ningún evento activo. Elige uno en Eventos.' : 'Cargando evento activo';
+    banner.message = active ? `${active.name} — ${active.date}, ${active.place}`
+      : loaded ? 'Ningún evento seleccionado. Elige uno en Eventos.' : 'Cargando evento';
     banner.tone = active && !stale ? 'info' : 'warning';
   },
 }, () => Promise.all([controller.resync(), themes.start()]));
