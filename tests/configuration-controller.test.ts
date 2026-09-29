@@ -27,10 +27,10 @@ test('the draft starts from committed values in either arrival order and edits n
   const committed = { id: 'a', name: 'Verbena', date: '2026-08-15', place: 'Plaza', theme: 'high-contrast' };
   assert.deepEqual([f.last().committed, f.last().draft, f.last().dirty], [committed, committed, false]);
   f.controller.edit('name', 'Gran Bingo');
-  f.controller.edit('theme', 'pixel-classic');
+  f.controller.edit('theme', 'jules');
   f.controller.edit('unknown', 'x');
   assert.deepEqual(f.last().committed, committed);
-  assert.deepEqual(f.last().draft, { ...committed, name: 'Gran Bingo', theme: 'pixel-classic' });
+  assert.deepEqual(f.last().draft, { ...committed, name: 'Gran Bingo', theme: 'jules' });
   assert.deepEqual([f.last().dirty, f.last().canSave], [true, true]);
   f.controller.discard();
   assert.deepEqual([f.last().draft, f.last().dirty], [committed, false]);
@@ -39,7 +39,7 @@ test('the draft starts from committed values in either arrival order and edits n
 
 test('unedited fields follow new commits, edited ones are kept, and another event resets the draft', () => {
   const f = fixture();
-  f.controller.setCommittedTheme('pixel-classic');
+  f.controller.setCommittedTheme('jules');
   f.controller.setCommittedEvent(event());
   f.controller.edit('place', 'Club');
   f.controller.setCommittedEvent({ ...event(), name: 'Renamed', place: 'Sala' });
@@ -56,7 +56,7 @@ test('invalid drafts cannot be saved and report field errors with the store rule
   assert.deepEqual(Object.keys(validateDraft({ name: ' ', date: '2026-02-30', place: 'p'.repeat(121), theme: 'neon' })),
     ['name', 'date', 'place', 'theme']);
   const f = fixture();
-  f.controller.setCommittedTheme('pixel-classic');
+  f.controller.setCommittedTheme('jules');
   f.controller.setCommittedEvent(event());
   f.controller.edit('date', '2026-13-01');
   assert.deepEqual([f.last().dirty, f.last().canSave, Object.keys(f.last().errors)], [true, false, ['date']]);
@@ -68,7 +68,7 @@ test('invalid drafts cannot be saved and report field errors with the store rule
 
 test('save commits trimmed metadata then the theme, and acknowledges only when both committed', async () => {
   const f = fixture();
-  f.controller.setCommittedTheme('pixel-classic');
+  f.controller.setCommittedTheme('jules');
   f.controller.setCommittedEvent(event());
   f.controller.edit('name', '  Gran Bingo ');
   f.controller.edit('theme', 'high-contrast');
@@ -88,7 +88,7 @@ test('save commits trimmed metadata then the theme, and acknowledges only when b
 
 test('a failed save keeps the whole draft, shows an actionable error, and can be retried', async () => {
   const f = fixture();
-  f.controller.setCommittedTheme('pixel-classic');
+  f.controller.setCommittedTheme('jules');
   f.controller.setCommittedEvent(event());
   f.controller.edit('name', 'Gran Bingo');
   f.controller.edit('theme', 'high-contrast');
@@ -101,19 +101,19 @@ test('a failed save keeps the whole draft, shows an actionable error, and can be
   f.replies.theme = async () => { throw new Error('ipc'); };
   assert.equal(await f.controller.save(), false);
   assert.deepEqual([f.last().committed?.name, f.last().committed?.theme, f.last().draft?.theme],
-    ['Gran Bingo', 'pixel-classic', 'high-contrast'], 'the committed metadata is the new baseline; the theme stays drafted');
+    ['Gran Bingo', 'jules', 'high-contrast'], 'the committed metadata is the new baseline; the theme stays drafted');
   assert.equal(f.last().error, SAVE_ERRORS.themeAfterMeta);
   f.replies.theme = async () => false;
   f.calls.length = 0;
   assert.equal(await f.controller.save(), false);
   assert.deepEqual([f.calls, f.last().error], [['theme:high-contrast'], SAVE_ERRORS.theme]);
   f.controller.discard();
-  assert.deepEqual([f.last().draft?.theme, f.last().dirty, f.last().error], ['pixel-classic', false, null]);
+  assert.deepEqual([f.last().draft?.theme, f.last().dirty, f.last().error], ['jules', false, null]);
 });
 
 test('a save whose event changed meanwhile is not acknowledged and does not save the theme to the new event', async () => {
   const f = fixture();
-  f.controller.setCommittedTheme('pixel-classic');
+  f.controller.setCommittedTheme('jules');
   f.controller.setCommittedEvent(event());
   f.controller.edit('name', 'Gran Bingo');
   f.controller.edit('theme', 'high-contrast');
@@ -127,11 +127,11 @@ test('a theme-only save that throws reports a theme error, not a metadata error'
   const f = fixture();
   f.controller.setCommittedTheme('high-contrast');
   f.controller.setCommittedEvent(event());
-  f.controller.edit('theme', 'pixel-classic');
+  f.controller.edit('theme', 'jules');
   f.replies.theme = async () => { throw new Error('ipc gone'); };
   assert.equal(await f.controller.save(), false);
   assert.equal(f.last().error, SAVE_ERRORS.theme);
-  assert.deepEqual(f.calls, ['theme:pixel-classic']);
+  assert.deepEqual(f.calls, ['theme:jules']);
 });
 
 test('metadata can still be saved when the committed theme could not be read', async () => {

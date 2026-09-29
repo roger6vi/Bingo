@@ -9,7 +9,7 @@ export class BingoSideRail extends LitElement {
     aside {
       display: grid; grid-template-rows: minmax(0, 1fr) auto;
       height: 100%; box-sizing: border-box; overflow: hidden;
-      border: 1px solid var(--bingo-color-border);
+      border: var(--bingo-border-width-default) solid var(--bingo-color-border);
       border-radius: var(--bingo-radius-surface);
       background: var(--bingo-color-surface);
     }
@@ -17,7 +17,7 @@ export class BingoSideRail extends LitElement {
     ::slotted(*) {
       display: block;
       padding: var(--rail-inset, 0.75rem 0.875rem);
-      border-top: 1px solid var(--bingo-color-border);
+      border-top: var(--bingo-border-width-default) solid var(--bingo-color-border);
     }
     ::slotted(:first-child) { border-top-style: none; }
   `;

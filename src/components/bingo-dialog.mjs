@@ -7,10 +7,11 @@ export class BingoDialog extends LitElement {
   static styles = css`
     dialog {
       max-width: min(90vw, 40rem); padding: var(--bingo-space-layout);
-      color: var(--bingo-color-text); background: var(--bingo-color-surface);
-      border: 2px solid var(--bingo-color-border); border-radius: var(--bingo-radius-surface);
+      color: var(--bingo-color-text); background: var(--bingo-color-surface-raised);
+      border: var(--bingo-border-width-strong) solid var(--bingo-color-border-strong); border-radius: var(--bingo-radius-surface);
+      box-shadow: var(--bingo-elevation-raised) var(--bingo-elevation-raised) 0 var(--bingo-color-shadow);
     }
-    dialog::backdrop { background: var(--bingo-color-canvas); opacity: 0.8; }
+    dialog::backdrop { background: var(--bingo-color-overlay); opacity: var(--bingo-opacity-scrim); }
     .actions { display: flex; gap: var(--bingo-space-section); margin-top: var(--bingo-space-section); }
     h2 { font: var(--bingo-font-emphasis) var(--bingo-font-size)/var(--bingo-font-line) var(--bingo-font-body); }
   `;

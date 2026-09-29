@@ -18,12 +18,14 @@ class BingoCallHistory extends LitElement {
     .strip .chip { min-width: 0; width: 100%; }
     .chip {
       display: grid; place-items: center; min-width: 2rem; height: 1.75rem; box-sizing: border-box; padding-inline: 0.25rem;
-      border: 1px solid var(--bingo-color-border); border-radius: 0.25rem;
+      border: var(--bingo-border-width-default) solid var(--bingo-color-border); border-radius: var(--bingo-radius-control);
       color: var(--bingo-color-text); background: var(--bingo-color-surface);
       font-weight: var(--bingo-font-emphasis); font-variant-numeric: tabular-nums;
     }
     .strip li[aria-current] { outline: none; }
-    .strip li[aria-current] .chip { color: var(--bingo-color-canvas); background: var(--bingo-color-accent); border-color: var(--bingo-color-accent); }
+    .strip li[aria-current] .chip {
+      color: var(--bingo-color-call-latest); background: var(--bingo-color-call-latest-surface); border-color: var(--bingo-color-call-latest-surface);
+    }
   `;
   constructor() { super(); this.calledNumbers = []; this.limit = 0; }
   render() {

@@ -13,16 +13,16 @@ class BingoPanel extends LitElement {
     section {
       height: 100%; box-sizing: border-box;
       padding: var(--bingo-space-layout);
-      border: 2px solid var(--bingo-color-border);
+      border: var(--bingo-border-width-strong) solid var(--bingo-color-border);
       border-radius: var(--bingo-radius-surface);
-      box-shadow: var(--bingo-space-small) var(--bingo-space-small) 0 var(--bingo-color-border);
+      box-shadow: var(--bingo-elevation-raised) var(--bingo-elevation-raised) 0 var(--bingo-color-shadow);
       background: var(--bingo-color-surface);
     }
     header { display: flex; align-items: center; justify-content: space-between; gap: var(--bingo-space-inset-inline); }
     h2 {
       margin: 0 0 var(--bingo-space-section);
       font: var(--bingo-font-emphasis) var(--bingo-font-size)/var(--bingo-font-line) var(--bingo-font-body);
-      letter-spacing: 0.06em;
+      letter-spacing: var(--bingo-font-tracking);
       text-transform: uppercase;
     }
     :host([compact]) section {
@@ -33,9 +33,9 @@ class BingoPanel extends LitElement {
     :host([compact]) header {
       flex: none; min-height: 2.5rem; box-sizing: border-box;
       padding: 0 var(--bingo-space-inset-inline) 0 0.875rem;
-      border-bottom: 1px solid var(--bingo-color-border);
+      border-bottom: var(--bingo-border-width-default) solid var(--bingo-color-border);
     }
-    :host([compact]) h2 { margin: 0; font-size: 0.75rem; letter-spacing: 0.08em; color: var(--bingo-color-muted); }
+    :host([compact]) h2 { margin: 0; font-size: 0.75rem; letter-spacing: var(--bingo-font-tracking); color: var(--bingo-color-muted); }
     :host([compact]) .body { padding: 0.875rem; }
     /* "fill" must not rely on a bare percentage height: an ancestor grid/flex track that ends up
        auto-sized around content (rather than stretched) leaves height: 100% resolving against an

@@ -11,7 +11,7 @@ export class BingoFormActions extends LitElement {
       display: flex; flex-wrap: wrap; align-items: center;
       gap: var(--bingo-space-small) var(--bingo-space-inset-inline);
       padding-block-start: var(--bingo-space-inset-inline);
-      border-top: 1px solid var(--bingo-color-border);
+      border-top: var(--bingo-border-width-default) solid var(--bingo-color-border);
     }
     :host([hidden]) { display: none; }
     :host([sticky]) {

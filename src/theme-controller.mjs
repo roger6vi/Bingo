@@ -1,6 +1,6 @@
 // Only allow-listed theme ids reach the document; keep aligned with src/theme.ts.
-export const THEME_LABELS = Object.freeze({ 'pixel-classic': 'Pixel classic', 'high-contrast': 'High contrast' });
-export const DEFAULT_THEME = 'pixel-classic';
+export const THEME_LABELS = Object.freeze({ jules: 'Jules', light: 'Light', 'high-contrast': 'High contrast' });
+export const DEFAULT_THEME = 'jules';
 export const validTheme = (theme) => typeof theme === 'string' && Object.hasOwn(THEME_LABELS, theme);
 
 export function applyTheme(root, theme) {

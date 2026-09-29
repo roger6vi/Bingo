@@ -24,7 +24,7 @@ const baseFieldStyles = css`
   .label-row { display: flex; align-items: baseline; gap: var(--bingo-space-small); }
   label {
     font: var(--bingo-font-emphasis) calc(var(--bingo-font-size) * 0.875)/var(--bingo-font-tight) var(--bingo-font-body);
-    letter-spacing: 0.02em; color: var(--bingo-color-text);
+    letter-spacing: var(--bingo-font-tracking); color: var(--bingo-color-text);
   }
   .required { color: var(--bingo-color-muted); font-weight: var(--bingo-font-emphasis); }
   .control-wrap { position: relative; display: flex; align-items: center; }
@@ -33,13 +33,13 @@ const baseFieldStyles = css`
     padding: var(--bingo-space-inset-compact) var(--bingo-space-inset-inline);
     font: var(--bingo-font-size)/var(--bingo-font-line) var(--bingo-font-body);
     color: var(--bingo-color-text); background: var(--bingo-color-surface);
-    border: 1px solid var(--bingo-color-muted);
-    border-radius: calc(var(--bingo-radius-surface) / 2);
+    border: var(--bingo-border-width-default) solid var(--bingo-color-border-strong);
+    border-radius: var(--bingo-radius-control);
     transition: border-color var(--bingo-motion-normal), box-shadow var(--bingo-motion-normal);
   }
   .control:not(:disabled):hover { border-color: var(--bingo-color-text); }
   .control:focus-visible {
-    outline: 2px solid var(--bingo-color-focus); outline-offset: 1px;
+    outline: var(--bingo-border-width-focus) solid var(--bingo-color-focus); outline-offset: 1px;
     border-color: var(--bingo-color-accent);
   }
   /* Invalid: a thicker inline-start bar and an icon + message, never color alone. */
@@ -48,7 +48,7 @@ const baseFieldStyles = css`
     box-shadow: inset 3px 0 0 var(--bingo-color-error);
   }
   .control:disabled {
-    color: var(--bingo-color-muted); background: var(--bingo-color-canvas);
+    color: var(--bingo-color-disabled); background: var(--bingo-color-disabled-surface);
     border-style: dashed; cursor: not-allowed;
   }
   .control[aria-busy="true"] { cursor: progress; }

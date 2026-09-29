@@ -35,14 +35,14 @@ async function loadOperator() {
   main.querySelector('#public-simulator').src = 'about:blank';
   main.querySelector('#public-simulator').removeAttribute('sandbox');
   document.body.append(main);
-  const links = await Promise.all(['pixel-classic', 'high-contrast']
+  const links = await Promise.all(['jules', 'light', 'high-contrast']
     .map((name) => stylesheet(new URL(`../../src/generated/${name}.css`, import.meta.url).href)));
   const screen = document.createElement('style');
   screen.textContent = (await (await fetch(new URL('../../src/screen.css', import.meta.url))).text()).replace(/@import [^;]+;/g, '');
   document.head.append(screen);
   const requests = [];
   const replies = { setTheme: null, updateEvent: null, drawManual: null };
-  let theme = 'pixel-classic';
+  let theme = 'jules';
   let events = [
     { id: 'a', name: 'Verbena', date: '2026-08-15', place: 'Plaza', phase: 'drawing', createdAt: '2026-01-01T00:00:00.000Z', active: true },
     { id: 'b', name: 'Fiesta', date: '2026-10-01', place: 'Sala', phase: 'drawing', createdAt: '2026-01-02T00:00:00.000Z', active: false },
@@ -168,7 +168,7 @@ it('operator page is a Spanish three-tab application shell with shared panels an
   expect([simulator.getAttribute('src'), simulator.hasAttribute('inert'), simulator.title])
     .to.deep.equal(['bingo-public://simulator/public.html', true, 'Simulador de la pantalla pública']);
   expect([...page.querySelectorAll('bingo-select-field#theme-select option')].map((option) => [option.value, option.textContent]))
-    .to.deep.equal([['pixel-classic', 'Píxel clásico'], ['high-contrast', 'Alto contraste']]);
+    .to.deep.equal([['jules', 'Jules'], ['light', 'Claro'], ['high-contrast', 'Alto contraste']]);
   expect(page.querySelector('bingo-status#theme-status')).not.to.equal(null);
   expect(page.querySelector('bingo-operator-summary#event-summary')).not.to.equal(null);
   expect(page.querySelector('bingo-side-rail bingo-call-history#called-numbers.last-calls[limit="8"]'))
@@ -208,7 +208,7 @@ it('summary and history show ordered acknowledged values, preserve them through 
 
 it('operator presentation follows both semantic themes without focusable shadow controls', async () => {
   const summary = await fixture(html`<bingo-operator-summary></bingo-operator-summary>`);
-  const links = await Promise.all(['pixel-classic', 'high-contrast'].map((name) => new Promise((resolve, reject) => {
+  const links = await Promise.all(['jules', 'light', 'high-contrast'].map((name) => new Promise((resolve, reject) => {
     const link = document.createElement('link');
     link.rel = 'stylesheet';
     link.href = new URL(`../../src/generated/${name}.css`, import.meta.url).href;
@@ -216,8 +216,11 @@ it('operator presentation follows both semantic themes without focusable shadow 
     link.onerror = reject;
     document.head.append(link);
   })));
+  // Paint the themed canvas behind the fixture, as screen.css does for the page: jules' light text
+  // only meets contrast against its own dark canvas, not the browser's default white background.
+  document.body.style.background = 'var(--bingo-color-canvas)';
   try {
-    for (const theme of ['pixel-classic', 'high-contrast']) {
+    for (const theme of ['jules', 'light', 'high-contrast']) {
       document.documentElement.dataset.theme = theme;
       const surface = getComputedStyle(summary).getPropertyValue('--bingo-color-text').trim();
       expect(surface).not.to.equal('');
@@ -231,6 +234,7 @@ it('operator presentation follows both semantic themes without focusable shadow 
     expect(summary.shadowRoot.querySelectorAll('button,input,[tabindex]')).to.have.length(0);
   } finally {
     delete document.documentElement.dataset.theme;
+    document.body.style.removeProperty('background');
     links.forEach((link) => link.remove());
   }
 });
@@ -319,7 +323,7 @@ it('interactive components consume both semantic themes and reduced motion', asy
   const controls = await fixture(html`<bingo-draw-controls></bingo-draw-controls>`);
   const button = await fixture(html`<bingo-button>Action</bingo-button>`);
   const dialog = await fixture(html`<bingo-dialog label="Example"></bingo-dialog>`);
-  const links = await Promise.all(['pixel-classic', 'high-contrast'].map((name) => new Promise((resolve, reject) => {
+  const links = await Promise.all(['jules', 'light', 'high-contrast'].map((name) => new Promise((resolve, reject) => {
     const link = document.createElement('link');
     link.rel = 'stylesheet';
     link.href = new URL(`../../src/generated/${name}.css`, import.meta.url).href;
@@ -328,7 +332,7 @@ it('interactive components consume both semantic themes and reduced motion', asy
     document.head.append(link);
   })));
   try {
-    for (const theme of ['pixel-classic', 'high-contrast']) {
+    for (const theme of ['jules', 'light', 'high-contrast']) {
       document.documentElement.dataset.theme = theme;
       expect(getComputedStyle(button.shadowRoot.querySelector('button')).color).to.equal(
         getComputedStyle(controls.manualInput).color);
@@ -358,7 +362,7 @@ it('operator wiring keeps committed state on failure and public controls use the
     openPublic: () => { openCount++; },
     movePublicToSecondary: () => { moveCount++; },
     onPublicStatus: (callback) => { publicUpdate = callback; },
-    getTheme: async () => ({ ok: true, theme: 'pixel-classic' }),
+    getTheme: async () => ({ ok: true, theme: 'jules' }),
     setTheme: async () => ({ ok: false, message: 'Write failed' }),
   };
   window.desktop = desktop;
@@ -427,13 +431,13 @@ it('operator theme selection drafts into the simulator and applies only committe
     const state = main.querySelector('#settings-state');
     const save = main.querySelector('#settings-save');
     const root = document.documentElement;
-    expect([root.dataset.theme, select.disabled, save.disabled]).to.deep.equal(['pixel-classic', false, true]);
+    expect([root.dataset.theme, select.disabled, save.disabled]).to.deep.equal(['jules', false, true]);
     const canvas = () => getComputedStyle(root).getPropertyValue('--bingo-color-canvas').trim();
     const classic = canvas();
     select.value = 'high-contrast';
     select.dispatchEvent(new Event('change'));
     await settle();
-    expect(root.dataset.theme).to.equal('pixel-classic', 'a draft never restyles the operator or the public window');
+    expect(root.dataset.theme).to.equal('jules', 'a draft never restyles the operator or the public window');
     expect(requests).to.deep.equal([]);
     expect(simulator.last('theme')).to.equal('high-contrast');
     expect([state.message, state.tone, save.disabled]).to.deep.equal(['Cambios sin guardar: solo se ven en el simulador.', 'warning', false]);
@@ -444,12 +448,12 @@ it('operator theme selection drafts into the simulator and applies only committe
     expect(canvas()).not.to.equal(classic);
     expect([status.message, state.message, save.disabled]).to.deep.equal(['Tema guardado: Alto contraste', 'Sin cambios pendientes.', true]);
     op.replies.setTheme = { ok: false, code: 'storage_failure', message: 'Could not save the theme. Try again.' };
-    select.value = 'pixel-classic';
+    select.value = 'light';
     select.dispatchEvent(new Event('change'));
     save.click();
     await settle();
-    expect(requests).to.deep.equal(['theme:high-contrast', 'theme:pixel-classic']);
-    expect([root.dataset.theme, select.value]).to.deep.equal(['high-contrast', 'pixel-classic'], 'the failed draft is kept');
+    expect(requests).to.deep.equal(['theme:high-contrast', 'theme:light']);
+    expect([root.dataset.theme, select.value]).to.deep.equal(['high-contrast', 'light'], 'the failed draft is kept');
     const error = main.querySelector('#settings-error');
     expect([error.hidden, error.message]).to.deep.equal([false, 'No se guardó el tema. Los cambios siguen en el borrador; inténtalo de nuevo.']);
     await error.updateComplete;
@@ -713,7 +717,7 @@ it('Configuración keeps a scrolling control column with fixed actions beside a 
     expect(Math.abs(actions.getBoundingClientRect().bottom - c.bottom)).to.be.lessThan(16);
     expect(document.scrollingElement.scrollHeight).to.be.at.most(innerHeight);
     scroller.lastElementChild.remove();
-    for (const theme of ['pixel-classic', 'high-contrast']) {
+    for (const theme of ['jules', 'light', 'high-contrast']) {
       document.documentElement.dataset.theme = theme;
       const probe = document.createElement('span');
       probe.style.color = getComputedStyle(viewport).getPropertyValue('--bingo-color-border').trim();
@@ -774,7 +778,7 @@ it('the operator fills the whole window with no document scroll on every tab at 
       expect(form.left).to.be.at.least(list.right);
       expect(Math.abs(list.top - form.top)).to.be.lessThan(1);
     }
-    for (const theme of ['pixel-classic', 'high-contrast']) {
+    for (const theme of ['jules', 'light', 'high-contrast']) {
       document.documentElement.dataset.theme = theme;
       const probe = document.createElement('span');
       probe.style.color = getComputedStyle(header).getPropertyValue('--bingo-color-surface').trim();
@@ -833,7 +837,7 @@ it('a long event list scrolls inside its panel, never the document', async () =>
 
 const cells = (board) => [...board.shadowRoot.querySelectorAll('.cell')];
 const cellOf = (board, number) => board.shadowRoot.querySelector(`[data-number="${number}"]`);
-const themeLinks = () => Promise.all(['pixel-classic', 'high-contrast']
+const themeLinks = () => Promise.all(['jules', 'light', 'high-contrast']
   .map((name) => stylesheet(new URL(`../../src/generated/${name}.css`, import.meta.url).href)));
 
 it('operator board lays out 1–90 in numeric rows with uncalled, called, latest and disabled states', async () => {
@@ -864,13 +868,16 @@ it('operator board lays out 1–90 in numeric rows with uncalled, called, latest
   expect(board.shadowRoot.querySelector('[role="grid"]').getAttribute('aria-readonly')).to.equal('true');
   const links = await themeLinks();
   try {
-    for (const theme of ['pixel-classic', 'high-contrast']) {
+    for (const theme of ['jules', 'light', 'high-contrast']) {
       document.documentElement.dataset.theme = theme;
       const probe = document.createElement('span');
-      probe.style.color = getComputedStyle(board).getPropertyValue('--bingo-color-accent').trim();
+      probe.style.color = getComputedStyle(board).getPropertyValue('--bingo-color-call-called-surface').trim();
       document.body.append(probe);
       expect(getComputedStyle(cellOf(board, 3)).backgroundColor).to.equal(getComputedStyle(probe).color, `${theme} called cell`);
       expect(getComputedStyle(cellOf(board, 42)).outlineStyle).to.equal('solid', `${theme} latest ring`);
+      const swatch = (name) => getComputedStyle(board.shadowRoot.querySelector(`.swatch.${name}`)).backgroundColor;
+      expect([swatch('called'), swatch('latest')], `${theme} legend matches the cells`)
+        .to.deep.equal([getComputedStyle(cellOf(board, 3)).backgroundColor, getComputedStyle(cellOf(board, 42)).backgroundColor]);
       probe.remove();
       await expect(board).to.be.accessible();
     }

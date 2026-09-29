@@ -265,8 +265,8 @@ async function smoke() {
         document.documentElement.dataset.theme === 'high-contrast' && document.querySelector('#called-count').value === '1',
       null, { timeout: stepTimeout });
       assert.equal(await publicWindow.locator('#event-name').textContent(), 'Evento actual');
-      assert.equal(await publicWindow.evaluate(() => document.documentElement.dataset.theme), 'pixel-classic');
-      assert.equal(await operator.evaluate(() => document.documentElement.dataset.theme), 'pixel-classic');
+      assert.equal(await publicWindow.evaluate(() => document.documentElement.dataset.theme), 'jules');
+      assert.equal(await operator.evaluate(() => document.documentElement.dataset.theme), 'jules');
       assert.match(await banner(operator), /^Evento activo: Evento actual/);
     });
 

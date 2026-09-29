@@ -6,11 +6,11 @@ export class BingoEventList extends LitElement {
   static properties = { events: { attribute: false }, disabled: { type: Boolean }, loaded: { type: Boolean } };
   static styles = css`
     :host { display: block; }
-    ul { margin: 0; padding: 0; list-style: none; border: 1px solid var(--bingo-color-border); border-radius: calc(var(--bingo-radius-surface) / 2); }
+    ul { margin: 0; padding: 0; list-style: none; border: var(--bingo-border-width-default) solid var(--bingo-color-border); border-radius: var(--bingo-radius-control); }
     li {
       display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
       gap: 0.5rem 1rem; min-height: 2.75rem; padding: 0.375rem 0.75rem;
-      border-top: 1px solid var(--bingo-color-border);
+      border-top: var(--bingo-border-width-default) solid var(--bingo-color-border);
     }
     li:first-child { border-top-style: none; }
     li[aria-current="true"] { box-shadow: inset 3px 0 0 var(--bingo-color-accent); }
@@ -18,11 +18,11 @@ export class BingoEventList extends LitElement {
     .name { font-weight: var(--bingo-font-emphasis); overflow-wrap: anywhere; }
     .meta { color: var(--bingo-color-muted); font-size: 0.8125rem; }
     .marker {
-      padding: 0.125rem 0.5rem; border-radius: 999px;
-      color: var(--bingo-color-canvas); background: var(--bingo-color-accent);
-      font-size: 0.6875rem; font-weight: var(--bingo-font-emphasis); text-transform: uppercase; letter-spacing: 0.06em;
+      padding: 0.125rem 0.5rem; border-radius: var(--bingo-radius-control);
+      color: var(--bingo-color-on-accent); background: var(--bingo-color-accent);
+      font-size: 0.6875rem; font-weight: var(--bingo-font-emphasis); text-transform: uppercase; letter-spacing: var(--bingo-font-tracking);
     }
-    bingo-button::part(button) { min-height: 2rem; border-radius: calc(var(--bingo-radius-surface) / 2); }
+    bingo-button::part(button) { min-height: 2rem; border-radius: var(--bingo-radius-control); }
     p { margin: 0; color: var(--bingo-color-muted); }
   `;
   constructor() { super(); this.events = []; this.disabled = false; this.loaded = false; }

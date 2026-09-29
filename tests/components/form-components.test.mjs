@@ -8,7 +8,7 @@ import '../../src/components/bingo-button.mjs';
 
 // Browser component tests for every state of the shared form controls (issue #79). They stand in
 // for Storybook stories until Storybook exists on the base branch.
-const THEMES = ['pixel-classic', 'high-contrast'];
+const THEMES = ['light', 'high-contrast', 'jules'];
 async function withThemes(check) {
   const links = await Promise.all(THEMES.map((name) => new Promise((resolve, reject) => {
     const link = document.createElement('link');
@@ -194,13 +194,13 @@ describe('bingo-date-field', () => {
 describe('bingo-select-field', () => {
   it('mirrors light-DOM options, defaults like a native select and re-dispatches change', async () => {
     const field = await fixture(html`<bingo-select-field label="Tema" name="theme">
-      <option value="pixel-classic">Pixel classic</option>
+      <option value="light">Light</option>
       <option value="high-contrast">High contrast</option>
     </bingo-select-field>`);
     const control = field.control;
     expect([...control.options].map((option) => [option.value, option.textContent])).to.deep.equal(
-      [['pixel-classic', 'Pixel classic'], ['high-contrast', 'High contrast']]);
-    expect([field.value, control.value]).to.deep.equal(['pixel-classic', 'pixel-classic']);
+      [['light', 'Light'], ['high-contrast', 'High contrast']]);
+    expect([field.value, control.value]).to.deep.equal(['light', 'light']);
     expect(field.shadowRoot.querySelector('.adornment svg')).not.to.equal(null);
     const changes = [];
     field.addEventListener('change', () => changes.push(field.value));
@@ -208,9 +208,9 @@ describe('bingo-select-field', () => {
     control.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
     control.dispatchEvent(new Event('change'));
     expect([field.value, changes]).to.deep.equal(['high-contrast', ['high-contrast']]);
-    field.value = 'pixel-classic';
+    field.value = 'light';
     await field.updateComplete;
-    expect(control.value).to.equal('pixel-classic');
+    expect(control.value).to.equal('light');
     await expect(field).to.be.accessible();
   });
 
@@ -307,11 +307,11 @@ it('every control consumes semantic tokens in both themes with a visible focus i
       const style = getComputedStyle(field.control);
       expect([style.color, style.backgroundColor]).to.deep.equal([token(field, 'color-text'), token(field, 'color-surface')]);
     }
-    expect(getComputedStyle(date.control).borderTopColor, 'control boundaries use the 3:1 muted color').to.equal(token(date, 'color-muted'));
+    expect(getComputedStyle(date.control).borderTopColor, 'control boundaries use the 3:1 border-strong color').to.equal(token(date, 'color-border-strong'));
     expect(getComputedStyle(text.control).borderTopColor).to.equal(token(text, 'color-error'));
     expect(getComputedStyle(text.shadowRoot.querySelector('#error')).color).to.equal(token(text, 'color-error'));
     expect([getComputedStyle(primary).backgroundColor, getComputedStyle(primary).color])
-      .to.deep.equal([token(primary, 'color-accent'), token(primary, 'color-canvas')]);
+      .to.deep.equal([token(primary, 'color-accent'), token(primary, 'color-on-accent')]);
     date.control.focus();
     await sendKeys({ press: 'ArrowUp' });
     const focused = getComputedStyle(date.control);

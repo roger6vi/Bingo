@@ -14,18 +14,18 @@ export class BingoDrawControls extends LitElement {
     [hidden] { display: none !important; }
     .modes {
       display: grid; grid-template-columns: 1fr 1fr; margin: 0; padding: 0.1875rem; border: 0;
-      border-radius: calc(var(--bingo-radius-surface) / 2 + 0.1875rem); background: var(--bingo-color-canvas);
+      border-radius: var(--bingo-radius-control); background: var(--bingo-color-canvas);
     }
     .modes label {
       position: relative; display: grid; place-items: center; min-height: 1.75rem;
-      border-radius: calc(var(--bingo-radius-surface) / 2); color: var(--bingo-color-muted);
+      border-radius: var(--bingo-radius-control); color: var(--bingo-color-muted);
       font-weight: var(--bingo-font-emphasis); cursor: pointer;
     }
     .modes label:has(:checked) {
       color: var(--bingo-color-text); background: var(--bingo-color-surface);
       box-shadow: 0 0 0 1px var(--bingo-color-border);
     }
-    .modes label:has(:focus-visible) { outline: 2px solid var(--bingo-color-focus); outline-offset: 1px; }
+    .modes label:has(:focus-visible) { outline: var(--bingo-border-width-focus) solid var(--bingo-color-focus); outline-offset: 1px; }
     .modes input { position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0; }
     .group { display: grid; gap: 0.375rem; }
     label[for] { font-size: 0.8125rem; color: var(--bingo-color-muted); }
@@ -34,13 +34,13 @@ export class BingoDrawControls extends LitElement {
       min-width: 0; box-sizing: border-box; padding: 0.375rem 0.5rem; font: inherit;
       font-weight: var(--bingo-font-emphasis); font-variant-numeric: tabular-nums;
       color: var(--bingo-color-text); background: var(--bingo-color-surface);
-      border: 1px solid var(--bingo-color-border); border-radius: calc(var(--bingo-radius-surface) / 2);
+      border: var(--bingo-border-width-default) solid var(--bingo-color-border); border-radius: var(--bingo-radius-control);
     }
-    input[type="number"]:disabled { background: var(--bingo-color-canvas); }
-    input[type="number"]:focus-visible { outline: 2px solid var(--bingo-color-focus); outline-offset: 1px; }
+    input[type="number"]:disabled { background: var(--bingo-color-disabled-surface); }
+    input[type="number"]:focus-visible { outline: var(--bingo-border-width-focus) solid var(--bingo-color-focus); outline-offset: 1px; }
     bingo-button::part(button) {
       min-height: 2.25rem; padding-inline: 0.5rem; white-space: nowrap;
-      border-radius: calc(var(--bingo-radius-surface) / 2);
+      border-radius: var(--bingo-radius-control);
     }
     #draw-digital::part(button) { min-height: 2.75rem; font-size: 1rem; }
     #reload-event::part(button) { min-height: 1.875rem; font-size: 0.8125rem; }

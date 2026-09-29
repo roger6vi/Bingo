@@ -51,4 +51,4 @@ export const PHASE_LABELS_ES = Object.freeze({
   checking_bingo: 'Comprobando bingo', bingo_declared: 'Bingo cantado', finished: 'Partida terminada',
 });
 
-export const THEME_NAMES_ES = Object.freeze({ 'pixel-classic': 'Píxel clásico', 'high-contrast': 'Alto contraste' });
+export const THEME_NAMES_ES = Object.freeze({ jules: 'Jules', light: 'Claro', 'high-contrast': 'Alto contraste' });

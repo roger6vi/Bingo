@@ -91,7 +91,7 @@ export class BingoTabPanel extends LitElement {
   static styles = css`
     :host { display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr); min-width: 0; min-height: 0; overflow: hidden; }
     :host([hidden]) { display: none; }
-    :host(:focus-visible) { outline: 2px solid var(--bingo-color-focus); outline-offset: -2px; }
+    :host(:focus-visible) { outline: var(--bingo-border-width-focus) solid var(--bingo-color-focus); outline-offset: -2px; }
   `;
   connectedCallback() {
     super.connectedCallback();
