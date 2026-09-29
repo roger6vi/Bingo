@@ -11,7 +11,11 @@ export class BingoTongoControl extends LitElement {
     progress {
       position: absolute; inset-inline: var(--bingo-space-small); bottom: var(--bingo-space-small);
       width: auto; height: var(--bingo-space-small); margin: 0; accent-color: var(--bingo-color-accent);
+      /* Drop the native rounded bar so the corners follow radius.control like every other control. */
+      appearance: none; border: 0; border-radius: var(--bingo-radius-control); background: var(--bingo-color-surface);
     }
+    progress::-webkit-progress-bar { border-radius: var(--bingo-radius-control); background: var(--bingo-color-surface); }
+    progress::-webkit-progress-value { border-radius: var(--bingo-radius-control); background: var(--bingo-color-accent); }
     .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   `;
   constructor() { super(); this.disabled = true; this.progress = null; }
