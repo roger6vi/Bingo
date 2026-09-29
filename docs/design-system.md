@@ -313,9 +313,18 @@ These entries fix the contract for roadmap components; they are not built yet.
 | Dialog variants | Destructive confirm, unsaved changes, info | closed, open, pending, error | As `bingo-dialog`; destructive action never default | `color.error`, `surface-raised`, `overlay`, `opacity.scrim`, `layer.modal` |
 | Simulator frame | 16:9 scaled public preview in Configuración | loading, live, stale | Inert iframe with a title; not in tab order | `color.border`, `canvas`, `muted`, `radius.surface`, `border-width.strong` |
 
+## Component gallery
+
+`npm run gallery` starts the Vite dev server on `src/gallery.html` (development only; it is not a
+build input and never ships). It renders the real components with static fixtures under every
+registered theme, covering normal, disabled, pending, error, stale, focus, checking and celebration
+states at compact and display sizes, and reports reduced motion. `tests/components/gallery.test.mjs`
+runs axe against each theme; production screens keep their own tests.
+
 ## Adding or changing UI
 
 1. Need a new visual decision? Add a reference token if the raw value is new, then a semantic key in
    **all three** theme files, and a contrast pair if it is text or a UI boundary.
-2. Run `npm run test:tokens`, `npm run build`, `npm run test:build` and `npm run test:components`.
+2. Run `npm run test:tokens`, `npm run build`, `npm run test:build` and `npm run test:components`,
+   and inspect the change in `npm run gallery` under all three themes.
 3. Update this catalog entry (tokens consumed, states, accessibility) in the same change.
