@@ -32,3 +32,28 @@ export const Stale = {
 export const Finished = { name: 'All 90 called', args: { game: { calledNumbers: draws(90), phase: 'finished' } } };
 
 export const DisplayLost = { name: 'Display disconnected', args: { game: { calledNumbers: draws(34) }, publicWarning: true } };
+
+export const TongoPlaying = {
+  name: 'Tongo playing · live actions locked',
+  args: { game: { calledNumbers: draws(34) }, tongo: { progress: 0.4 } },
+};
+
+export const TongoRefused = {
+  name: 'Tongo refused · no public window',
+  args: { game: { calledNumbers: draws(34) }, tongo: { error: 'Open the public window, then try Tongo again.' } },
+};
+
+export const TongoPending = {
+  name: 'Tongo pending · request in flight',
+  args: { game: { calledNumbers: draws(34) }, tongo: { pending: true } },
+};
+
+export const TongoAfterLine = {
+  name: 'Line declared · Tongo available',
+  args: { game: { calledNumbers: draws(40), phase: 'line_declared' } },
+};
+
+export const TongoBusy = {
+  name: 'Tongo refused · already playing',
+  args: { game: { calledNumbers: draws(34) }, tongo: { error: 'Tongo is already playing on the public window.' } },
+};

@@ -10,6 +10,12 @@ export const MESSAGES_ES = Object.freeze({
   'Could not save the draw. Reload and try again.': 'No se pudo guardar la bola. Recarga el evento e inténtalo de nuevo.',
   'No current event is available.': 'No hay ningún evento activo.',
   'Could not read the current event. Try again.': 'No se pudo leer el evento activo. Inténtalo de nuevo.',
+  'Wait for Tongo to finish, then draw again.': 'Espera a que termine el Tongo y vuelve a cantar.',
+  // Tongo IPC (src/tongo-ipc.ts)
+  'Invalid Tongo request.': 'Solicitud de Tongo no válida.',
+  'Tongo is already playing on the public window.': 'El Tongo ya se está mostrando en la pantalla pública.',
+  'Tongo is only available during play.': 'El Tongo solo está disponible durante la partida.',
+  'Open the public window, then try Tongo again.': 'Abre la pantalla pública y vuelve a intentar el Tongo.',
   // Theme IPC (src/theme-ipc.ts)
   'Invalid theme request.': 'Solicitud de tema no válida.',
   'Could not save the theme. Try again.': 'No se pudo guardar el tema. Inténtalo de nuevo.',
@@ -33,6 +39,8 @@ export const MESSAGES_ES = Object.freeze({
   'Invalid events update. Reload and try again.': 'Actualización de eventos no válida. Recarga e inténtalo de nuevo.',
   'Invalid theme update.': 'Actualización de tema no válida.',
   'Could not connect to theme settings. Try again.': 'No se pudo conectar con la configuración del tema. Inténtalo de nuevo.',
+  'Invalid Tongo response.': 'Respuesta de Tongo no válida.',
+  'Could not start Tongo. Try again.': 'No se pudo iniciar el Tongo. Inténtalo de nuevo.',
 });
 
 export const UNKNOWN_ERROR_ES = 'Se produjo un error. Recarga e inténtalo de nuevo.';

@@ -23,6 +23,7 @@ import '../../src/components/bingo-date-field.mjs';
 import '../../src/components/bingo-select-field.mjs';
 import '../../src/components/bingo-form-actions.mjs';
 import '../../src/components/bingo-tongo.mjs';
+import '../../src/components/bingo-tongo-control.mjs';
 import operatorSource from '../../src/operator.html?raw';
 import publicSource from '../../src/public.html?raw';
 import sampleVideoUrl from '../../assets/sample.mp4?url';
@@ -62,6 +63,8 @@ export const operatorDefaults = {
   tab: 'bingo',
   events: { list: EVENTS, loaded: true, pending: null, stale: false, error: null },
   game: { calledNumbers: [], phase: 'drawing', loaded: true, pending: false, stale: false, error: null, mode: 'manual' },
+  // Tongo: `progress` (0…1) while it plays, `pending` while requested, `error` for a refusal.
+  tongo: { progress: null, pending: false, error: null },
   settings: { draft: null, pending: false, error: null, themePending: false, themeError: null, dialog: false },
   publicWarning: false,
   simulatorStory: 'screens-public-display--mid-game',
@@ -73,6 +76,7 @@ export function operatorScreen(options) {
     events: { ...operatorDefaults.events, ...options.events },
     game: { ...operatorDefaults.game, ...options.game },
     settings: { ...operatorDefaults.settings, ...options.settings },
+    tongo: { ...operatorDefaults.tongo, ...options.tongo },
   };
   const container = mountPage(operatorSource);
   container.classList.add('sb-screen--app');
@@ -119,10 +123,23 @@ export function operatorScreen(options) {
   if (game.pending && game.pendingNumber) board.pendingNumber = game.pendingNumber;
   $('called-numbers').calledNumbers = game.calledNumbers;
   Object.assign($('event-summary'), { latest: game.calledNumbers.at(-1) ?? null, count: game.calledNumbers.length, remaining });
+  // Tongo: offered only for a fresh, settled event in play; while it is requested or playing every
+  // other live action is locked, as in operator-ui.mjs.
+  const tongo = state.tongo;
+  const tongoBusy = tongo.pending || tongo.progress !== null;
   Object.assign(controls, {
-    mode: game.mode, manualDisabled: selecting || manualDisabled, digitalDisabled: selecting || manualDisabled,
-    reloadDisabled: selecting || game.pending,
+    mode: game.mode, manualDisabled: selecting || tongoBusy || manualDisabled, digitalDisabled: selecting || tongoBusy || manualDisabled,
+    reloadDisabled: selecting || tongoBusy || game.pending,
   });
+  if (tongoBusy) {
+    board.disabled = true;
+    eventList.disabled = true;
+  }
+  Object.assign($('tongo-control'), {
+    progress: tongo.progress,
+    disabled: selecting || tongoBusy || !game.loaded || game.pending || game.stale || !['drawing', 'line_declared'].includes(game.phase),
+  });
+  status($('tongo-error'), operatorMessage(tongo.error) ?? '', 'error', !tongo.error);
   status($('phase-status'), game.phase === null ? 'Fase: esperando el estado del evento' : `Fase: ${PHASE_LABELS_ES[game.phase]}`);
   status($('event-status'), game.stale ? 'El historial puede estar desactualizado. Recarga el evento antes de seguir.'
     : game.pending ? 'Actualizando el evento' : manualDisabled && remaining > 0 ? 'Esperando el estado del evento'
@@ -144,7 +161,7 @@ export function operatorScreen(options) {
   const draft = committed && { ...committed, ...settings.draft };
   const errors = draft ? validateDraft(draft) : {};
   const dirty = Boolean(committed && ['name', 'date', 'place', 'theme'].some((field) => draft[field] !== committed[field]));
-  const locked = selecting || settings.themePending;
+  const locked = selecting || settings.themePending || tongoBusy;
   const editable = draft !== null && !settings.pending && !locked;
   for (const field of DRAFT_FIELDS) {
     const input = $(`settings-${field}`);
@@ -196,6 +213,10 @@ export function operatorScreen(options) {
     new ResizeObserver(scale).observe(viewport);
     scale();
     if (settings.dialog) void dialog.show();
+    // As operator-ui.mjs does, a Tongo refusal is scrolled into view in the rail.
+    if (tongo.error && state.tab === 'bingo') {
+      void $('tongo-error').updateComplete.then(() => $('tongo-error').scrollIntoView({ block: 'nearest' }));
+    }
   });
   return container;
 }
@@ -242,6 +263,7 @@ export const operatorMeta = (tab) => ({
     tab: { control: 'inline-radio', options: ['events', 'settings', 'bingo'], description: 'Selected workspace tab.' },
     events: { control: 'object', description: 'Event list state (`list`, `loaded`, `pending`, `stale`, `error`).' },
     game: { control: 'object', description: 'Bingo state (`calledNumbers`, `phase`, `loaded`, `pending`, `pendingNumber`, `stale`, `error`, `mode`).' },
+    tongo: { control: 'object', description: 'Tongo state (`progress` 0…1 while playing, `pending`, `error`).' },
     settings: { control: 'object', description: 'Configuración draft over the active event, plus save state.' },
     publicWarning: { control: 'boolean', description: 'Secondary display disconnected warning.' },
     simulatorStory: { table: { disable: true } },

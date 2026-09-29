@@ -34,3 +34,9 @@ export const LongNames = {
   name: 'Long event name',
   args: { events: { list: [LONG_EVENT, ...EVENTS.slice(1).map((event) => ({ ...event, active: false }))] } },
 };
+
+export const TongoLocked = {
+  name: 'Locked · Tongo playing',
+  parameters: { docs: { description: { story: 'Selecting another event waits until the Tongo presentation ends.' } } },
+  args: { tongo: { progress: 0.4 } },
+};

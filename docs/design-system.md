@@ -314,6 +314,19 @@ committed persistence snapshots (presentation never acknowledges its own intent)
   `motion.normal`, `motion.slow`, `opacity.scrim`, `radius.surface`, `space.layout`,
   `space.section`, `space.wide`.
 
+### `bingo-tongo-control` (operator)
+- **Purpose:** the Tongo trigger, sharing the first row of the Bingo rail's claims grid with Línea
+  and Bingo so it adds no rail height, with private playback progress. Presentation only: pressing
+  dispatches `tongo-play`; the owner offers it only for a fresh, settled event in `drawing` or
+  `line_declared`, locks every other live action while it is pending or playing, and shows refusals
+  in the claims section's own `bingo-status`. **Anatomy:** block `bingo-button` → visually hidden
+  help text, or a labelled `progress` overlaid on the button's lower edge while playing.
+- **Properties:** `disabled`, `progress` (`0…1` or `null`).
+  **States:** unavailable (disabled), ready, pending (disabled), playing (progress, same size).
+- **Accessibility:** native button activation; the help text follows the button in reading order;
+  the progress bar is labelled.
+- **Tokens:** `color.accent`, `font.emphasis`, `space.small`.
+
 ### Specified, not implemented
 
 These entries fix the contract for roadmap components; they are not built yet.
