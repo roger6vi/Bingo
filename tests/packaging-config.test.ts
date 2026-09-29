@@ -45,8 +45,25 @@ test('macOS workflow packages unsigned, smokes the package, and uploads it witho
   assert.match(workflow, /^permissions:\n {2}contents: read$/m);
   assert.match(workflow, /runs-on: macos-15/);
   const steps = ['npm ci', 'npm test', 'npm run package:mac', 'npm run test:build', 'codesign --verify',
-    'npm run test:package', 'actions/upload-artifact'].map((step) => workflow.indexOf(step));
+    'packaged-cue-smoke.mjs', 'actions/upload-artifact'].map((step) => workflow.indexOf(step));
   assert.ok(steps.every((index, i) => index > 0 && (i === 0 || index > steps[i - 1])), 'steps in order');
   assert.match(workflow, /run: npm run package:mac\n {6}env:\n(?: {8}#.*\n)* {8}CSC_FOR_PULL_REQUEST: 'true'\n/);
   assert.doesNotMatch(workflow, /secrets\.|CSC_(?!FOR_PULL_REQUEST)|APPLE_/);
+});
+
+test('macOS workflow installs 0.1.0 from the dmg, upgrades to 0.1.1 and keeps one temporary profile', () => {
+  const order = ['BINGO_DATA=$RUNNER_TEMP/bingo-user-data',
+    'macos-install.sh release/Bingo-0.1.0-arm64.dmg "$RUNNER_TEMP/Applications" 0.1.0)',
+    'packaged-smoke.mjs "$app" "$BINGO_DATA" seed', 'npm version 0.1.1 --no-git-tag-version',
+    'macos-install.sh release/upgrade/Bingo-0.1.1-arm64-mac.zip "$RUNNER_TEMP/Applications" 0.1.1)',
+    'packaged-smoke.mjs "$app" "$BINGO_DATA" upgraded', 'rm -rf "$BINGO_DATA"', 'actions/upload-artifact'];
+  const positions = order.map((text) => workflow.indexOf(text));
+  assert.ok(positions.every((position, index) => position > (positions[index - 1] ?? -1)), 'steps in order');
+  assert.match(workflow, /-c\.directories\.output=release\/upgrade\n/, 'the upgrade build stays out of the uploaded artifact');
+  assert.match(workflow, /- name: Remove temporary profile\n {6}if: always\(\)/);
+  const install = read('scripts/macos-install.sh');
+  assert.match(install, /hdiutil attach -nobrowse -readonly/);
+  assert.match(install, /rm -rf "\$target\/Bingo\.app"/);
+  assert.match(install, /CFBundleShortVersionString/);
+  assert.match(install, /codesign --verify --deep --strict/);
 });

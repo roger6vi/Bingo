@@ -39,7 +39,7 @@ The runner installs Chromium's Linux system dependencies with `npx playwright in
 
 ## macOS package
 
-A separate `macOS package` workflow builds an unsigned (ad-hoc signed) `Bingo.app`, dmg and zip for arm64 and x64 on `macos-15`, verifies the ad-hoc signature, and smokes the packaged app against a temporary `--user-data-dir`. On macOS, `npm run package:mac` writes the build to ignored `release/`; `npm run test:package` runs the packaged-app smoke. See [docs/macos-packaging.md](docs/macos-packaging.md) for the packaged user-data location and upgrade behaviour, the manual release check, and the signing and notarization procedure with its required secrets.
+A separate `macOS package` workflow builds an unsigned (ad-hoc signed) `Bingo.app`, dmg and zip for arm64 and x64 on `macos-15`, verifies the ad-hoc signature, installs 0.1.0 from the dmg, upgrades it in place to a 0.1.1 zip, and smokes the installed app before and after the upgrade against one temporary `--user-data-dir`. On macOS, `npm run package:mac` writes the build to ignored `release/`; `npm run test:package` runs the packaged-app smoke. See [docs/macos-packaging.md](docs/macos-packaging.md) for the packaged user-data location and upgrade behaviour, the manual release check, and the signing and notarization procedure with its required secrets.
 
 ## Windows package
 

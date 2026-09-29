@@ -39,10 +39,27 @@ jobs:
       run: npm run test:build
     - name: Verify ad-hoc code signature
       run: codesign --verify --deep --strict --verbose=2 release/mac-arm64/Bingo.app
-    - name: Smoke packaged app with a temporary user-data directory
-      run: npm run test:package
     - name: Smoke packaged cue sounds and no-replay across restarts
       run: node verification/packaged-cue-smoke.mjs
+    - name: Choose a temporary user-data directory
+      run: echo "BINGO_DATA=$RUNNER_TEMP/bingo-user-data" >> "$GITHUB_ENV"
+    - name: Install 0.1.0 from the dmg and seed the temporary profile
+      run: |
+        app=$(scripts/macos-install.sh release/Bingo-0.1.0-arm64.dmg "$RUNNER_TEMP/Applications" 0.1.0)
+        node verification/packaged-smoke.mjs "$app" "$BINGO_DATA" seed
+    - name: Package 0.1.1 arm64 zip
+      run: |
+        npm version 0.1.1 --no-git-tag-version
+        npx electron-builder --mac zip --arm64 --publish never -c.mac.identity=- -c.mac.notarize=false -c.directories.output=release/upgrade
+      env:
+        CSC_FOR_PULL_REQUEST: 'true'
+    - name: Upgrade to 0.1.1 over the installed app and verify the same profile
+      run: |
+        app=$(scripts/macos-install.sh release/upgrade/Bingo-0.1.1-arm64-mac.zip "$RUNNER_TEMP/Applications" 0.1.1)
+        node verification/packaged-smoke.mjs "$app" "$BINGO_DATA" upgraded
+    - name: Remove temporary profile
+      if: always()
+      run: if [ -n "${BINGO_DATA:-}" ]; then rm -rf "$BINGO_DATA"; fi
     - uses: actions/upload-artifact@v4
       with:
         name: bingo-macos-unsigned-${{ github.sha }}

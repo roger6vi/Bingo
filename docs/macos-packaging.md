@@ -29,9 +29,20 @@ contains stale renderer output.
 
 The **macOS package** workflow (`.github/workflows/macos-package.yml`) runs these steps on a
 GitHub-hosted Apple silicon runner (`macos-15`) for every pull request, pushes to `main`, and manual
-dispatch. It verifies the ad-hoc signature, runs the packaged-app smoke, and uploads the dmg and zip
-files as the `bingo-macos-unsigned-<sha>` artifact for 14 days. It uses no secrets. The x64 build is
-packaged but only the arm64 app is smoke-tested.
+dispatch. It uses no secrets. After verifying the ad-hoc signature and the packaged cue smoke, it drives
+an installed app against one temporary profile under `RUNNER_TEMP`, deleted afterwards:
+
+1. [`scripts/macos-install.sh`](../scripts/macos-install.sh) mounts `Bingo-0.1.0-arm64.dmg` read-only
+   and copies `Bingo.app` into a temporary Applications directory, as a drag install does. It checks
+   that the installed version is `0.1.0` and the signature is valid, and `packaged-smoke.mjs` `seed` runs
+   against the installed executable.
+2. A `0.1.1` arm64 zip is built from the same commit into `release/upgrade/`. The install script
+   replaces the installed `Bingo.app` with it and checks the new version. `upgraded` then verifies the
+   same profile.
+3. The 0.1.0 dmg and zip files are uploaded as the `bingo-macos-unsigned-<sha>` artifact for 14 days.
+   The upgrade build is not uploaded.
+
+The x64 build is packaged but only the arm64 app is smoke-tested.
 
 On Linux, `npm run package:dir` produces `release/linux-unpacked/bingo`. `xvfb-run -a npm run
 test:package` runs the same packaged smoke against it (resolved by default from `BINGO_PACKAGED_APP` or
@@ -54,7 +65,9 @@ it creates its own temporary profile and runs both phases back to back. It verif
 - the bundled MP4 loads metadata and decodes;
 - the Configuración simulator loads over the `bingo-public:` protocol from inside the asar, and saving
   name, place and the high-contrast theme reaches the public window;
-- after quit and relaunch, the event, its history and the theme are restored;
+- a second event, created and activated before quitting, is the one restored on relaunch, with its
+  empty history. Re-activating the first event and relaunching again restores the first event, its
+  history and the theme;
 - emulating `prefers-reduced-motion: reduce` removes the packaged button transition;
 - a profile whose `current-event.sqlite` is unreadable keeps the startup error on screen and leaves the
   file byte-for-byte unchanged (no reset).
@@ -77,8 +90,8 @@ open -n /Applications/Bingo.app --args --user-data-dir="$profile"
    secondary display**.
 3. Play the sample video with sound. Switch themes, turn on **Reduce motion** and VoiceOver, and check
    both windows.
-4. Quit with ⌘Q, reopen with the same profile, and confirm the active event, archived events, and theme
-   are restored.
+4. Quit with ⌘Q, reopen with the same profile, and confirm the active event and theme are restored.
+   Archived history is not implemented yet and is verified in a later packaged re-validation.
 5. Delete the temporary profile with `rm -rf "$profile"`.
 
 Record the macOS version, architecture, and results in the pull request.
@@ -87,7 +100,8 @@ Record the macOS version, architecture, and results in the pull request.
 
 The packaged app stores its data in `~/Library/Application Support/Bingo/current-event.sqlite`. The
 directory name comes from `extraMetadata.productName` and must never change, or upgraded installs will
-not find their events. Installing a newer version over an older one keeps this file. On open, older
+not find their events. Installing a newer version over an older one keeps this file; the workflow
+checks this by replacing an installed 0.1.0 app with 0.1.1. On open, older
 schema versions are migrated in a transaction, and data that is unreadable or from a newer schema stops
 startup with an error dialog. The data is never reset. Downgrading to a version that does not know the
 schema therefore fails safely rather than losing events.

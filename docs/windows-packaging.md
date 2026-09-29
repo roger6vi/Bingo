@@ -30,7 +30,8 @@ Each run installs and drives the real packaged app, always with a temporary `--u
    - the bundled MP4 loads metadata and decodes (duration and video width are non-zero);
    - the Configuración simulator loads over the `bingo-public:` protocol from inside the package, and
      saving name, place and the high-contrast theme reaches the public window;
-   - after quit and relaunch the event, one-call history and theme are restored.
+   - a second event activated before quitting is the one restored on relaunch; after re-activating
+     the first event and relaunching, its one-call history and theme are restored.
 4. `0.1.1` is installed over it; exactly one entry remains and it reports `0.1.1`. `upgraded` checks
    the same profile still holds the saved event, history and theme; emulating
    `prefers-reduced-motion: reduce` removes the packaged button transition; and a profile whose

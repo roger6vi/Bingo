@@ -38,11 +38,17 @@ async function openOperator(app) {
   return operator;
 }
 
+// Waits until both events are listed and `name`, with `calls` committed draws, is the active one.
+const expectActive = (operator, name, calls) => operator.waitForFunction(([name, calls]) => {
+  const events = document.querySelector('#event-list').events;
+  return events?.length === 2 && events.find((event) => event.active)?.name === name &&
+    document.querySelector('#settings-name').value === name && document.querySelector('#event-summary').count === calls;
+}, [name, calls]);
+
 async function expectSaved(operator) {
-  await operator.waitForFunction(() => document.querySelector('#settings-name').value === 'Verbena Windows' &&
-    document.documentElement.dataset.theme === 'high-contrast');
+  await expectActive(operator, 'Verbena Windows', 1);
+  await operator.waitForFunction(() => document.documentElement.dataset.theme === 'high-contrast');
   assert.equal(await operator.inputValue('#settings-place input'), 'Plaza Mayor');
-  assert.equal(await operator.locator('#event-summary').evaluate((summary) => summary.count), 1);
 }
 
 async function seed(profile) {
@@ -87,12 +93,31 @@ async function seed(profile) {
   await publicWindow.waitForFunction(() => document.documentElement.dataset.theme === 'high-contrast' &&
     document.querySelector('#event-name').textContent === 'Verbena Windows');
   step('simulator protocol serves from the package; saved settings reach the public window');
+
+  await operator.click('#tab-events');
+  await operator.fill('#event-name input', 'Segundo evento');
+  await operator.fill('#event-place input', 'Salón social');
+  await operator.click('#create-event-submit');
+  await operator.getByRole('button', { name: 'Activar «Segundo evento»' }).click();
+  await publicWindow.waitForFunction(() => document.querySelector('#event-name').textContent === 'Segundo evento' &&
+    document.querySelector('#called-count').value === '0');
+  await expectActive(operator, 'Segundo evento', 0);
   await app.close();
+
+  // The active-event pointer, not the first or oldest event, decides what reopens.
+  app = await launch(profile);
+  operator = await openOperator(app);
+  await expectActive(operator, 'Segundo evento', 0);
+  await operator.click('#tab-events');
+  await operator.getByRole('button', { name: 'Activar «Verbena Windows»' }).click();
+  await expectActive(operator, 'Verbena Windows', 1);
+  await app.close();
+  step('a newly activated second event is the one recovered after restart');
 
   app = await launch(profile);
   await expectSaved(await openOperator(app));
   await app.close();
-  step('event, history and theme survive restart');
+  step('switching back restores the first event, its history and theme after restart');
 }
 
 async function upgraded(profile) {
