@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  createPublicEventDelivery, PUBLIC_EVENT_CHANNEL, PUBLIC_META_CHANNEL, PUBLIC_THEME_CHANNEL, type PublicEventMeta,
+  createPublicEventDelivery, PUBLIC_EVENT_CHANNEL, PUBLIC_META_CHANNEL, PUBLIC_PRIZES_CHANNEL, PUBLIC_THEME_CHANNEL,
+  type PublicEventMeta, type PublicEventPrizes,
 } from '../src/public-event-delivery.ts';
 import type { EventSnapshot } from '../src/event-core.ts';
 
@@ -203,4 +204,47 @@ test('a metadata send that closes the window stops the attach before event state
   } };
   delivery.attachAfterLoad(window);
   assert.deepEqual(messages, [PUBLIC_THEME_CHANNEL, PUBLIC_META_CHANNEL]);
+});
+
+test('committed prizes are sent after metadata and before state, republished on saves and selection, never leaking errors', () => {
+  let prizes: PublicEventPrizes = { line: { amount: 150, lot: 'Jamón' }, bingo: { amount: 0, lot: '' } };
+  let fail = false;
+  const delivery = createPublicEventDelivery({ load: () => snapshot([7]) }, () => 'jules',
+    () => ({ name: 'N', date: '2026-08-15', place: 'P' }), () => {
+      if (fail) throw new Error('private storage detail');
+      return prizes;
+    });
+  const messages: Message[] = [];
+  const window = { isDestroyed: () => false, send: (channel: string, result: unknown) => { messages.push({ channel, result }); } };
+  delivery.publishPrizes();
+  assert.equal(messages.length, 0, 'nothing is sent before a window attaches');
+  delivery.attachAfterLoad(window);
+  assert.deepEqual(messages.map(({ channel }) => channel),
+    [PUBLIC_THEME_CHANNEL, PUBLIC_META_CHANNEL, PUBLIC_PRIZES_CHANNEL, PUBLIC_EVENT_CHANNEL]);
+  assert.deepEqual(messages[2].result, prizes);
+  assert.notEqual(messages[2].result, prizes, 'a copy is sent');
+  prizes = { line: { amount: 0, lot: '' }, bingo: { amount: 500, lot: 'Viaje' } };
+  delivery.publishPrizes();
+  assert.deepEqual(messages.at(-1), { channel: PUBLIC_PRIZES_CHANNEL, result: prizes });
+  delivery.publishMeta();
+  assert.equal(messages.at(-1)?.channel, PUBLIC_META_CHANNEL, 'a metadata edit does not resend prizes');
+  delivery.publishActive('high-contrast');
+  assert.deepEqual(messages.slice(-4).map(({ channel }) => channel),
+    [PUBLIC_THEME_CHANNEL, PUBLIC_META_CHANNEL, PUBLIC_PRIZES_CHANNEL, PUBLIC_EVENT_CHANNEL]);
+  fail = true;
+  delivery.publishPrizes();
+  assert.deepEqual(messages.at(-1), { channel: PUBLIC_PRIZES_CHANNEL, result: null });
+  assert.equal(JSON.stringify(messages).includes('private storage detail'), false);
+});
+
+test('a prize send that closes the window stops the attach before event state', () => {
+  const delivery = createPublicEventDelivery({ load: () => snapshot([7]) }, () => 'jules', undefined,
+    () => ({ line: { amount: 1, lot: '' }, bingo: { amount: 2, lot: '' } }));
+  const messages: string[] = [];
+  const window = { isDestroyed: () => false, send: (channel: string) => {
+    messages.push(channel);
+    if (channel === PUBLIC_PRIZES_CHANNEL) throw new Error('send failed');
+  } };
+  delivery.attachAfterLoad(window);
+  assert.deepEqual(messages, [PUBLIC_THEME_CHANNEL, PUBLIC_PRIZES_CHANNEL]);
 });
