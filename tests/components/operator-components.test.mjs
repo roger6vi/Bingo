@@ -138,8 +138,10 @@ it('operator page is a Spanish three-tab application shell with shared panels an
   expect(page.querySelector('#panel-events bingo-event-list#event-list')).not.to.equal(null);
   // Every operator form control is a shared component; no raw text, date or select controls remain,
   // except the one deliberate native volume slider in the rail.
-  expect(page.querySelectorAll('main input, main select, main textarea')).to.have.length(1);
-  expect(page.querySelector('main input#public-volume[type="range"]')).not.to.equal(null);
+  expect(page.querySelectorAll('main input, main select, main textarea')).to.have.length(3);
+  expect(page.querySelector('main input#cue-mute[type="checkbox"]')).not.to.equal(null);
+  expect(page.querySelector('main input#cue-volume[type="range"]')).not.to.equal(null);
+  expect(page.querySelector('main input#cue-test[type="button"]')).not.to.equal(null);
   expect(page.querySelectorAll('main form button')).to.have.length(0);
   expect(page.querySelector('#panel-events form#create-event bingo-date-field#event-date[name="date"][required]')).not.to.equal(null);
   for (const [id, name] of [['event-name', 'name'], ['event-place', 'place']]) {
@@ -157,7 +159,9 @@ it('operator page is a Spanish three-tab application shell with shared panels an
   expect([...rail.querySelectorAll('.claim-buttons bingo-button')].map((button) => [button.textContent, button.hasAttribute('disabled')]))
     .to.deep.equal([['Línea', true], ['Bingo', true], ['Sorteo de empate', true]]);
   expect(rail.querySelector('[slot="footer"] #open-public')).not.to.equal(null, 'the public-window launch is pinned to the rail');
-  expect(rail.querySelector('[slot="footer"] input#public-volume[type="range"]')).not.to.equal(null);
+  expect(rail.querySelector('[slot="footer"] input#cue-mute[type="checkbox"]')).not.to.equal(null);
+  expect(rail.querySelector('[slot="footer"] input#cue-volume[type="range"]')).not.to.equal(null);
+  expect(rail.querySelector('[slot="footer"] input#cue-test[type="button"]')).not.to.equal(null);
   expect(page.querySelector('#panel-settings bingo-select-field#theme-select').getAttribute('label')).to.equal('Tema para ambas pantallas');
   for (const [id, tag, label] of [['settings-name', 'bingo-text-field', 'Nombre'], ['settings-place', 'bingo-text-field', 'Lugar'],
     ['settings-date', 'bingo-date-field', 'Fecha']]) {
