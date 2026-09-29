@@ -12,12 +12,16 @@ function Get-BingoEntry {
 $entries = Get-BingoEntry
 if ($entries.Count -ne 1) { throw "expected one Bingo installation, found $($entries.Count)" }
 $entry = $entries[0]
-$exe = Join-Path $entry.InstallLocation 'Bingo.exe'
-if (-not (Test-Path $exe)) { throw "missing $exe; found: $(Get-ChildItem $entry.InstallLocation -Name)" }
+$entry | Select-Object DisplayName, DisplayVersion, UninstallString, QuietUninstallString | Format-List | Out-Host
+# electron-builder records no InstallLocation; the quoted uninstaller sits in the install directory.
+if ($entry.UninstallString -notmatch '^"([^"]+)"') { throw "unexpected UninstallString: $($entry.UninstallString)" }
+$directory = Split-Path -Parent $Matches[1]
+$exe = Join-Path $directory 'Bingo.exe'
+if (-not (Test-Path $exe)) { throw "missing $exe; found: $(Get-ChildItem $directory -Name)" }
 
 if (-not $Uninstall) {
   if ($entry.DisplayVersion -ne $Version) { throw "installed $($entry.DisplayVersion), expected $Version" }
-  Write-Host "Bingo $Version installed at $exe"
+  Write-Host "Bingo $Version installed at $exe (Authenticode: $((Get-AuthenticodeSignature $exe).Status))"
   return $exe
 }
 

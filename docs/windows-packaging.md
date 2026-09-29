@@ -50,7 +50,7 @@ passed all smoke steps under Xvfb.
 
 | Topic | Windows | Evidence |
 | --- | --- | --- |
-| Install location | Per-user `%LOCALAPPDATA%\Programs\Bingo\Bingo.exe`; no elevation | Registry `InstallLocation` read by `scripts/windows-installed.ps1` |
+| Install location | Per-user `%LOCALAPPDATA%\Programs\Bingo\Bingo.exe`; no elevation | HKCU uninstall entry (`UninstallString`) read by `scripts/windows-installed.ps1` |
 | Event data | `%APPDATA%\bingo-desktop-feasibility\current-event.sqlite` (from `name`; no `productName` is packaged) | Packaged `package.json`; Electron's `userData` default |
 | Upgrade / uninstall | In-place NSIS upgrade; data kept on upgrade and uninstall (`deleteAppDataOnUninstall: false`) | Workflow steps 4–5 |
 | Startup failure | `dialog.showErrorBox` is modal; the process stays alive until dismissed | `upgraded` asserts the process is still running after 5 s |
