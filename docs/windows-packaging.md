@@ -18,8 +18,8 @@ package holds only `dist/` (main, preloads, Vite-bundled renderers, generated th
 Each run installs and drives the real packaged app, always with a temporary `--user-data-dir` under
 `RUNNER_TEMP` that is deleted afterwards (the real `%APPDATA%` profile is never used):
 
-1. `npm run build` and `npm run test:build` pass on Windows. `npm test` runs last (see *Known
-   Windows test failure*).
+1. `npm run build` and `npm run test:build` pass on Windows; `npm test` runs last so a source-test
+   failure still leaves the packaged-app evidence.
 2. Installers for `0.1.0` and `0.1.1` are built from the same commit.
 3. `0.1.0` is installed silently (`/S`); the uninstall registry entry reports that version.
    [`packaged-smoke.mjs`](../verification/packaged-smoke.mjs) `seed` then checks that:
@@ -41,17 +41,17 @@ Each run installs and drives the real packaged app, always with a temporary `--u
 
 `packaged-smoke.mjs` can also be run against any unpacked build with no profile argument; it then
 creates, uses and deletes its own temporary profile. The same config built as a Linux `dir` target
-passed all smoke steps under Xvfb. The first full Windows pass is
-[run 36501561365](https://github.com/roger6vi/Bingo/actions/runs/36501561365).
+passed all smoke steps under Xvfb. The first fully green Windows run, `npm test` included, is
+[run 36562254981](https://github.com/roger6vi/Bingo/actions/runs/36562254981).
 
-## Known Windows test failure
+## Windows-only test issues found and fixed
 
-Twelve `tests/event-store.test.ts` cases fail on Windows in teardown with `EPERM` from `rmSync`,
-and their assertions pass. The failing cases use `fixture(t)` and then `t.after(() => store.close())`.
-Node runs `after` hooks in registration order, so the temporary directory is removed while the SQLite
-file is still open, which Windows forbids and Linux allows. Closing the store before removing the
-directory (for example `try/finally` in those tests) fixes it; that change belongs to the storage
-tests, not this packaging work.
+- `tests/event-store.test.ts` removed each fixture directory in a per-test `after` hook that ran before
+  the test's own `store.close()`. Windows refuses to delete an open SQLite file (`EPERM`); fixture
+  directories are now removed once, after the whole file.
+- `defaultUserData()` in `verification/electron-smoke.mjs` joined paths with the host's separators;
+  it now uses the target platform's `path.posix` / `path.win32`.
+- CRLF checkouts broke line-anchored contract tests; the workflow checks out with LF.
 
 ## Platform differences
 
