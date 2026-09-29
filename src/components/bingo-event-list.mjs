@@ -6,15 +6,24 @@ export class BingoEventList extends LitElement {
   static properties = { events: { attribute: false }, disabled: { type: Boolean }, loaded: { type: Boolean } };
   static styles = css`
     :host { display: block; }
-    ul { margin: 0; padding: 0; list-style: none; }
+    ul { margin: 0; padding: 0; list-style: none; border: 1px solid var(--bingo-color-border); border-radius: calc(var(--bingo-radius-surface) / 2); }
     li {
       display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
-      gap: var(--bingo-space-small); padding: var(--bingo-space-inset-compact) 0;
-      border-bottom: 1px solid var(--bingo-color-border);
+      gap: 0.5rem 1rem; min-height: 2.75rem; padding: 0.375rem 0.75rem;
+      border-top: 1px solid var(--bingo-color-border);
     }
-    li[aria-current="true"] { font-weight: var(--bingo-font-emphasis); }
-    .marker { text-transform: uppercase; letter-spacing: 0.06em; }
-    p { margin: 0; }
+    li:first-child { border-top-style: none; }
+    li[aria-current="true"] { box-shadow: inset 3px 0 0 var(--bingo-color-accent); }
+    .details { display: grid; min-width: 0; }
+    .name { font-weight: var(--bingo-font-emphasis); overflow-wrap: anywhere; }
+    .meta { color: var(--bingo-color-muted); font-size: 0.8125rem; }
+    .marker {
+      padding: 0.125rem 0.5rem; border-radius: 999px;
+      color: var(--bingo-color-canvas); background: var(--bingo-color-accent);
+      font-size: 0.6875rem; font-weight: var(--bingo-font-emphasis); text-transform: uppercase; letter-spacing: 0.06em;
+    }
+    bingo-button::part(button) { min-height: 2rem; border-radius: calc(var(--bingo-radius-surface) / 2); }
+    p { margin: 0; color: var(--bingo-color-muted); }
   `;
   constructor() { super(); this.events = []; this.disabled = false; this.loaded = false; }
   choose(id) {
@@ -27,7 +36,8 @@ export class BingoEventList extends LitElement {
     if (this.events.length === 0) return html`<p>Todavía no hay eventos. Crea uno para empezar.</p>`;
     return html`<ul aria-label="Eventos">${this.events.map((event) => html`
       <li aria-current=${event.active ? 'true' : 'false'}>
-        <span>${event.name} — ${event.date}, ${event.place}</span>
+        <span class="details"><span class="name">${event.name}</span>
+          <span class="meta">${event.date} · ${event.place}</span></span>
         ${event.active ? html`<span class="marker">Evento activo</span>`
           : html`<bingo-button ?disabled=${this.disabled}
               @click=${() => this.choose(event.id)}>Activar «${event.name}»</bingo-button>`}
