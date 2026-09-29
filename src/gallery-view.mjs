@@ -7,6 +7,10 @@ import './components/bingo-number-board.mjs';
 import './components/bingo-operator-summary.mjs';
 import './components/bingo-draw-controls.mjs';
 import './components/bingo-event-list.mjs';
+import './components/bingo-operator-board.mjs';
+import './components/bingo-text-field.mjs';
+import './components/bingo-select-field.mjs';
+import './components/bingo-form-actions.mjs';
 import { THEME_LABELS } from './theme-controller.mjs';
 
 // Development-only inspection page: static fixtures, no preload bridge or IPC, never packaged. It shows the
@@ -27,6 +31,8 @@ styles.replaceSync(`
     display: inline-block; padding: var(--bingo-space-inset-compact) var(--bingo-space-inset-inline);
     outline: var(--bingo-border-width-focus) solid var(--bingo-color-focus); outline-offset: var(--bingo-space-small);
   }
+  /* The board sizes itself from its container, as it does in the Bingo tab's dominant zone. */
+  .gallery-board { height: 22rem; }
   .gallery-celebration {
     margin: 0; padding: var(--bingo-space-layout); text-align: center;
     color: var(--bingo-color-on-celebration); background: var(--bingo-color-celebration);
@@ -69,6 +75,20 @@ const themeSection = (theme, reduced) => html`
         ${specimen('normal', 'Summary', html`<bingo-operator-summary .latest=${13} .count=${4} .remaining=${86}></bingo-operator-summary>`)}
         ${specimen('pending', 'Draw controls while a request is pending', html`<bingo-draw-controls reloadDisabled></bingo-draw-controls>`)}
         ${specimen('normal', 'Events', html`<bingo-event-list loaded .events=${events}></bingo-event-list>`)}
+      </bingo-panel>
+      <bingo-panel heading=${`Board (${theme})`}>
+        ${specimen('stale', 'Stale: last committed calls kept', html`<bingo-operator-board class="gallery-board" loaded stale .calledNumbers=${[7, 42, 90, 13]}></bingo-operator-board>`)}
+        ${specimen('pending', 'Pending: a manual call in flight', html`<bingo-operator-board class="gallery-board" loaded pending .pendingNumber=${5} .calledNumbers=${[7]}></bingo-operator-board>`)}
+        ${specimen('disabled', 'Read-only (digital mode)', html`<bingo-operator-board class="gallery-board" loaded readonly .calledNumbers=${[7, 42]}></bingo-operator-board>`)}
+      </bingo-panel>
+      <bingo-panel heading=${`Forms (${theme})`}>
+        ${specimen('normal', 'Text field', html`<bingo-text-field label="Nombre" value="Verbena" required></bingo-text-field>`)}
+        ${specimen('error', 'Field error', html`<bingo-text-field label="Lugar" error="Escribe el lugar del evento."></bingo-text-field>`)}
+        ${specimen('pending', 'Field saving', html`<bingo-text-field label="Nombre" value="Verbena" pending></bingo-text-field>`)}
+        ${specimen('disabled', 'Disabled select', html`<bingo-select-field label="Tema" disabled><option value="jules">Jules</option></bingo-select-field>`)}
+        ${specimen('pending', 'Form actions while saving', html`<bingo-form-actions pending>
+          <bingo-button disabled>Descartar cambios</bingo-button><bingo-button slot="primary" variant="primary" disabled>Guardando…</bingo-button>
+        </bingo-form-actions>`)}
       </bingo-panel>
       <bingo-panel heading=${`Celebration (${theme})`}>
         ${specimen('celebration', 'Celebration tokens; the overlay is specified, not implemented',

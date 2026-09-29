@@ -51,6 +51,8 @@ it('shows representative sizes and real component states without desktop access'
     expect(section.querySelector('bingo-number[latest]')).not.to.equal(null);
     const board = section.querySelector('[data-state="stale"] bingo-operator-board');
     expect([board.stale, board.calledNumbers.length]).to.deep.equal([true, 4]);
+    const cell = board.shadowRoot.querySelector('[role="gridcell"]').getBoundingClientRect();
+    expect(cell.width > 12 && cell.height > 12, 'board cells render at a representative size').to.equal(true);
     expect(section.querySelector('[data-state="pending"] bingo-operator-board').pending).to.equal(true);
     expect(section.querySelector('[data-state="error"] bingo-text-field').error).to.match(/\S/);
     expect(section.querySelector('[data-state="pending"] bingo-text-field').pending).to.equal(true);
