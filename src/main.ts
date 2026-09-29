@@ -9,6 +9,7 @@ import { registerEventCatalogIpc } from './event-catalog-ipc';
 import { registerThemeIpc } from './theme-ipc';
 import { registerTongoIpc } from './tongo-ipc';
 import { registerPrizeIpc } from './prize-ipc';
+import { registerLineAwardIpc } from './line-award-ipc';
 import { createPublicEventDelivery } from './public-event-delivery';
 import { createWindowLifecycle } from './window-lifecycle';
 import { planOperatorWindow, planPublicWindow } from './window-plan';
@@ -77,6 +78,8 @@ if (!app.requestSingleInstanceLock()) {
     publicDelivery.publishMeta);
   const tongo = registerTongoIpc(ipcMain, store, { authorize: operatorOnly, publish: publicDelivery.publishPresentation });
   registerPrizeIpc(ipcMain, store, operatorOnly, publicDelivery.publishPrizes);
+  registerLineAwardIpc(ipcMain, store, { authorize: operatorOnly, presenting: tongo.playing,
+    notifyCommitted: publicDelivery.publishCommitted });
   registerEventIpc(ipcMain, store, { drawManual, drawDigital }, Math.random,
     operator.webContents, operatorFrame, operatorUrl, publicDelivery.publishCommitted, tongo.playing);
   void operator.loadFile(operatorPath);

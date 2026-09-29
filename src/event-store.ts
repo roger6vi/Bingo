@@ -6,11 +6,14 @@ import { transitionPhase, type GamePhase, type PhaseTransitionIntent } from './g
 import { DEFAULT_THEME, isThemeId, THEME_IDS, type ThemeId } from './theme.ts';
 import { MAX_PRIZE_AMOUNT, MAX_PRIZE_LOT, NO_PRIZES, normalizePrizes, validAmount, validLot,
   type EventPrizes } from './event-prizes.ts';
+import { MAX_LINE_WINNERS, LOT_DRAW_STATES, planLineAward, validLotDraw, validWinners,
+  type LineAward } from './line-award.ts';
 
 // Event prizes (#71) are the only v6 change and live in their own table, so the v6 step is one
-// self-contained migration chained after the v5 theme allow-list step. If another change claims this
-// version first, renumber VERSION and chain migratePrizes after that change's step.
-const VERSION = 6;
+// self-contained migration chained after the v5 theme allow-list step. Line awards (#26) are likewise
+// the only v7 change. If another change claims a version first, renumber and chain after its step.
+const PRIZES_VERSION = 6;
+const VERSION = 7;
 export const EVENT_SCHEMA_VERSION = VERSION;
 const phases = ['drawing', 'checking_line', 'line_declared', 'checking_bingo', 'bingo_declared', 'finished'];
 const phaseCheck = `CHECK (phase IN (${phases.map((phase) => `'${phase}'`).join(', ')}))`;
@@ -76,6 +79,13 @@ const prizesTable = `CREATE TABLE event_prizes (
   event_id TEXT PRIMARY KEY REFERENCES events(id),
   ${prizeColumns('line')},
   ${prizeColumns('bingo')}
+)`;
+// One optional row per event, written only with the award_line transition. A legacy line_declared
+// event (reached through checking_line) has no row.
+const lineAwardsTable = `CREATE TABLE line_awards (
+  event_id TEXT PRIMARY KEY REFERENCES events(id),
+  winners INTEGER NOT NULL CHECK (typeof(winners) = 'integer' AND winners BETWEEN 1 AND ${MAX_LINE_WINNERS}),
+  lotDraw TEXT NOT NULL CHECK (lotDraw IN (${LOT_DRAW_STATES.map((state) => `'${state}'`).join(', ')}))
 )`;
 const PLACEHOLDER_NAME = 'Evento actual';
 const PLACEHOLDER_PLACE = 'Sin especificar';
@@ -364,6 +374,19 @@ function replayAudit(db: DatabaseSync, eventId: string): PhaseAuditEntry[] {
   });
 }
 
+// Fails closed on values that bypassed the CHECKs, and on an award the audit trail never granted.
+function readLineAward(db: DatabaseSync, eventId: string, audit: readonly PhaseAuditEntry[]): LineAward | null {
+  const rows = db.prepare('SELECT winners, lotDraw FROM line_awards WHERE event_id = ?').all(eventId);
+  if (rows.length === 0) return null;
+  const [row] = rows;
+  if (!validWinners(row.winners) || !validLotDraw(row.lotDraw)) throw new Error('Invalid stored line award');
+  const granted = audit.map((entry) => entry.kind).lastIndexOf('award_line');
+  if (granted === -1 || audit.slice(granted + 1).some((entry) => entry.to_phase === 'drawing')) {
+    throw new Error('Invalid stored line award: phase history');
+  }
+  return Object.freeze({ winners: row.winners, lotDraw: row.lotDraw });
+}
+
 function readEvent(db: DatabaseSync): StoredEvent | null {
   const id = readActiveEventId(db);
   if (id === null) return null;
@@ -375,6 +398,7 @@ function readEvent(db: DatabaseSync): StoredEvent | null {
       row.lastTransitionAt !== (last?.transitionAt ?? null)) {
     throw new Error('Invalid phase audit: current state does not match history');
   }
+  readLineAward(db, id, audit);
   return { calledNumbers: history.calledNumbers, phase: row.phase as GamePhase,
     lastTransitionAt: row.lastTransitionAt as string | null };
 }
@@ -495,12 +519,17 @@ function migratePrizes(db: DatabaseSync): void {
   db.exec(prizesTable);
 }
 
-function validatePrizesSchema(db: DatabaseSync): void {
+function validateTable(db: DatabaseSync, name: string, expected: string): void {
   const normalize = (sql: string) => sql.replace(/[\s"`\[\]]/g, '').toUpperCase();
-  const sql = db.prepare("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'event_prizes'").get()?.sql;
-  if (typeof sql !== 'string' || normalize(sql) !== normalize(prizesTable)) {
-    throw new Error('Invalid event schema: event_prizes table missing or malformed');
+  const sql = db.prepare("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?").get(name)?.sql;
+  if (typeof sql !== 'string' || normalize(sql) !== normalize(expected)) {
+    throw new Error(`Invalid event schema: ${name} table missing or malformed`);
   }
+}
+
+function validateAwardSchemas(db: DatabaseSync): void {
+  validateTable(db, 'event_prizes', prizesTable);
+  validateTable(db, 'line_awards', lineAwardsTable);
 }
 
 // Fails closed on values that bypassed the CHECKs, like the theme; startup never reads prizes.
@@ -532,6 +561,7 @@ export function createEventStore(path: string) {
           candidate.exec(auditTableV4);
           candidate.exec(auditGuards.join(';'));
           candidate.exec(prizesTable);
+          candidate.exec(lineAwardsTable);
           candidate.exec(`PRAGMA user_version = ${VERSION}; COMMIT`);
         } catch (error) {
           try { candidate.exec('ROLLBACK'); } catch { /* Preserve the original error. */ }
@@ -554,12 +584,13 @@ export function createEventStore(path: string) {
     db.exec('BEGIN');
     try {
       const observed = db.prepare('PRAGMA user_version').get()?.user_version;
-      if (observed !== 1 && observed !== 2 && observed !== 3 && observed !== 4 && observed !== 5 && observed !== VERSION) {
+      if (observed !== 1 && observed !== 2 && observed !== 3 && observed !== 4 && observed !== 5 &&
+          observed !== PRIZES_VERSION && observed !== VERSION) {
         throw new Error(`Unsupported event schema version: ${String(observed)}`);
       }
       if (observed === VERSION) {
         validateV4(db);
-        validatePrizesSchema(db);
+        validateAwardSchemas(db);
         readEvent(db);
         db.exec('COMMIT');
       } else {
@@ -592,19 +623,24 @@ export function createEventStore(path: string) {
           validateV3(db);
           migrateV3ToV4(db);
           db.exec('PRAGMA user_version = 4');
-        } else if (version !== 4 && version !== 5 && version !== VERSION) {
+        } else if (version !== 4 && version !== 5 && version !== PRIZES_VERSION && version !== VERSION) {
           throw new Error(`Unsupported event schema version: ${String(version)}`);
         }
         if (version === 1 || version === 2 || version === 3 || version === 4) {
           migrateThemeAllowList(db);
           db.exec('PRAGMA user_version = 5');
         }
-        if (version !== VERSION) {
+        if (version !== PRIZES_VERSION && version !== VERSION) {
           migratePrizes(db);
+          db.exec(`PRAGMA user_version = ${PRIZES_VERSION}`);
+        }
+        if (version !== VERSION) {
+          // v6 → v7: existing events have no line award; legacy line_declared events stay valid.
+          db.exec(lineAwardsTable);
           db.exec(`PRAGMA user_version = ${VERSION}`);
         }
         validateV4(db);
-        validatePrizesSchema(db);
+        validateAwardSchemas(db);
         readEvent(db);
         db.exec('COMMIT');
       }
@@ -641,6 +677,22 @@ export function createEventStore(path: string) {
     }
   }
 
+  function commitTransition(id: string, intent: PhaseTransitionIntent, transitionAt: string): StoredEvent {
+    const current = readEvent(db);
+    if (current === null) throw new Error('Current event does not exist');
+    const phase = transitionPhase(current, intent).phase;
+    if (!canonicalTime(transitionAt) ||
+        (current.lastTransitionAt !== null && transitionAt <= current.lastTransitionAt)) {
+      throw new Error('Invalid phase transition timestamp');
+    }
+    const sequence = replayAudit(db, id).length + 1;
+    db.prepare('UPDATE events SET phase = ?, lastTransitionAt = ? WHERE id = ?')
+      .run(phase, transitionAt, id);
+    db.prepare(`INSERT INTO phase_audit (event_id, sequence, transitionAt, kind, from_phase, to_phase)
+      VALUES (?, ?, ?, ?, ?, ?)`).run(id, sequence, transitionAt, intent, current.phase, phase);
+    return { ...current, phase, lastTransitionAt: transitionAt };
+  }
+
   return {
     load(): StoredEvent | null { return readSnapshot(() => readEvent(db)); },
     loadTheme(): ThemeId { return readSnapshot(() => readTheme(db)); },
@@ -662,22 +714,36 @@ export function createEventStore(path: string) {
       });
     },
     transitionPhase(intent: PhaseTransitionIntent, transitionAt: string): StoredEvent {
+      if (intent === 'award_line') throw new Error('A line award requires awardLine');
       return transaction(() => {
         const id = readActiveEventId(db);
         if (id === null) throw new Error('Current event does not exist');
-        const current = readEvent(db);
-        if (current === null) throw new Error('Current event does not exist');
-        const phase = transitionPhase(current, intent).phase;
-        if (!canonicalTime(transitionAt) ||
-            (current.lastTransitionAt !== null && transitionAt <= current.lastTransitionAt)) {
-          throw new Error('Invalid phase transition timestamp');
-        }
-        const sequence = replayAudit(db, id).length + 1;
-        db.prepare('UPDATE events SET phase = ?, lastTransitionAt = ? WHERE id = ?')
-          .run(phase, transitionAt, id);
-        db.prepare(`INSERT INTO phase_audit (event_id, sequence, transitionAt, kind, from_phase, to_phase)
-          VALUES (?, ?, ?, ?, ?, ?)`).run(id, sequence, transitionAt, intent, current.phase, phase);
-        return { ...current, phase, lastTransitionAt: transitionAt };
+        return commitTransition(id, intent, transitionAt);
+      });
+    },
+    // Commits drawing (or legacy checking_line) → line_declared together with the award, so no reader
+    // ever sees one without the other. The lot draw is planned from the prizes read in this transaction.
+    awardLine(id: unknown, winners: unknown, transitionAt: string): { snapshot: StoredEvent; award: LineAward } {
+      if (typeof id !== 'string') throw new Error('Invalid event id');
+      if (!validWinners(winners)) throw new Error('Invalid winner count');
+      return transaction(() => {
+        if (readActiveEventId(db) !== id) throw new Error('Event is not the active event');
+        const plan = planLineAward(readPrizes(db, id).line, winners);
+        const snapshot = commitTransition(id, 'award_line', transitionAt);
+        db.prepare('INSERT INTO line_awards (event_id, winners, lotDraw) VALUES (?, ?, ?)')
+          .run(id, plan.winners, plan.lotDraw);
+        const award = readLineAward(db, id, replayAudit(db, id));
+        if (award === null) throw new Error('Line award was not stored');
+        return { snapshot, award };
+      });
+    },
+    // The active event with its line award, read from one snapshot so the pair cannot tear.
+    loadLineAward(): { eventId: string; snapshot: StoredEvent; award: LineAward | null } | null {
+      return readSnapshot(() => {
+        const id = readActiveEventId(db);
+        const snapshot = readEvent(db);
+        if (id === null || snapshot === null) return null;
+        return { eventId: id, snapshot, award: readLineAward(db, id, replayAudit(db, id)) };
       });
     },
     create(): StoredEvent {
@@ -697,6 +763,10 @@ export function createEventStore(path: string) {
         const id = readActiveEventId(db);
         const current = readEvent(db);
         if (current === null || id === null) throw new Error('Current event does not exist');
+        // Drawing toward bingo waits until a shared line lot has been drawn (#61).
+        if (readLineAward(db, id, replayAudit(db, id))?.lotDraw === 'pending') {
+          throw new Error('Draw not allowed while the line lot draw is pending');
+        }
         const baseline = [...current.calledNumbers];
         const phase = current.phase;
         const lastTransitionAt = current.lastTransitionAt;

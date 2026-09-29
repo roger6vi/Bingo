@@ -7,6 +7,8 @@ import {
 } from '../src/game-phase.ts';
 
 const legal: readonly [GamePhase, PhaseTransitionIntent, GamePhase][] = [
+  ['drawing', 'award_line', 'line_declared'],
+  ['checking_line', 'award_line', 'line_declared'],
   ['drawing', 'begin_line_check', 'checking_line'],
   ['checking_line', 'declare_line', 'line_declared'],
   ['checking_line', 'reject_line_claim', 'drawing'],

@@ -10,9 +10,11 @@ export interface PhaseState {
   readonly phase: GamePhase;
 }
 
+// Claims are validated outside the app, so award_line is the only line entry the operator uses. The
+// checking intents stay so legacy audit rows replay; award_line also recovers a legacy checking_line.
 const transitions = {
-  drawing: { begin_line_check: 'checking_line' },
-  checking_line: { declare_line: 'line_declared', reject_line_claim: 'drawing' },
+  drawing: { award_line: 'line_declared', begin_line_check: 'checking_line' },
+  checking_line: { award_line: 'line_declared', declare_line: 'line_declared', reject_line_claim: 'drawing' },
   line_declared: { begin_bingo_check: 'checking_bingo', correct_line_declaration: 'drawing' },
   checking_bingo: { declare_bingo: 'bingo_declared', reject_bingo_claim: 'line_declared' },
   bingo_declared: { finish: 'finished', correct_bingo_declaration: 'line_declared' },

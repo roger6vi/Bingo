@@ -1306,17 +1306,18 @@ const prizes = (lineAmount: number, lineLot: string, bingoAmount: number, bingoL
   ({ line: { amount: lineAmount, lot: lineLot }, bingo: { amount: bingoAmount, lot: bingoLot } });
 const NONE = prizes(0, '', 0, '');
 
-// Rebuilds a v5 database from a fresh one: the prize table is the only v6 addition.
+// Rebuilds a v5 database from a fresh one: the prize table is the only v6 addition and the line
+// award table the only v7 addition.
 function v5(path: string) {
   const store = createEventStore(path);
   try {
     store.createEvent({ name: 'A', date: '2025-01-01', place: 'X' });
     store.update((event) => drawManual(event, 7));
   } finally { store.close(); }
-  withDb(path, (db) => db.exec('DROP TABLE event_prizes; PRAGMA user_version = 5'));
+  withDb(path, (db) => db.exec('DROP TABLE line_awards; DROP TABLE event_prizes; PRAGMA user_version = 5'));
 }
 
-test('v5 migrates to v6 once, adding an empty event_prizes table and keeping every event unchanged', (t) => {
+test('v5 migrates to the current version once, adding empty event_prizes and line_awards tables', (t) => {
   const path = fixture(t);
   v5(path);
   let before: unknown;
@@ -1330,6 +1331,7 @@ test('v5 migrates to v6 once, adding an empty event_prizes table and keeping eve
     assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, EVENT_SCHEMA_VERSION);
     assert.deepEqual(db.prepare('SELECT * FROM events').all(), before);
     assert.equal(db.prepare('SELECT count(*) AS count FROM event_prizes').get()?.count, 0);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM line_awards').get()?.count, 0);
   });
   createEventStore(path).close();
   withDb(path, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, EVENT_SCHEMA_VERSION));
