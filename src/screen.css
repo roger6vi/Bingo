@@ -205,17 +205,18 @@ body:has(> .operator-app) { padding: 0; overflow: hidden; }
 .volume-control { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 0.625rem; margin-top: 0.75rem; }
 .volume-control .rail-note { margin: 0; }
 .volume-control label { color: var(--bingo-color-muted); font-size: 0.8125rem; }
+.volume-control input { width: 100%; margin: 0; accent-color: var(--bingo-color-accent); }
 /* The native slider draws a round thumb and track; square them to match radius.control. */
-.volume-control input {
-  width: 100%; margin: 0; appearance: none; height: 0.5rem;
+.volume-control input[type="range"] {
+  appearance: none; height: 0.5rem;
   border: var(--bingo-border-width-default) solid var(--bingo-color-border-strong); border-radius: var(--bingo-radius-control);
   background: var(--bingo-color-surface-sunken);
 }
-.volume-control input::-webkit-slider-thumb {
+.volume-control input[type="range"]::-webkit-slider-thumb {
   appearance: none; width: 0.75rem; height: 1.125rem; border-radius: var(--bingo-radius-control);
   background: var(--bingo-color-accent);
 }
-.volume-control input:disabled::-webkit-slider-thumb { background: var(--bingo-color-border-strong); }
+.volume-control input[type="range"]:disabled::-webkit-slider-thumb { background: var(--bingo-color-border-strong); }
 
 /* Narrow windows (below the 1280×720 target): workspaces stack and scroll inside the tab, never the page. */
 @media (max-width: 900px) {
