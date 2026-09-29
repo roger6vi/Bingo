@@ -1,0 +1,42 @@
+import { Meta } from '@storybook/addon-docs/blocks';
+
+<Meta title="Introduction" />
+
+# Bingo UI
+
+Every shared Lit component, in every state and every theme, without launching Electron.
+Stories use in-memory data only: no IPC, no preload, no SQLite.
+
+- **Foundations / Tokens**: semantic colour, spacing, radius, motion and type tokens, resolved per theme side by side.
+- **Components / …**: one story file per component (`src/components/<name>.stories.mjs`), with a story per
+  meaningful state and an **All states** matrix.
+- **Screens / Operator**: the real `operator.html` markup, one group per tab (Eventos, Configuración, Bingo), driven by
+  in-memory state. Tabs are live.
+- **Screens / Public display**: the real `public.html` markup. Configuración's 16:9 simulator frames these stories.
+
+## Toolbar
+
+- **Theme** (paintbrush) sets `<html data-theme>` exactly like the app. The list is read from the token pipeline
+  (`sourcePaths.themes` in `scripts/token-contract.mjs`), so a new theme appears here once it is registered there.
+  **All themes, side by side** renders component stories once per theme.
+- **Viewport** offers the operator laptops (1280×720, 1366×768) and the public reference screen (1920×1080).
+- **Accessibility** panel runs axe on the current story. `npm run storybook:verify` runs it on every story in every theme.
+
+## Commands
+
+```sh
+npm run storybook          # dev server on http://localhost:6006
+npm run storybook:build    # static site in storybook-static/ (never dist/)
+npm run storybook:verify   # headless: story coverage, a11y, console errors, offline check
+```
+
+## Adding stories
+
+1. Next to a new component `src/components/bingo-foo.mjs`, add `bingo-foo.stories.mjs` with
+   `title: 'Components/Foo'` and `component: 'bingo-foo'` (`storybook:verify` fails if it is missing).
+2. Export one story per state that matters (normal, hover/focus, disabled, pending, error, stale, empty,
+   populated) and an **All states** matrix built with `stateMatrix()` from `.storybook/lib/kit.mjs`.
+   Force hover or focus inside shadow DOM with `forceState()` or `parameters.pseudo`.
+3. Use the shared, deterministic fixtures in `.storybook/lib/fixtures.mjs`.
+4. When a page changes, update the setters in `.storybook/lib/screens.mjs`; screen stories reuse the page HTML
+   directly, so layout changes appear automatically.

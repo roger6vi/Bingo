@@ -6,3 +6,6 @@
 node_modules/
 dist/
 /src/generated/
+
+# Storybook static build (npm run storybook:build)
+/storybook-static/
