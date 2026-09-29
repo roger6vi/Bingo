@@ -17,7 +17,7 @@ test('the real profile path follows Electron appData + package name per platform
   assert.equal(defaultUserData({ platform: 'linux', env: { XDG_CONFIG_HOME: '/cfg' }, home: '/home/op' }), '/cfg/bingo-desktop-feasibility');
   assert.equal(defaultUserData({ platform: 'darwin', env, home: '/Users/op' }),
     '/Users/op/Library/Application Support/bingo-desktop-feasibility');
-  assert.equal(defaultUserData({ platform: 'win32', env, home: 'C:\\Users\\op' }), path.join(env.APPDATA, 'bingo-desktop-feasibility'));
+  assert.equal(defaultUserData({ platform: 'win32', env, home: 'C:\\Users\\op' }), path.win32.join(env.APPDATA, 'bingo-desktop-feasibility'));
 });
 
 test('a fresh smoke directory in the temp dir is accepted and passed as --user-data-dir', () => withTemp((temp) => {

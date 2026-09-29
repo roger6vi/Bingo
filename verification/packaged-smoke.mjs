@@ -30,7 +30,7 @@ async function openOperator(app) {
 async function expectSaved(operator) {
   await operator.waitForFunction(() => document.querySelector('#settings-name').value === 'Verbena Windows' &&
     document.documentElement.dataset.theme === 'high-contrast');
-  assert.equal(await operator.inputValue('#settings-place'), 'Plaza Mayor');
+  assert.equal(await operator.inputValue('#settings-place input'), 'Plaza Mayor');
   assert.equal(await operator.locator('#event-summary').evaluate((summary) => summary.count), 1);
 }
 
@@ -42,6 +42,7 @@ async function seed(profile) {
   step('packaged renderer loads from app.asar with an isolated profile');
 
   await operator.click('#tab-bingo');
+  await operator.locator('#draw-controls label', { hasText: 'Digital' }).click();
   await operator.locator('#draw-digital button').click();
   await operator.waitForFunction(() => document.querySelector('#event-summary').count === 1);
   const [publicWindow] = await Promise.all([app.waitForEvent('window'), operator.locator('#open-public button').click()]);
@@ -67,11 +68,11 @@ async function seed(profile) {
   await operator.click('#tab-settings');
   const simulator = await (await operator.locator('#public-simulator').elementHandle()).contentFrame();
   await simulator.waitForFunction(() => document.querySelector('#called-count')?.value === '1');
-  await operator.fill('#settings-name', 'Verbena Windows');
-  await operator.fill('#settings-place', 'Plaza Mayor');
-  await operator.selectOption('#theme-select', 'high-contrast');
+  await operator.fill('#settings-name input', 'Verbena Windows');
+  await operator.fill('#settings-place input', 'Plaza Mayor');
+  await operator.selectOption('#theme-select select', 'high-contrast');
   await simulator.waitForFunction(() => document.documentElement.dataset.theme === 'high-contrast');
-  await operator.click('#settings-save');
+  await operator.click('#settings-save button');
   await publicWindow.waitForFunction(() => document.documentElement.dataset.theme === 'high-contrast' &&
     document.querySelector('#event-name').textContent === 'Verbena Windows');
   step('simulator protocol serves from the package; saved settings reach the public window');
