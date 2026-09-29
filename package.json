@@ -16,7 +16,11 @@
     "test:smoke": "node verification/electron-smoke.mjs",
     "gallery": "npm run build:tokens && vite --open /gallery.html",
     "start": "npm run build && electron .",
-    "package:win": "npm run build && electron-builder --win nsis --x64 --config electron-builder.win.yml --publish never"
+    "package:dir": "npm run build && electron-builder --dir --publish never",
+    "package:mac": "npm run build && electron-builder --mac --publish never -c.mac.identity=- -c.mac.notarize=false",
+    "package:mac:signed": "npm run build && electron-builder --mac --publish never -c.forceCodeSigning=true",
+    "package:win": "npm run build && electron-builder --win nsis --x64 --config electron-builder.win.yml --publish never",
+    "test:package": "node verification/packaged-smoke.mjs"
   },
   "devDependencies": {
     "@open-wc/testing": "5.0.0",

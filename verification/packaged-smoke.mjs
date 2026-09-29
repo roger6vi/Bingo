@@ -1,8 +1,12 @@
-// Smoke for a *packaged* build (#41). Usage:
-//   node verification/packaged-smoke.mjs <app executable> [<profile dir> <seed|upgraded>]
+// Smoke for a *packaged* build (#40, #41). Usage:
+//   node verification/packaged-smoke.mjs [<app executable>] [<profile dir> <seed|upgraded>]
 // The profile is always a temporary --user-data-dir, never the real one. With no profile, a fresh one
 // is created, both phases run back to back, and it is deleted. The Windows workflow instead passes one
 // profile to `seed` before an installer upgrade and to `upgraded` after it, then deletes it.
+// The executable path is optional: `BINGO_PACKAGED_APP` or the default `release/` output for the
+// current platform (macOS `mac-arm64`/`mac`, Linux `linux-unpacked`) is used when it is omitted, so
+// `npm run test:package` runs unmodified on macOS and Linux while the Windows workflow keeps passing
+// its installed executable path explicitly.
 // Assumes one display (as on CI runners), where the public window opens as a primary-display preview.
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
@@ -12,8 +16,15 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { _electron as electron } from 'playwright';
 
-const [executablePath, profileArg, phaseArg] = process.argv.slice(2);
-assert.ok(executablePath && existsSync(executablePath), 'pass the packaged app executable');
+let [executablePath, profileArg, phaseArg] = process.argv.slice(2);
+const release = path.resolve(import.meta.dirname, '..', 'release');
+const defaultExecutables = {
+  darwin: path.join(release, process.arch === 'arm64' ? 'mac-arm64' : 'mac', 'Bingo.app', 'Contents', 'MacOS', 'Bingo'),
+  linux: path.join(release, 'linux-unpacked', 'bingo'),
+};
+executablePath ??= process.env.BINGO_PACKAGED_APP ?? defaultExecutables[process.platform];
+assert.ok(executablePath && existsSync(executablePath),
+  `packaged executable not found: ${executablePath ?? `no default for ${process.platform}`}`);
 // Chromium refuses to run as root without disabling its own sandbox (e.g. in Linux containers).
 const rootArgs = process.getuid?.() === 0 ? ['--no-sandbox'] : [];
 const database = (profile) => path.join(profile, 'current-event.sqlite');
