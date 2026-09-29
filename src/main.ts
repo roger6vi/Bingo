@@ -16,6 +16,11 @@ const htmlPath = (name: 'operator.html' | 'public.html') => path.join(__dirname,
 const preload = path.join(__dirname, 'preload.js');
 const publicPreload = path.join(__dirname, 'public-preload.js');
 
+// Resolve Node's lazy performance global before any protocol request: Electron compiles undici for the
+// first protocol.handle request and undici reads performance at load, which was intermittently undefined
+// when that first request raced startup, failing the simulator frame with ERR_UNEXPECTED.
+void globalThis.performance;
+
 // The sandboxed simulator needs a standard origin to load its bundled modules. A distinct local-only
 // scheme keeps it cross-origin from the operator, so framed public code cannot reach the operator bridge.
 protocol.registerSchemesAsPrivileged([{ scheme: 'bingo-public', privileges: { standard: true, secure: true,
