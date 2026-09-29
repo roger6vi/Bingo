@@ -13,6 +13,7 @@
     "build:renderer": "npm run build:tokens && vite build",
     "build": "npm run build:main && npm run build:renderer",
     "test:build": "node --test verification/renderer-build.test.mjs",
+    "test:smoke": "node verification/electron-smoke.mjs",
     "start": "npm run build && electron ."
   },
   "devDependencies": {
