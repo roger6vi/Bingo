@@ -1,4 +1,5 @@
 import type { EventSnapshot } from './event-core';
+import type { EventPrizes } from './event-prizes';
 import type { GamePhase } from './game-phase';
 import type { ThemeId } from './theme';
 import type { TongoPresentation } from './tongo-ipc';
@@ -9,19 +10,22 @@ export const PUBLIC_EVENT_CHANNEL = 'public:event-state';
 export const PUBLIC_THEME_CHANNEL = 'public:theme';
 export const PUBLIC_META_CHANNEL = 'public:event-meta';
 export const PUBLIC_PRESENTATION_CHANNEL = 'public:presentation';
+export const PUBLIC_PRIZES_CHANNEL = 'public:event-prizes';
 
 // The active event's committed name, date, and place; null when it cannot be read.
 export type PublicEventMeta = { readonly name: string; readonly date: string; readonly place: string } | null;
+// The active event's committed prizes; null when they cannot be read.
+export type PublicEventPrizes = EventPrizes | null;
+type Payload = PublicEventResult | ThemeId | PublicEventMeta | PublicEventPrizes | TongoPresentation;
 
 export type PublicEventResult =
   | { ok: true; snapshot: PhaseSnapshot; eventChanged?: true }
   | { ok: false; code: 'event_unavailable' | 'storage_failure'; message: string };
 
 type Store = { load(): PhaseSnapshot | null };
-type Message = PublicEventResult | ThemeId | PublicEventMeta | TongoPresentation;
 type Target = {
   isDestroyed(): boolean;
-  send(channel: string, result: Message): void;
+  send(channel: string, result: Payload): void;
 };
 
 const success = (snapshot: PhaseSnapshot): PublicEventResult => ({
@@ -32,10 +36,11 @@ const success = (snapshot: PhaseSnapshot): PublicEventResult => ({
 
 export function createPublicEventDelivery(
   store: Store, committedTheme?: () => ThemeId, committedMeta?: () => PublicEventMeta,
+  committedPrizes?: () => PublicEventPrizes,
 ) {
   let current: Target | null = null;
 
-  function send(target: Target, result: Message, channel = PUBLIC_EVENT_CHANNEL): void {
+  function send(target: Target, result: Payload, channel = PUBLIC_EVENT_CHANNEL): void {
     try {
       if (target.isDestroyed()) {
         if (current === target) current = null;
@@ -65,9 +70,21 @@ export function createPublicEventDelivery(
     } catch { return null; }
   }
 
+  function loadPrizes(): PublicEventPrizes {
+    try {
+      const prizes = committedPrizes?.() ?? null;
+      return prizes === null ? null : { line: { ...prizes.line }, bingo: { ...prizes.bingo } };
+    } catch { return null; }
+  }
+
   // Sends the metadata unless the target was replaced or closed; reports whether it is still current.
   function sendMeta(target: Target): boolean {
     if (committedMeta !== undefined) send(target, loadMeta(), PUBLIC_META_CHANNEL);
+    return current === target;
+  }
+
+  function sendPrizes(target: Target): boolean {
+    if (committedPrizes !== undefined) send(target, loadPrizes(), PUBLIC_PRIZES_CHANNEL);
     return current === target;
   }
 
@@ -77,7 +94,7 @@ export function createPublicEventDelivery(
       current = target;
       // Theme first, so the page is revealed in the committed theme.
       if (committedTheme !== undefined) send(target, committedTheme(), PUBLIC_THEME_CHANNEL);
-      if (current !== target || !sendMeta(target)) return;
+      if (current !== target || !sendMeta(target) || !sendPrizes(target)) return;
       const result = loadResult();
       // A reentrant load may have replaced or closed this target.
       if (current === target) send(target, result);
@@ -95,6 +112,10 @@ export function createPublicEventDelivery(
     publishMeta(): void {
       if (current !== null) sendMeta(current);
     },
+    // After the active event's prizes commit.
+    publishPrizes(): void {
+      if (current !== null) sendPrizes(current);
+    },
     // Transient and never resent on attach, so a reloaded or reopened window cannot replay it.
     // Reports whether the current window accepted it.
     publishPresentation(presentation: TongoPresentation): boolean {
@@ -103,12 +124,12 @@ export function createPublicEventDelivery(
       send(target, presentation, PUBLIC_PRESENTATION_CHANNEL);
       return current === target;
     },
-    // After the active event changes, resend its theme, metadata, and committed state in reveal order.
+    // After the active event changes, resend its theme, metadata, prizes, and committed state in reveal order.
     publishActive(theme: ThemeId): void {
       const target = current;
       if (target === null) return;
       send(target, theme, PUBLIC_THEME_CHANNEL);
-      if (current !== target || !sendMeta(target)) return;
+      if (current !== target || !sendMeta(target) || !sendPrizes(target)) return;
       const result = loadResult();
       // A different event's history is not a continuation of the one on screen.
       if (current === target) send(target, result.ok ? { ...result, eventChanged: true } : result);
