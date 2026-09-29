@@ -46,6 +46,8 @@ const cues = bindCueControls({ mute: required('cue-mute', HTMLInputElement), vol
 { createAudio: (url) => new Audio(url),
   // Resolved per call: a blocked localStorage getter throws, and the player then keeps its defaults.
   storage: { getItem: (key) => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value) } });
+// Every operator Tongo request goes through the cue controls, so cues never overlap its public window.
+const desktop = Object.freeze({ ...window.desktop, playTongo: () => cues.playTongo(() => window.desktop.playTongo()) });
 
 // Configuración edits a draft that only the simulator shows; Save commits it through the same IPC.
 let committedTheme = null;
@@ -105,7 +107,7 @@ window.desktop.onPublicStatus((pauseSuggested) => {
 board.readonly = controls.mode === 'digital';
 controls.addEventListener('mode-change', () => { board.readonly = controls.mode === 'digital'; });
 
-const controller = createOperatorController(window.desktop, {
+const controller = createOperatorController(desktop, {
   bind: ({ manual, digital, reload }) => {
     // The board only requests a call; it shows the number called once the acknowledged snapshot arrives.
     board.addEventListener('number-select', (event) => {
@@ -152,7 +154,7 @@ const controller = createOperatorController(window.desktop, {
 void controller.start();
 
 const themeStatus = required('theme-status', HTMLElement);
-const themes = createThemeController(window.desktop, {
+const themes = createThemeController(desktop, {
   render: ({ theme, pending, error }) => {
     // Only an acknowledged theme is applied; a failed first read reveals the default.
     if (theme !== null) applyTheme(document.documentElement, theme);
@@ -184,7 +186,7 @@ const banner = required('active-event-banner', HTMLElement);
 eventDate.value = today();
 
 // Both dependent panels re-read the newly committed event and its theme.
-const events = createEventsController(window.desktop, {
+const events = createEventsController(desktop, {
   render: ({ events: list, loaded, pending, stale, error, active }) => {
     eventList.events = list;
     eventList.loaded = loaded;

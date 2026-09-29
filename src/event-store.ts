@@ -4,8 +4,14 @@ import { DatabaseSync } from 'node:sqlite';
 import type { EventSnapshot } from './event-core';
 import { transitionPhase, type GamePhase, type PhaseTransitionIntent } from './game-phase.ts';
 import { DEFAULT_THEME, isThemeId, THEME_IDS, type ThemeId } from './theme.ts';
+import { MAX_PRIZE_AMOUNT, MAX_PRIZE_LOT, NO_PRIZES, normalizePrizes, validAmount, validLot,
+  type EventPrizes } from './event-prizes.ts';
 
-const VERSION = 5;
+// Event prizes (#71) are the only v6 change and live in their own table, so the v6 step is one
+// self-contained migration chained after the v5 theme allow-list step. If another change claims this
+// version first, renumber VERSION and chain migratePrizes after that change's step.
+const VERSION = 6;
+export const EVENT_SCHEMA_VERSION = VERSION;
 const phases = ['drawing', 'checking_line', 'line_declared', 'checking_bingo', 'bingo_declared', 'finished'];
 const phaseCheck = `CHECK (phase IN (${phases.map((phase) => `'${phase}'`).join(', ')}))`;
 // Existing databases are validated against this exact list: adding or renaming a theme id
@@ -62,6 +68,15 @@ function auditTableV4Sql(name: string): string {
 )`;
 }
 const auditTableV4 = auditTableV4Sql('phase_audit');
+const prizeColumns = (kind: 'line' | 'bingo') => `${kind}Amount INTEGER NOT NULL
+    CHECK (typeof(${kind}Amount) = 'integer' AND ${kind}Amount BETWEEN 0 AND ${MAX_PRIZE_AMOUNT}),
+  ${kind}Lot TEXT NOT NULL CHECK (typeof(${kind}Lot) = 'text' AND length(${kind}Lot) <= ${MAX_PRIZE_LOT})`;
+// One optional row per event; an event without a row has no prizes.
+const prizesTable = `CREATE TABLE event_prizes (
+  event_id TEXT PRIMARY KEY REFERENCES events(id),
+  ${prizeColumns('line')},
+  ${prizeColumns('bingo')}
+)`;
 const PLACEHOLDER_NAME = 'Evento actual';
 const PLACEHOLDER_PLACE = 'Sin especificar';
 
@@ -475,6 +490,33 @@ function migrateThemeAllowList(db: DatabaseSync): void {
   db.exec(auditGuards.join(';'));
 }
 
+// v5 → v6: add the event_prizes table. Existing events keep no prizes until the operator saves some.
+function migratePrizes(db: DatabaseSync): void {
+  db.exec(prizesTable);
+}
+
+function validatePrizesSchema(db: DatabaseSync): void {
+  const normalize = (sql: string) => sql.replace(/[\s"`\[\]]/g, '').toUpperCase();
+  const sql = db.prepare("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'event_prizes'").get()?.sql;
+  if (typeof sql !== 'string' || normalize(sql) !== normalize(prizesTable)) {
+    throw new Error('Invalid event schema: event_prizes table missing or malformed');
+  }
+}
+
+// Fails closed on values that bypassed the CHECKs, like the theme; startup never reads prizes.
+function readPrizes(db: DatabaseSync, eventId: string): EventPrizes {
+  const rows = db.prepare(`SELECT lineAmount, lineLot, bingoAmount, bingoLot FROM event_prizes
+    WHERE event_id = ?`).all(eventId);
+  if (rows.length === 0) return NO_PRIZES;
+  const [row] = rows;
+  const lot = (value: unknown) => validLot(value) && value === value.trim();
+  if (!validAmount(row.lineAmount) || !lot(row.lineLot) || !validAmount(row.bingoAmount) || !lot(row.bingoLot)) {
+    throw new Error('Invalid stored prizes');
+  }
+  return normalizePrizes({ line: { amount: row.lineAmount, lot: row.lineLot },
+    bingo: { amount: row.bingoAmount, lot: row.bingoLot } }) as EventPrizes;
+}
+
 export function createEventStore(path: string) {
   if (!existed(path)) {
     // Initialize off-path: the target must never expose SQLite's transient version-0 file.
@@ -489,6 +531,7 @@ export function createEventStore(path: string) {
           candidate.exec(activeEventTable);
           candidate.exec(auditTableV4);
           candidate.exec(auditGuards.join(';'));
+          candidate.exec(prizesTable);
           candidate.exec(`PRAGMA user_version = ${VERSION}; COMMIT`);
         } catch (error) {
           try { candidate.exec('ROLLBACK'); } catch { /* Preserve the original error. */ }
@@ -511,11 +554,12 @@ export function createEventStore(path: string) {
     db.exec('BEGIN');
     try {
       const observed = db.prepare('PRAGMA user_version').get()?.user_version;
-      if (observed !== 1 && observed !== 2 && observed !== 3 && observed !== 4 && observed !== VERSION) {
+      if (observed !== 1 && observed !== 2 && observed !== 3 && observed !== 4 && observed !== 5 && observed !== VERSION) {
         throw new Error(`Unsupported event schema version: ${String(observed)}`);
       }
       if (observed === VERSION) {
         validateV4(db);
+        validatePrizesSchema(db);
         readEvent(db);
         db.exec('COMMIT');
       } else {
@@ -548,14 +592,19 @@ export function createEventStore(path: string) {
           validateV3(db);
           migrateV3ToV4(db);
           db.exec('PRAGMA user_version = 4');
-        } else if (version !== 4 && version !== VERSION) {
+        } else if (version !== 4 && version !== 5 && version !== VERSION) {
           throw new Error(`Unsupported event schema version: ${String(version)}`);
         }
-        if (version !== VERSION) {
+        if (version === 1 || version === 2 || version === 3 || version === 4) {
           migrateThemeAllowList(db);
+          db.exec('PRAGMA user_version = 5');
+        }
+        if (version !== VERSION) {
+          migratePrizes(db);
           db.exec(`PRAGMA user_version = ${VERSION}`);
         }
         validateV4(db);
+        validatePrizesSchema(db);
         readEvent(db);
         db.exec('COMMIT');
       }
@@ -705,8 +754,31 @@ export function createEventStore(path: string) {
           // or every later load and the next startup would fail. Throwing here rolls the selection back.
           readEvent(db);
           readTheme(db);
+          readPrizes(db, id);
         }
         return toSummary(row, id);
+      });
+    },
+    // The active event's prizes with its id, so a reader can tell which event they belong to.
+    loadPrizes(): { eventId: string; prizes: EventPrizes } | null {
+      return readSnapshot(() => {
+        const id = readActiveEventId(db);
+        return id === null ? null : { eventId: id, prizes: readPrizes(db, id) };
+      });
+    },
+    // Replaces only the active event's prizes; like updateEventMeta, a stale id never reaches another event.
+    // Returns the values read back inside the committing transaction.
+    updateEventPrizes(id: unknown, prizes: unknown): EventPrizes {
+      if (typeof id !== 'string') throw new Error('Invalid event id');
+      const next = normalizePrizes(prizes);
+      if (next === null) throw new Error('Invalid event prizes');
+      return transaction(() => {
+        if (readActiveEventId(db) !== id) throw new Error('Event is not the active event');
+        db.prepare(`INSERT INTO event_prizes (event_id, lineAmount, lineLot, bingoAmount, bingoLot)
+          VALUES (?, ?, ?, ?, ?) ON CONFLICT (event_id) DO UPDATE SET lineAmount = excluded.lineAmount,
+          lineLot = excluded.lineLot, bingoAmount = excluded.bingoAmount, bingoLot = excluded.bingoLot`)
+          .run(id, next.line.amount, next.line.lot, next.bingo.amount, next.bingo.lot);
+        return readPrizes(db, id);
       });
     },
     // Edits only the active event's descriptive metadata, with createEvent's rules; history, phase,
