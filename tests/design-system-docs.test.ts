@@ -14,7 +14,9 @@ const entries = catalog.split(/^### /m).slice(1).map((entry) => ({
 }));
 
 test('the component catalog documents every implemented component', () => {
+  // Sibling *.stories.mjs files are Storybook stories, not components.
   const components = readdirSync(new URL('../src/components/', import.meta.url))
+    .filter((file) => !file.endsWith('.stories.mjs'))
     .map((file) => file.replace(/\.mjs$/, '')).concat('bingo-shell').sort();
   assert.deepEqual(entries.flatMap(({ names }) => names).sort(), components);
 });
