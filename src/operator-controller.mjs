@@ -12,6 +12,9 @@ export function createOperatorController(api, view) {
   let stale = false;
   let error = null;
   let loaded = false;
+  // 'read' when the shown snapshot came from reading the event (startup, reload, event switch), 'draw'
+  // when it acknowledged this operator's own draw. Only the latter may announce a new milestone.
+  let snapshotSource = null;
 
   function render() {
     const exhausted = calledNumbers.length === 90;
@@ -19,17 +22,18 @@ export function createOperatorController(api, view) {
       phase, stale, error, pending, manualDisabled: pending || !loaded || exhausted,
       digitalDisabled: pending || !loaded || exhausted, reloadDisabled: pending,
       // The last acknowledged snapshot, kept through stale and failed states (the simulator shows it).
-      snapshot: loaded ? { calledNumbers: [...calledNumbers], phase, lastTransitionAt } : null });
+      snapshot: loaded ? { calledNumbers: [...calledNumbers], phase, lastTransitionAt } : null,
+      snapshotSource: loaded ? snapshotSource : null });
   }
 
   let inFlight = Promise.resolve();
-  function request(operation, manual = false) {
+  function request(operation, source, manual = false) {
     if (pending) return inFlight;
-    inFlight = settle(operation, manual);
+    inFlight = settle(operation, source, manual);
     return inFlight;
   }
 
-  async function settle(operation, manual) {
+  async function settle(operation, source, manual) {
     pending = true;
     render();
     try {
@@ -40,6 +44,7 @@ export function createOperatorController(api, view) {
           phase = result.snapshot.phase;
           lastTransitionAt = result.snapshot.lastTransitionAt;
           loaded = true;
+          snapshotSource = source;
           stale = false;
           error = null;
           if (manual) view.clearManual();
@@ -61,14 +66,14 @@ export function createOperatorController(api, view) {
     }
   }
 
-  const reload = () => request(() => api.getCurrentEvent());
+  const reload = () => request(() => api.getCurrentEvent(), 'read');
   const manual = (number) => {
     if (!loaded || calledNumbers.length === 90) return;
-    void request(() => api.drawManual(number), true);
+    void request(() => api.drawManual(number), 'draw', true);
   };
   const digital = () => {
     if (!loaded || calledNumbers.length === 90) return;
-    void request(() => api.drawDigital());
+    void request(() => api.drawDigital(), 'draw');
   };
   // After the active event changes, drop the old baseline so the new event's history is accepted.
   let resyncQueued = null;

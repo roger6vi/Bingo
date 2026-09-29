@@ -153,7 +153,7 @@ const controller = createOperatorController(desktop, {
     drawLocks = { manualDisabled: state.manualDisabled, digitalDisabled: state.digitalDisabled,
       reloadDisabled: state.reloadDisabled, pending: state.pending };
     applyLocks();
-    cues.observe(state.snapshot);
+    cues.observe(state.snapshot, { baseline: state.snapshotSource !== 'draw' });
     // The simulator shows only committed history; it has no draw path of its own.
     settings.showCommitted(state.snapshot === null
       ? { ok: false, code: 'event_unavailable', message: 'No current event is available.' }

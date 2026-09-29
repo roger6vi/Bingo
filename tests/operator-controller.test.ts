@@ -42,8 +42,38 @@ test('initial get renders persisted order, remaining count, and a non-stale stat
   assert.deepEqual(f.calls, ['get']);
   assert.deepEqual(f.last(), { calledNumbers: [90, 1], remaining: 88, phase: 'drawing', stale: false, error: null,
     pending: false, manualDisabled: false, digitalDisabled: false, reloadDisabled: false,
-    snapshot: { calledNumbers: [90, 1], phase: 'drawing', lastTransitionAt: null } });
+    snapshot: { calledNumbers: [90, 1], phase: 'drawing', lastTransitionAt: null }, snapshotSource: 'read' });
   assert.equal(typeof f.handlers.reload, 'function');
+});
+
+test('the snapshot source says whether a read or this operator\'s own draw produced it', async () => {
+  const f = fixture();
+  const source = () => (f.renders.at(-1) as { snapshotSource: unknown }).snapshotSource;
+  f.responses.get = async () => failure('Could not read.');
+  await f.controller.start();
+  assert.equal(source(), null, 'nothing loaded');
+  f.responses.get = async () => success(90, 1);
+  await f.controller.start();
+  assert.equal(source(), 'read');
+  f.handlers.manual?.(45);
+  assert.equal(source(), 'read', 'unchanged while the draw is pending');
+  await new Promise(setImmediate);
+  assert.equal(source(), 'draw');
+  f.responses.digital = async () => failure('Write failed');
+  f.handlers.digital?.();
+  await new Promise(setImmediate);
+  assert.equal(source(), 'draw', 'a failed draw keeps the acknowledged snapshot and its source');
+  f.responses.get = async () => success(90, 1, 45);
+  f.handlers.reload?.();
+  await new Promise(setImmediate);
+  assert.equal(source(), 'read');
+  f.handlers.digital?.();
+  await new Promise(setImmediate);
+  f.responses.get = async () => success(7);
+  const resync = f.controller.resync();
+  assert.equal(source(), null, 'an event switch drops the old snapshot');
+  await resync;
+  assert.equal(source(), 'read');
 });
 
 test('the acknowledged snapshot for the simulator is absent before load and kept through failures', async () => {

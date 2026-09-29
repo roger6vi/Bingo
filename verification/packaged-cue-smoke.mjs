@@ -56,6 +56,7 @@ async function expectNoReplay(operator) {
   assert.equal(await operator.evaluate(() => window.__plays), 0);
 }
 
+let app;
 try {
   const packed = asar.listPackage(archive, { isPack: false }).map((entry) => entry.replaceAll('\\', '/'));
   for (const cue of ['line', 'bingo', 'final']) {
@@ -76,7 +77,7 @@ try {
   store.transitionPhase('declare_line', t(2));
   store.close();
 
-  let app = await launch();
+  app = await launch();
   let operator = await openBingo(app);
   assert.match(operator.url(), /^file:.*app\.asar[\\/]dist[\\/]renderer[\\/]operator\.html$/);
   await expectNoReplay(operator);
@@ -120,8 +121,9 @@ try {
   assert.equal(await operator.locator('#cue-mute').isChecked(), true);
   assert.equal(await operator.inputValue('#cue-volume'), '30');
   await expectNoReplay(operator);
-  await app.close();
   step('restart keeps mute and still does not replay');
 } finally {
+  // A failed step must not leave the packaged app running on the profile it is about to delete.
+  await app?.close().catch(() => {});
   rmSync(profile, { recursive: true, force: true });
 }

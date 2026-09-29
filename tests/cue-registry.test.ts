@@ -43,3 +43,11 @@ test('a corrected and re-declared line cues again only with a new committed tran
   assert.equal(tracker.observe(snap('drawing', at(2))), null);
   assert.equal(tracker.observe(snap('line_declared', at(3))), 'line_declared');
 });
+
+test('a read snapshot is only a baseline, so an externally committed milestone never plays on reload', () => {
+  const tracker = createMilestoneTracker();
+  tracker.observe(snap('drawing', null));
+  assert.equal(tracker.observe(snap('line_declared', at(2)), { baseline: true }), null);
+  assert.equal(tracker.observe(snap('line_declared', at(2))), null, 'the read milestone is now the baseline');
+  assert.equal(tracker.observe(snap('bingo_declared', at(4))), 'bingo_declared', 'later acknowledged transitions still cue');
+});
