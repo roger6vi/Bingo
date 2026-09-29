@@ -10,3 +10,6 @@ dist/
 
 # Packaged installers
 release/
+
+# Storybook static build (npm run storybook:build)
+/storybook-static/
