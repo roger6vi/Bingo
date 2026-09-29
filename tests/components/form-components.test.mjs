@@ -8,7 +8,7 @@ import '../../src/components/bingo-button.mjs';
 
 // Browser component tests for every state of the shared form controls (issue #79). They stand in
 // for Storybook stories until Storybook exists on the base branch.
-const THEMES = ['jules', 'light', 'high-contrast'];
+const THEMES = ['light', 'high-contrast', 'jules'];
 async function withThemes(check) {
   const links = await Promise.all(THEMES.map((name) => new Promise((resolve, reject) => {
     const link = document.createElement('link');

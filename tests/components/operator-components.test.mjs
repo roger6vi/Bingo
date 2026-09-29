@@ -206,7 +206,7 @@ it('summary and history show ordered acknowledged values, preserve them through 
   await expect(history).to.be.accessible();
 });
 
-it('operator presentation follows all three semantic themes without focusable shadow controls', async () => {
+it('operator presentation follows both semantic themes without focusable shadow controls', async () => {
   const summary = await fixture(html`<bingo-operator-summary></bingo-operator-summary>`);
   const links = await Promise.all(['jules', 'light', 'high-contrast'].map((name) => new Promise((resolve, reject) => {
     const link = document.createElement('link');
@@ -216,8 +216,9 @@ it('operator presentation follows all three semantic themes without focusable sh
     link.onerror = reject;
     document.head.append(link);
   })));
-  // Pages paint the themed canvas and text (screen.css); give the isolated fixture the same.
-  Object.assign(document.body.style, { background: 'var(--bingo-color-canvas)', color: 'var(--bingo-color-text)' });
+  // Paint the themed canvas behind the fixture, as screen.css does for the page: jules' light text
+  // only meets contrast against its own dark canvas, not the browser's default white background.
+  document.body.style.background = 'var(--bingo-color-canvas)';
   try {
     for (const theme of ['jules', 'light', 'high-contrast']) {
       document.documentElement.dataset.theme = theme;
@@ -232,8 +233,8 @@ it('operator presentation follows all three semantic themes without focusable sh
     }
     expect(summary.shadowRoot.querySelectorAll('button,input,[tabindex]')).to.have.length(0);
   } finally {
-    for (const property of ['background', 'color']) document.body.style.removeProperty(property);
     delete document.documentElement.dataset.theme;
+    document.body.style.removeProperty('background');
     links.forEach((link) => link.remove());
   }
 });

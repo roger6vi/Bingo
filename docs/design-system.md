@@ -103,7 +103,7 @@ Fonts are bundled locally (`@fontsource-variable/roboto-mono`, OFL-1.1) and neve
 | Role | Minimum | `high-contrast` | Pairs |
 | --- | --- | --- | --- |
 | `text` | 4.5:1 | 7:1 | text/muted on canvas and surfaces, `on-accent` on accent states, status on surface, number states, celebration, prize, `on-tie` on each tie colour |
-| `ui` | 3:1 | 4.5:1 | focus and `border-strong` on canvas/surface, accent on surface, `call-called-surface` against `call-uncalled-surface` |
+| `ui` | 3:1 | 4.5:1 | focus and `border-strong` on canvas/surface, accent on surface and on `call-called-surface` |
 
 Translucent backgrounds are composited over `color.canvas`, translucent foregrounds over their
 background. Disabled controls are exempt from WCAG contrast; they additionally use `opacity.disabled`.
@@ -115,112 +115,180 @@ semantic variables listed, honours `prefers-reduced-motion`, and keeps state cha
 committed persistence snapshots (presentation never acknowledges its own intent).
 
 ### `bingo-shell`
-- **Purpose:** public page frame that constrains content width. **Anatomy:** a default slot.
-- **Properties:** none. **States:** normal.
-- **Accessibility:** no role; landmarks live in the page.
+- **Purpose:** page frame that constrains content width. **Anatomy:** a default slot.
+- **Properties:** none. **States:** normal. **Accessibility:** no role; landmarks live in the page.
 - **Tokens:** consumed through `screen.css`: `space.wide`, `space.layout`, `space.list-indent`.
 
 ### `bingo-app-shell`
-- **Purpose:** full-viewport operator frame; the document never scrolls. **Anatomy:** header (brand, tabs, active event), content row, optional status bar slots.
-- **Properties:** none (`hasStatus` is internal). **States:** normal, with/without status bar.
-- **Accessibility:** regions come from the slotted page landmarks.
-- **Tokens:** `color.canvas`, `color.text`.
+- **Purpose:** the operator's full-viewport frame (header row, content row, optional status bar)
+  pinned to the window, so the document itself never scrolls; content that does not fit scrolls
+  inside its own panel. **Anatomy:** `slot="header"` → default slot → `slot="status"` (hidden
+  while empty).
+- **Properties:** none. **States:** normal, with/without a status bar.
+- **Accessibility:** no role of its own; landmarks live in the slotted header/main/footer.
+- **Tokens:** `color.text`, `color.canvas`.
 
 ### `bingo-tabs`
-- **Purpose:** WAI-ARIA tablist with automatic activation; `bingo-tab-panel` hosts each panel. **Anatomy:** light-DOM `role="tab"` children naming panels via `aria-controls`.
-- **Properties:** `label`; `canLeave(current, next)` may veto or defer a switch. **States:** normal, selected, focus, pending (decision open), vetoed (focus returns).
-- **Accessibility:** roving tabindex, arrow/Home/End keys, `aria-selected` on tabs.
-- **Tokens:** `border-width.focus`, `color.focus`.
+- **Purpose:** WAI-ARIA tabs with automatic activation and a roving tabindex. The host is the
+  tablist; light-DOM `[role="tab"]` children name their panel through `aria-controls`, usually a
+  `bingo-tab-panel` (defined in the same module: a focusable, hidden-while-inactive panel that fills
+  its grid cell). `canLeave(current, next)` may veto or defer a switch (e.g. unsaved edits): it
+  returns `true` to switch now, or a promise of a boolean; while a decision is open the current tab
+  stays selected, and a veto returns focus to it.
+- **Properties:** `label` (string), `canLeave` (function). **States:** normal, deciding (pending veto).
+- **Accessibility:** `role="tablist"`; arrow keys, Home and End move focus and selection.
+- **Tokens:** `color.focus`.
 
 ### `bingo-panel`
-- **Purpose:** titled content region. **Anatomy:** `section[aria-labelledby]` → `h2` heading → slot.
-- **Properties:** `heading`, `compact`. **States:** normal, empty (heading only).
+- **Purpose:** titled content region. `compact` is the dense operator variant (thin border, a header
+  bar with an "actions" slot); `fill` takes its grid cell's full height and scrolls only its body.
+  **Anatomy:** `section[aria-labelledby]` → `header` (`h2` heading, optional `actions` slot) → `.body`
+  slot.
+- **Properties:** `heading` (string), `compact` (reflected boolean), `fill` (reflected boolean).
+  **States:** normal, empty (heading only), compact, fill.
 - **Accessibility:** section is named by its heading.
-- **Tokens:** `border-width.default`, `border-width.strong`, `color.border`, `color.muted`, `color.shadow`, `color.surface`, `elevation.raised`, `font.body`, `font.emphasis`, `font.line`, `font.size`, `font.tracking`, `radius.surface`, `space.inset-inline`, `space.layout`, `space.section`.
-
-### `bingo-side-rail`
-- **Purpose:** labelled vertical rail beside a dominant zone. **Anatomy:** `aside` with stacked sections and a pinned `footer` slot.
-- **Properties:** `label`. **States:** normal, overflowing (scrolls inside the rail).
-- **Accessibility:** `aside` named by `label`.
-- **Tokens:** `border-width.default`, `color.border`, `color.surface`, `radius.surface`.
+- **Tokens:** `color.surface`, `color.border`, `color.shadow`, `color.muted`, `border-width.strong`,
+  `radius.surface`, `elevation.raised`, `space.layout`, `space.section`, `space.inset-inline`,
+  `font.body`, `font.size`, `font.line`, `font.emphasis`, `font.tracking`.
 
 ### `bingo-button`
-- **Purpose:** the single action control. **Anatomy:** native `button` → slot label.
-- **Properties:** `disabled`, `type` (`button`/`submit`/`reset`), `variant` (`primary`), `block`. **States:** normal, hover, active, focus, disabled, pending (owner disables while a request is outstanding).
-- **Accessibility:** native button semantics and keyboard activation; form-associated submit/reset; visible focus ring.
-- **Tokens:** `border-width.default`, `border-width.focus`, `border-width.strong`, `color.accent-active`, `color.accent-hover`, `color.accent`, `color.border-strong`, `color.border`, `color.disabled-surface`, `color.disabled`, `color.focus`, `color.on-accent`, `color.shadow`, `color.surface`, `color.text`, `font.emphasis`, `motion.easing`, `motion.normal`, `opacity.disabled`, `radius.control`, `space.inset-compact`, `space.inset-inline`, `space.small`.
-
-### `bingo-field` and `bingo-text-field` and `bingo-date-field` and `bingo-select-field`
-- **Purpose:** labelled, form-associated operator fields sharing one base. **Anatomy:** label with required marker, native control in the shadow root, hint, announced error with an icon.
-- **Properties:** `label`, `name`, `value`, `hint`, `error`, `required`, `disabled`, `pending`; date `min`/`max`; select mirrors light-DOM `<option>`s. **States:** normal, focus, disabled, pending (pixel busy indicator, static under reduced motion), error.
-- **Accessibility:** `aria-invalid`, `aria-describedby` hint/error wiring, `aria-busy`; the error never relies on colour.
-- **Tokens:** `border-width.default`, `border-width.focus`, `color.accent`, `color.border-strong`, `color.disabled-surface`, `color.disabled`, `color.error`, `color.focus`, `color.muted`, `color.surface`, `color.text`, `font.body`, `font.emphasis`, `font.line`, `font.size`, `font.tight`, `font.tracking`, `motion.normal`, `radius.control`, `space.inset-compact`, `space.inset-inline`, `space.small`.
-
-### `bingo-form-actions`
-- **Purpose:** the action row that ends a form. **Anatomy:** `status` slot, secondary actions, then the `primary` slot.
-- **Properties:** `sticky`, `pending`. **States:** normal, sticky, pending.
-- **Accessibility:** reading order matches visual order; the primary action comes last.
-- **Tokens:** `border-width.default`, `color.border`, `color.canvas`, `font.size`, `space.inset-inline`, `space.small`.
+- **Purpose:** the single, form-associated action control. Inside a form, `type="submit"`/`"reset"`
+  acts on the owning form; `variant="primary"` marks the one main action of a form or dialog; `block`
+  stretches the button to fill its container. **Anatomy:** native `button[type=button]` → slot label.
+- **Properties:** `disabled` (reflected boolean), `type`, `variant` (reflected), `block` (reflected).
+  **States:** normal, hover, active, focus, disabled, pending (owner sets `disabled` while a request
+  is outstanding).
+- **Accessibility:** native button semantics and keyboard activation; visible focus ring.
+- **Tokens:** `color.text`, `color.surface`, `color.border`, `color.canvas`, `color.accent`,
+  `color.muted`, `color.focus`, `font.emphasis`, `radius.surface`, `space.inset-compact`,
+  `space.inset-inline`, `space.small`, `motion.normal`.
 
 ### `bingo-number`
 - **Purpose:** one called number, large or compact. **Anatomy:** a `span` chip.
-- **Properties:** `value` (number or `null`), `emptyLabel`, `compact`, `latest` (set by its list). **States:** empty (label), called, latest.
+- **Properties:** `value` (number or `null`), `emptyLabel`, `compact`, `latest` (set by its list).
+- **States:** empty (label), called, latest.
 - **Accessibility:** plain text; announcements belong to `bingo-latest-draw`.
-- **Tokens:** `border-width.strong`, `color.accent`, `color.call-called-surface`, `color.call-called`, `color.call-latest-surface`, `color.call-latest`, `color.shadow`, `elevation.raised`, `font.body`, `font.display`, `font.emphasis`, `font.line`, `font.size`, `font.tight`, `radius.control`, `space.inset-compact`.
+- **Tokens:** `color.call-called`, `color.call-called-surface`, `color.call-latest`,
+  `color.call-latest-surface`, `color.accent`, `color.shadow`, `border-width.strong`, `radius.control`,
+  `elevation.raised`, `space.inset-compact`, `font.body`, `font.display`, `font.size`, `font.line`,
+  `font.tight`, `font.emphasis`.
 
-### `bingo-number-board`
-- **Purpose:** public ordered list of committed calls. **Anatomy:** empty text and `ol` of `li > bingo-number`; the last item has `aria-current="true"`.
-- **Properties:** `calledNumbers`, `loaded`. **States:** loading ("Waiting for draw"), empty, populated, latest, stale (owner keeps the last committed list).
+### `bingo-number-board` (public) and `bingo-call-history` (operator)
+- **Purpose:** ordered list of committed calls. The public board shows the full history (heading,
+  empty text, `ol` of `li > bingo-number`; the last item has `aria-current="true"` and passes
+  `latest` to its chip). The operator's `bingo-call-history` renders the same full list when
+  `limit` is unset, or (with `limit`, in the side rail) a compact strip of only the last calls,
+  as plain chips with the latest one highlighted.
+- **Properties:** `calledNumbers` (array), `loaded` (board only), `limit` (call-history only).
+  **States:** loading ("Waiting for draw", board only), empty, populated, latest, stale (owner keeps
+  the last committed list).
 - **Accessibility:** named list; no live region, no focusable content.
-- **Tokens:** `border-width.strong`, `color.accent`, `space.inset-compact`, `space.list-indent`, `space.section`, `space.small`.
+- **Tokens:** `color.accent`, `color.border`, `color.canvas`, `color.muted`, `color.surface`,
+  `color.text`, `border-width.strong`, `font.emphasis`, `space.inset-compact`, `space.list-indent`,
+  `space.section`, `space.small`.
 
-### `bingo-call-history`
-- **Purpose:** operator list of committed calls; with `limit`, a compact strip of the latest calls. **Anatomy:** heading, empty text, `ol` of chips; the last has `aria-current="true"`.
-- **Properties:** `calledNumbers`, `limit`. **States:** empty, populated, latest, stale.
-- **Accessibility:** named list; no live region, no focusable content.
-- **Tokens:** `border-width.default`, `color.border`, `color.call-latest-surface`, `color.call-latest`, `color.muted`, `color.surface`, `color.text`, `font.emphasis`, `radius.control`.
+### `bingo-side-rail`
+- **Purpose:** a labelled vertical rail beside a workspace's dominant zone (e.g. the Bingo tab's
+  board). Its sections stack and scroll inside the rail when they do not fit; children in the
+  `"footer"` slot stay pinned to the bottom. **Anatomy:** `aside[aria-label]` → scrolling body slot →
+  pinned footer slot.
+- **Properties:** `label` (string). **States:** normal, scrolling body.
+- **Accessibility:** the rail is a named region (`aria-label`).
+- **Tokens:** `color.border`, `color.surface`, `radius.surface`.
 
 ### `bingo-operator-board`
-- **Purpose:** the operator 1–90 board, ten numbers per row. **Anatomy:** legend, state badge, `role="grid"` of number cells with an "Última" badge on the latest.
-- **Properties:** `calledNumbers`, `loaded`, `readonly` (digital mode), `disabled`, `pending`, `stale`. **States:** uncalled, hover, called, latest, disabled, pending (request in flight), stale, focus, readonly.
-- **Accessibility:** roving grid focus (arrows, Home/End, PageUp/PageDown), cells named "Número 42, cantado", latest call announced politely; state never relies on colour alone.
-- **Tokens:** `border-width.default`, `border-width.focus`, `border-width.strong`, `color.accent`, `color.border`, `color.call-called-surface`, `color.call-called`, `color.call-latest-surface`, `color.call-latest`, `color.call-uncalled-surface`, `color.call-uncalled`, `color.disabled-surface`, `color.disabled`, `color.error`, `color.focus`, `color.muted`, `color.surface`, `color.text`, `font.body`, `font.emphasis`, `font.tracking`, `motion.normal`, `radius.control`, `radius.surface`.
+- **Purpose:** the operator's 1–90 board: ten numbers per row in numeric order. It renders only the
+  committed calls it is given and never marks a number called on its own. In manual mode (not
+  `readonly`) activating an uncalled number dispatches `number-select`; the board changes only when
+  the acknowledged snapshot arrives. **Anatomy:** a status bar with a legend, then a `role="grid"` of
+  number cells.
+- **Properties:** `calledNumbers`, `loaded` (reflected), `readonly` (reflected), `disabled`
+  (reflected), `pending` (reflected), `pendingNumber`, `stale` (reflected).
+- **States:** uncalled, called, latest, disabled, pending (request in flight, marked but not shown
+  called), stale (history may be out of date).
+- **Accessibility:** `role="grid"` with arrow-key navigation; each newly committed latest call is
+  announced once via a polite live region; static under reduced motion.
+- **Tokens:** `color.text`, `color.surface`, `color.muted`, `color.border`, `color.accent`,
+  `color.canvas`, `color.error`, `color.focus`, `font.body`, `font.emphasis`, `motion.normal`,
+  `radius.surface`.
+
+### `bingo-field` (base), `bingo-text-field`, `bingo-date-field`, `bingo-select-field`
+- **Purpose:** shared, form-associated Lit controls behind every operator text/date/select input:
+  `bingo-field` renders a labelled native control in the shadow root, a hint, an announced error and
+  a pending indicator, and implements form association through `ElementInternals`; the three
+  subclasses add their own native control (`renderControl()`). `bingo-select-field` mirrors light-DOM
+  `<option>` children into its shadow `<select>`. **Anatomy:** label row (label, required marker) →
+  control (+ optional adornment: busy indicator or, for the date field, a themed calendar icon) →
+  hint → announced error.
+- **Properties:** `label`, `hint`, `error`, `name`, `value`, `required` (reflected), `disabled`,
+  `pending` (reflected); `bingo-date-field` adds `min`/`max`; `bingo-text-field` adds `maxlength`,
+  `minlength`, `autocomplete`, `placeholder`.
+- **States:** normal, focus, required, disabled, pending (busy indicator), invalid (announced error).
+- **Accessibility:** native labelled control; the error region is `aria-live="polite"` and
+  `aria-describedby`-linked; invalid state is `aria-invalid`, never color alone.
+- **Tokens:** `color.text`, `color.muted`, `color.surface`, `color.canvas`, `color.accent`,
+  `color.error`, `color.focus`, `font.body`, `font.size`, `font.line`, `font.tight`, `font.emphasis`,
+  `radius.surface`, `space.small`, `space.inset-compact`, `space.inset-inline`, `motion.normal`
+  (from `bingo-field`'s shared styles; the subclasses' own styles add nothing beyond
+  `space.inset-inline`, already listed, for `bingo-date-field`'s calendar-icon slot).
+
+### `bingo-form-actions`
+- **Purpose:** the action row that ends a form: an optional status (`slot="status"`) at the start,
+  then secondary actions (default slot) and the primary action (`slot="primary"`) last, at the end.
+  `sticky` keeps the row visible at the bottom of a scrolling form; `pending` marks it busy.
+  **Anatomy:** status slot → secondary-actions slot → primary-action slot.
+- **Properties:** `sticky` (reflected), `pending` (reflected). **States:** normal, sticky, pending.
+- **Accessibility:** the row is `role="group"`, with `aria-busy` while pending.
+- **Tokens:** `color.border`, `color.canvas`, `font.size`, `space.inset-inline`, `space.small`.
 
 ### `bingo-latest-draw`
-- **Purpose:** polite announcement of each new committed draw. **Anatomy:** slot + visually hidden `aria-live="polite"` span.
-- **Properties:** `latest`, `loaded`. **States:** empty, announced.
-- **Accessibility:** announces only distinct non-null values.
-- **Tokens:** none (layout only).
+- **Purpose:** polite announcement of each new committed draw. **Anatomy:** slot + visually hidden
+  `aria-live="polite"` span. **Properties:** `latest`, `loaded`. **States:** empty, announced.
+- **Accessibility:** announces only distinct non-null values. **Tokens:** none (layout only).
 
 ### `bingo-operator-summary`
-- **Purpose:** last confirmed call with called/remaining counts. **Anatomy:** labels and `output`s.
-- **Properties:** `latest`, `count`, `remaining`. **States:** empty, populated, stale.
-- **Accessibility:** remaining count is `aria-live="polite"`.
-- **Tokens:** `color.muted`, `color.text`, `font.emphasis`.
+- **Purpose:** last confirmed call with called/remaining counts. **Anatomy:** `bingo-number`, two
+  labelled `output`s ("Cantadas", "Quedan"). **Properties:** `latest`, `count`, `remaining`.
+  **States:** empty, populated, stale.
+- **Accessibility:** remaining count is `aria-live="polite"`; called count is `aria-live="off"`.
+- **Tokens:** `color.text`, `color.muted`, `font.emphasis`.
 
 ### `bingo-status`
 - **Purpose:** single status line. **Anatomy:** `p` with `role=status` or, for errors, `role=alert`.
-- **Properties:** `message`, `tone` (`info`, `success`, `warning`, `error`). **States:** info (checking phases), success, warning (stale data), error.
+- **Properties:** `message`, `tone` (`info`, `success`, `warning`, `error`). **States:** info, success,
+  warning (stale data), error.
 - **Accessibility:** tone is conveyed by text as well as colour.
-- **Tokens:** `color.error`, `color.success`, `color.text`, `color.warning`, `font.emphasis`.
+- **Tokens:** `color.text` (info), `color.success`, `color.warning`, `color.error`, `font.emphasis`.
 
 ### `bingo-draw-controls`
-- **Purpose:** draw mode switch plus manual entry and draw/reload actions. **Anatomy:** manual/digital segmented radios, labelled number input, `bingo-button`s.
-- **Properties:** `mode`, `manualDisabled`, `digitalDisabled`, `reloadDisabled`. **States:** manual, digital, pending (disabled), error/stale (reload enabled), focus.
-- **Accessibility:** radio group for the mode; labelled native input with 1–90 validity; dispatches `mode-change`.
-- **Tokens:** `border-width.default`, `border-width.focus`, `color.border`, `color.canvas`, `color.disabled-surface`, `color.focus`, `color.muted`, `color.surface`, `color.text`, `font.emphasis`, `radius.control`.
+- **Purpose:** the side rail's draw controls: a manual/digital mode toggle, manual number entry with a
+  "Cantar número" action, a digital "Sacar bola" action, and a "Recargar evento" action.
+  **Anatomy:** `fieldset` mode toggle (two radios) → manual or digital `bingo-button` group →
+  reload `bingo-button`. **Properties:** `mode` (reflected), `manualDisabled`, `digitalDisabled`,
+  `reloadDisabled`.
+- **States:** manual, digital, pending (disabled), error/stale (reload enabled), focus.
+- **Accessibility:** labelled radio group for the mode; labelled native input with 1–90 validity;
+  native button activation; Enter in the number field acts like the manual draw button.
+- **Tokens:** `color.text`, `color.surface`, `color.canvas`, `color.border`, `color.muted`,
+  `color.focus`, `font.emphasis`, `radius.surface`.
 
 ### `bingo-event-list`
-- **Purpose:** committed events with an activation intent. **Anatomy:** `ul` of rows with an "active" badge or a `bingo-button`.
-- **Properties:** `events`, `disabled`, `loaded`. **States:** not loaded, empty, populated, active (`aria-current`), pending (disabled).
+- **Purpose:** committed events with an activation intent. **Anatomy:** `ul` of `li` rows, each with
+  its name/date/place and either an "Evento activo" marker or an activating `bingo-button`.
+  **Properties:** `events`, `disabled`, `loaded`.
+- **States:** not loaded, empty, populated, active (`aria-current`), pending (disabled).
 - **Accessibility:** named list; the active row is `aria-current="true"`.
-- **Tokens:** `border-width.default`, `color.accent`, `color.border`, `color.muted`, `color.on-accent`, `font.emphasis`, `font.tracking`, `radius.control`.
+- **Tokens:** `color.border`, `color.accent`, `color.canvas`, `color.muted`, `font.emphasis`,
+  `radius.surface`.
 
 ### `bingo-dialog`
 - **Purpose:** modal confirmation. **Anatomy:** native `dialog` with heading, slot and action buttons.
-- **Properties:** `label`, `actions` (`{ action, label, signal }[]`). **States:** closed, open, focus (returns to opener), dismissed (Escape).
+- **Properties:** `label`, `actions` (`{ action, label, signal }[]`). **States:** closed, open, focus
+  (returns to opener), dismissed (Escape).
 - **Accessibility:** modal `dialog` named by its heading; Escape always dismisses.
-- **Tokens:** `border-width.strong`, `color.border-strong`, `color.overlay`, `color.shadow`, `color.surface-raised`, `color.text`, `elevation.raised`, `font.body`, `font.emphasis`, `font.line`, `font.size`, `opacity.scrim`, `radius.surface`, `space.layout`, `space.section`.
+- **Tokens:** `color.text`, `color.surface-raised`, `color.border-strong`, `color.overlay`, `color.shadow`,
+  `opacity.scrim`, `border-width.strong`, `radius.surface`, `elevation.raised`, `space.layout`,
+  `space.section`, `font.body`, `font.size`, `font.line`, `font.emphasis`.
 
 ### Specified, not implemented
 
@@ -231,6 +299,8 @@ These entries fix the contract for roadmap components; they are not built yet.
 | Celebration overlay | Full-screen moment after a committed line/bingo declaration | hidden, celebrating, reduced-motion (static) | `role=status` announcement; never traps focus on the public window | `color.celebration`, `on-celebration`, `overlay`, `opacity.scrim`, `layer.overlay`, `motion.slow`, `motion.easing`, `font.display` |
 | Prize panel | Shows the prize for the current phase | empty, normal, celebration, stale | Named region; text, not colour, identifies the prize | `color.prize`, `surface`, `border`, `radius.surface`, `elevation.raised` |
 | Tie-draw wheel | Randomly resolves ties among claimants | idle, spinning, result, reduced-motion (instant result), error | Result announced politely; segments labelled in text | `color.tie-1…8`, `on-tie`, `border-strong`, `motion.slow`, `motion.easing` |
+| Tabs | Operator section switcher (today plain buttons in `screen.css`) | normal, hover, selected, focus, disabled | `tablist`/`tab`/`tabpanel`, roving focus | `color.accent`, `on-accent`, `border`, `focus`, `border-width.strong` |
+| Form fields | Text/date/select with label and error | normal, focus, disabled, error, pending | Label association, `aria-invalid`, `aria-describedby` error | `color.surface-sunken`, `text`, `border-strong`, `error`, `focus`, `radius.control` |
 | Dialog variants | Destructive confirm, unsaved changes, info | closed, open, pending, error | As `bingo-dialog`; destructive action never default | `color.error`, `surface-raised`, `overlay`, `opacity.scrim`, `layer.modal` |
 | Simulator frame | 16:9 scaled public preview in Configuración | loading, live, stale | Inert iframe with a title; not in tab order | `color.border`, `canvas`, `muted`, `radius.surface`, `border-width.strong` |
 
