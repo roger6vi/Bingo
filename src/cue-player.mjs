@@ -17,14 +17,15 @@ export function readCueSettings(storage) {
   return { ...DEFAULT_CUE_SETTINGS };
 }
 
+// Operator-facing copy, in Spanish like the rest of the operator window and its cue controls.
 export function describeCueStatus({ kind, milestone, preview = false }) {
   const label = wiredCue(milestone)?.label;
-  const cue = preview ? 'Test cue' : 'Cue';
-  if (kind === 'played') return { message: `${cue} played: ${label}`, tone: 'info' };
-  if (kind === 'muted') return { message: `${cue} muted: ${label}`, tone: 'info' };
-  if (kind === 'failed') return { message: `${cue} sound unavailable (${label}). The game continues.`, tone: 'warning' };
-  if (kind === 'held') return { message: `${cue} waits for Tongo to finish: ${label}`, tone: 'info' };
-  return { message: 'Sound cues ready. Nothing plays at startup or on reload.', tone: 'info' };
+  const cue = preview ? 'Aviso de prueba' : 'Aviso';
+  if (kind === 'played') return { message: `${cue} reproducido: ${label}`, tone: 'info' };
+  if (kind === 'muted') return { message: `${cue} silenciado: ${label}`, tone: 'info' };
+  if (kind === 'failed') return { message: `Sonido del ${cue.toLowerCase()} no disponible (${label}). La partida continúa.`, tone: 'warning' };
+  if (kind === 'held') return { message: `${cue} en espera hasta que termine el Tongo: ${label}`, tone: 'info' };
+  return { message: 'Avisos de sonido listos. No suena nada al iniciar ni al recargar.', tone: 'info' };
 }
 
 export function createCuePlayer({ sources, createAudio, storage, onChange, schedule = setTimeout, cancel = clearTimeout }) {
