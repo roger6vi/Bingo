@@ -7,12 +7,9 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test, { after } from 'node:test';
 import { drawManual } from '../src/event-core.ts';
-import { createEventStore } from '../src/event-store.ts';
+import { createEventStore, EVENT_SCHEMA_VERSION } from '../src/event-store.ts';
 import { DEFAULT_THEME, THEME_IDS } from '../src/theme.ts';
 
-// Current event schema version. The theme allow-list migration is self-contained, so only this
-// constant and the source VERSION change if it is renumbered at merge time.
-const SCHEMA_VERSION = 5;
 // Theme allow-list and default frozen into the v2–v4 schemas.
 const LEGACY_THEME_IDS = ['pixel-classic', 'high-contrast'];
 const LEGACY_DEFAULT_THEME = 'pixel-classic';
@@ -56,7 +53,7 @@ test('only explicit creation creates the current event; duplicates fail and reop
     assert.throws(() => reopened.create(), /exist|already/i);
     assert.deepEqual(reopened.update((event) => drawManual(event, 45)).calledNumbers, [90, 1, 45]);
   } finally { reopened.close(); }
-  withDb(path, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, SCHEMA_VERSION));
+  withDb(path, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, EVENT_SCHEMA_VERSION));
 });
 
 test('a fresh Node process recovers exact history and appends to it', (t) => {
@@ -161,8 +158,8 @@ test('simultaneous first opens never observe a partially initialized database', 
   const firstResultPending = message(first, 'version');
   fs.writeFileSync(release, 'go');
   const firstResult = await firstResultPending;
-  assert.deepEqual(secondResult, { version: SCHEMA_VERSION, empty: true });
-  assert.deepEqual(firstResult, { version: SCHEMA_VERSION, empty: true });
+  assert.deepEqual(secondResult, { version: EVENT_SCHEMA_VERSION, empty: true });
+  assert.deepEqual(firstResult, { version: EVENT_SCHEMA_VERSION, empty: true });
   assert.deepEqual(fs.readdirSync(join(path, '..')).sort(), ['event.sqlite', 'release']);
 });
 
@@ -234,9 +231,9 @@ test('malformed stored history and read errors fail closed without replacing the
 
 test('unsupported version and existing unknown database never initialize as the current version', (t) => {
   const path = fixture(t);
-  withDb(path, (db) => db.exec(`PRAGMA user_version = ${SCHEMA_VERSION + 1}`));
+  withDb(path, (db) => db.exec(`PRAGMA user_version = ${EVENT_SCHEMA_VERSION + 1}`));
   assert.throws(() => createEventStore(path), /version|unsupported/i);
-  withDb(path, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, SCHEMA_VERSION + 1));
+  withDb(path, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, EVENT_SCHEMA_VERSION + 1));
 
   const unknown = join(fs.realpathSync(join(path, '..')), 'unknown.sqlite');
   withDb(unknown, (db) => db.exec('CREATE TABLE unrelated (value INTEGER)'));
@@ -312,7 +309,7 @@ test('valid v1 migrates once to v4, preserves ordered calls, and rejects a persi
     } finally { store.close(); }
   }
   withDb(path, (db) => {
-    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, SCHEMA_VERSION);
+    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, EVENT_SCHEMA_VERSION);
     const row = db.prepare('SELECT id, name, date, place, history FROM events').get();
     eventId = row?.id;
     assert.equal(row?.name, 'Evento actual');
@@ -340,7 +337,7 @@ test('valid v1 migrates directly to v4, preserving ordered calls with the defaul
     assert.equal(store.loadTheme(), DEFAULT_THEME);
   } finally { store.close(); }
   withDb(path, (db) => {
-    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, SCHEMA_VERSION);
+    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, EVENT_SCHEMA_VERSION);
     const row = db.prepare('SELECT theme, name, place FROM events').get();
     assert.equal(row?.theme, DEFAULT_THEME);
     assert.equal(row?.name, 'Evento actual');
@@ -396,7 +393,7 @@ test('valid v2 migrates to v4, preserving history, phase, and audit with the def
     assert.equal(store.loadTheme(), DEFAULT_THEME);
   } finally { store.close(); }
   withDb(path, (db) => {
-    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, SCHEMA_VERSION);
+    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, EVENT_SCHEMA_VERSION);
     const row = db.prepare('SELECT id, theme, name, place FROM events').get();
     assert.equal(row?.theme, DEFAULT_THEME);
     assert.equal(row?.name, 'Evento actual');
@@ -419,7 +416,7 @@ test('migrating to v4 is idempotent: reopening a migrated database keeps the sam
   try { assert.deepEqual(second.load()?.calledNumbers, [90, 1, 45]); }
   finally { second.close(); }
   withDb(path, (db) => {
-    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, SCHEMA_VERSION);
+    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, EVENT_SCHEMA_VERSION);
     assert.equal(db.prepare('SELECT count(*) AS count FROM events').get()?.count, 1);
     assert.equal(db.prepare('SELECT id FROM events').get()?.id, firstId);
     assert.equal(db.prepare('SELECT event_id FROM active_event WHERE slot = 1').get()?.event_id, firstId);
@@ -524,9 +521,9 @@ test('phase audit sequences are scoped per event and an inactive event never aff
 
 test('an unsupported future version is rejected outright', (t) => {
   const path = fixture(t);
-  withDb(path, (db) => db.exec(`PRAGMA user_version = ${SCHEMA_VERSION + 1}`));
+  withDb(path, (db) => db.exec(`PRAGMA user_version = ${EVENT_SCHEMA_VERSION + 1}`));
   assert.throws(() => createEventStore(path), /version|unsupported/i);
-  withDb(path, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, SCHEMA_VERSION + 1));
+  withDb(path, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, EVENT_SCHEMA_VERSION + 1));
 });
 
 test('fresh v4 starts in drawing with null timestamp, the default theme, and guarded empty audit', (t) => {
@@ -539,7 +536,7 @@ test('fresh v4 starts in drawing with null timestamp, the default theme, and gua
     assert.equal(store.loadTheme(), DEFAULT_THEME);
   } finally { store.close(); }
   withDb(path, (db) => {
-    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, SCHEMA_VERSION);
+    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, EVENT_SCHEMA_VERSION);
     const row = db.prepare('SELECT id, theme, name, place, date FROM events').get();
     assert.equal(row?.theme, DEFAULT_THEME);
     assert.equal(row?.name, 'Evento actual');
@@ -571,7 +568,7 @@ test('v4 rejects missing and wrong phase defaults before creating a current even
     assert.throws(() => createEventStore(file), /invalid event schema/i, name);
     withDb(file, (db) => {
       assert.equal(db.prepare('SELECT count(*) AS count FROM events').get()?.count, 0);
-      assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, SCHEMA_VERSION);
+      assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, EVENT_SCHEMA_VERSION);
     });
   }
 });
@@ -597,7 +594,7 @@ test('v4 rejects missing, wrong, or nullable theme column definitions before cre
     assert.throws(() => createEventStore(file), /invalid event schema/i, name);
     withDb(file, (db) => {
       assert.equal(db.prepare('SELECT count(*) AS count FROM events').get()?.count, 0);
-      assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, SCHEMA_VERSION);
+      assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, EVENT_SCHEMA_VERSION);
     });
   }
 });
@@ -641,7 +638,7 @@ test('opening valid v4 under an independent writer lock reads the same ordered s
         assert.deepEqual(reopened.load(), { calledNumbers: [90, 1], phase: 'drawing', lastTransitionAt: null });
       } finally { reopened.close(); }
       assert.deepEqual(writer.prepare('SELECT id, history, phase, lastTransitionAt FROM events').all(), before);
-      assert.equal(writer.prepare('PRAGMA user_version').get()?.user_version, SCHEMA_VERSION);
+      assert.equal(writer.prepare('PRAGMA user_version').get()?.user_version, EVENT_SCHEMA_VERSION);
       assert.equal(writer.prepare('SELECT count(*) AS count FROM phase_audit').get()?.count, 0);
     } finally { writer.exec('ROLLBACK'); }
   });
@@ -928,7 +925,7 @@ test('v4 migrates retired pixel-classic to jules in one transaction, keeping eve
   const fresh = join(fs.realpathSync(join(path, '..')), 'fresh.sqlite');
   createEventStore(fresh).close();
   withDb(fresh, (freshDb) => withDb(path, (db) => {
-    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, SCHEMA_VERSION);
+    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, EVENT_SCHEMA_VERSION);
     assert.deepEqual(db.prepare('SELECT id, theme FROM events ORDER BY createdAt').all().map((row) => ({ ...row })),
       [{ id: ids.active, theme: 'jules' }, { id: ids.other, theme: 'high-contrast' }]);
     assert.deepEqual(schemaOf(db), schemaOf(freshDb), 'the migrated schema equals a fresh one');
@@ -947,7 +944,7 @@ test('a v3 database reaches the current schema with its stored theme migrated', 
     v3(path, { theme: stored });
     const store = createEventStore(path);
     try { assert.equal(store.loadTheme(), expected, stored); } finally { store.close(); }
-    withDb(path, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, SCHEMA_VERSION));
+    withDb(path, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, EVENT_SCHEMA_VERSION));
   }
 });
 
@@ -1064,7 +1061,7 @@ test('theme allow-list changes require a schema version bump', (t) => {
   createEventStore(path).close();
   withDb(path, (db) => assert.deepEqual(
     { version: db.prepare('PRAGMA user_version').get()?.user_version, themes: [...THEME_IDS] },
-    { version: SCHEMA_VERSION, themes: ['jules', 'light', 'high-contrast'] },
+    { version: EVENT_SCHEMA_VERSION, themes: ['jules', 'light', 'high-contrast'] },
     'THEME_IDS changed without a matching event schema migration',
   ));
 });
@@ -1303,4 +1300,193 @@ test('updateEventMeta fails atomically under a concurrent writer lock', (t) => {
     } finally { db.exec('ROLLBACK'); }
   });
   assert.deepEqual(store.listEvents(), before);
+});
+
+const prizes = (lineAmount: number, lineLot: string, bingoAmount: number, bingoLot: string) =>
+  ({ line: { amount: lineAmount, lot: lineLot }, bingo: { amount: bingoAmount, lot: bingoLot } });
+const NONE = prizes(0, '', 0, '');
+
+// Rebuilds a v5 database from a fresh one: the prize table is the only v6 addition.
+function v5(path: string) {
+  const store = createEventStore(path);
+  try {
+    store.createEvent({ name: 'A', date: '2025-01-01', place: 'X' });
+    store.update((event) => drawManual(event, 7));
+  } finally { store.close(); }
+  withDb(path, (db) => db.exec('DROP TABLE event_prizes; PRAGMA user_version = 5'));
+}
+
+test('v5 migrates to v6 once, adding an empty event_prizes table and keeping every event unchanged', (t) => {
+  const path = fixture(t);
+  v5(path);
+  let before: unknown;
+  withDb(path, (db) => { before = db.prepare('SELECT * FROM events').all(); });
+  const store = createEventStore(path);
+  try {
+    assert.deepEqual(store.load()?.calledNumbers, [7]);
+    assert.deepEqual(store.loadPrizes()?.prizes, NONE);
+  } finally { store.close(); }
+  withDb(path, (db) => {
+    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, EVENT_SCHEMA_VERSION);
+    assert.deepEqual(db.prepare('SELECT * FROM events').all(), before);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM event_prizes').get()?.count, 0);
+  });
+  createEventStore(path).close();
+  withDb(path, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, EVENT_SCHEMA_VERSION));
+});
+
+test('a failed v5 to v6 migration leaves the v5 database unchanged', (t) => {
+  const path = fixture(t);
+  v5(path);
+  // An object already named event_prizes makes the CREATE TABLE fail inside the migration transaction.
+  withDb(path, (db) => db.exec('CREATE VIEW event_prizes AS SELECT 1'));
+  assert.throws(() => createEventStore(path), /event_prizes|already exists/i);
+  withDb(path, (db) => {
+    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 5);
+    assert.equal(db.prepare("SELECT type FROM sqlite_schema WHERE name = 'event_prizes'").get()?.type, 'view');
+    assert.equal(db.prepare('SELECT history FROM events').get()?.history, '[7]');
+  });
+});
+
+test('a v1/v2/v3 database migrates in one transaction all the way to v6 with an empty event_prizes table', (t) => {
+  const path = fixture(t);
+  v3(path);
+  const store = createEventStore(path);
+  try { assert.deepEqual(store.loadPrizes()?.prizes, NONE); } finally { store.close(); }
+  withDb(path, (db) => {
+    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, EVENT_SCHEMA_VERSION);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM event_prizes').get()?.count, 0);
+  });
+});
+
+test('v6 rejects a missing or malformed event_prizes table without writing', (t) => {
+  const path = fixture(t);
+  const directory = fs.realpathSync(join(path, '..'));
+  for (const [name, sql] of [
+    ['missing', null],
+    ['unbounded', 'CREATE TABLE event_prizes (event_id TEXT PRIMARY KEY, lineAmount INTEGER, lineLot TEXT, bingoAmount INTEGER, bingoLot TEXT)'],
+  ] as const) {
+    const file = join(directory, `${name}.sqlite`);
+    createEventStore(file).close();
+    withDb(file, (db) => {
+      db.exec('DROP TABLE event_prizes');
+      if (sql !== null) db.exec(sql);
+    });
+    assert.throws(() => createEventStore(file), /invalid event schema: event_prizes/i, name);
+    withDb(file, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, EVENT_SCHEMA_VERSION));
+  }
+});
+
+test('updateEventPrizes trims lots, stays scoped to its event, touches nothing else, and survives reopening', (t) => {
+  const path = fixture(t);
+  const store = createEventStore(path);
+  const a = store.createEvent({ name: 'A', date: '2025-01-01', place: 'X' });
+  const b = store.createEvent({ name: 'B', date: '2025-01-02', place: 'Y' });
+  store.update((event) => drawManual(event, 12));
+  store.saveTheme('high-contrast');
+  assert.deepEqual(store.loadPrizes(), { eventId: a.id, prizes: NONE });
+  const before = { event: store.load(), theme: store.loadTheme(), events: store.listEvents() };
+  const saved = store.updateEventPrizes(a.id, prizes(150, '  Jamón ibérico ', 0, 'Cesta de Navidad'));
+  assert.deepEqual(saved, prizes(150, 'Jamón ibérico', 0, 'Cesta de Navidad'));
+  assert.equal(Object.isFrozen(saved) && Object.isFrozen(saved.line), true);
+  assert.deepEqual({ event: store.load(), theme: store.loadTheme(), events: store.listEvents() }, before);
+  store.selectEvent(b.id);
+  assert.deepEqual(store.loadPrizes(), { eventId: b.id, prizes: NONE });
+  store.updateEventPrizes(b.id, prizes(0, '', 500, ''));
+  store.selectEvent(a.id);
+  store.close();
+  const reopened = createEventStore(path);
+  try {
+    assert.deepEqual(reopened.loadPrizes(), { eventId: a.id, prizes: prizes(150, 'Jamón ibérico', 0, 'Cesta de Navidad') });
+    reopened.selectEvent(b.id);
+    assert.deepEqual(reopened.loadPrizes(), { eventId: b.id, prizes: prizes(0, '', 500, '') });
+    // Saving again replaces the row rather than adding one.
+    reopened.updateEventPrizes(b.id, NONE);
+    assert.deepEqual(reopened.loadPrizes()?.prizes, NONE);
+  } finally { reopened.close(); }
+  withDb(path, (db) => assert.equal(db.prepare('SELECT count(*) AS count FROM event_prizes').get()?.count, 2));
+});
+
+test('loadPrizes is null without an active event and updateEventPrizes then has nothing to write', (t) => {
+  const path = fixture(t);
+  const store = createEventStore(path);
+  t.after(() => store.close());
+  assert.equal(store.loadPrizes(), null);
+  assert.throws(() => store.updateEventPrizes(randomUUID(), NONE), /active/i);
+});
+
+test('updateEventPrizes rejects invalid prizes, ids, and inactive events without writing', (t) => {
+  const path = fixture(t);
+  const store = createEventStore(path);
+  t.after(() => store.close());
+  const a = store.createEvent({ name: 'A', date: '2025-01-01', place: 'X' });
+  const b = store.createEvent({ name: 'B', date: '2025-01-02', place: 'Y' });
+  store.updateEventPrizes(a.id, prizes(10, 'Lote', 20, ''));
+  const committed = store.loadPrizes();
+  const bad: unknown[] = [null, 'x', [], {}, { line: NONE.line }, { ...NONE, extra: NONE.line },
+    Object.assign(Object.create(null), NONE), { line: { amount: 1 }, bingo: NONE.bingo },
+    { line: { ...NONE.line, extra: 1 }, bingo: NONE.bingo }];
+  for (const amount of [-1, 100_001, 1.5, Number.NaN, Infinity, '5', null, 10n]) {
+    bad.push({ line: { amount, lot: '' }, bingo: NONE.bingo }, { line: NONE.line, bingo: { amount, lot: '' } });
+  }
+  for (const lot of ['a'.repeat(121), 7, null, undefined]) bad.push({ line: NONE.line, bingo: { amount: 0, lot } });
+  bad.forEach((value, index) => assert.throws(() => store.updateEventPrizes(a.id, value), /invalid/i, `case ${index}`));
+  for (const id of [b.id, randomUUID(), 42, null, '']) {
+    assert.throws(() => store.updateEventPrizes(id as unknown, NONE), /invalid|active/i);
+  }
+  assert.deepEqual(store.loadPrizes(), committed);
+  // Bounds: 100 000 € and a 120-character lot after trimming.
+  const max = store.updateEventPrizes(a.id, prizes(100_000, ` ${'l'.repeat(120)} `, 0, ''));
+  assert.deepEqual(max, prizes(100_000, 'l'.repeat(120), 0, ''));
+  withDb(path, (db) => assert.equal(db.prepare('SELECT count(*) AS count FROM event_prizes WHERE event_id = ?').get(b.id)?.count, 0));
+});
+
+test('the prize table CHECKs reject out-of-range, fractional, and non-integer amounts written directly', (t) => {
+  const path = fixture(t);
+  const store = createEventStore(path);
+  const a = store.createEvent({ name: 'A', date: '2025-01-01', place: 'X' });
+  store.close();
+  withDb(path, (db) => {
+    const insert = db.prepare(`INSERT INTO event_prizes (event_id, lineAmount, lineLot, bingoAmount, bingoLot)
+      VALUES (?, ?, ?, ?, ?)`);
+    for (const row of [[-1, ''], [100_001, ''], [1.5, ''], ['cinco', ''], [null, ''], [0, 'l'.repeat(121)], [0, null]]) {
+      assert.throws(() => insert.run(a.id, row[0], row[1], 0, ''), /constraint/i, String(row));
+    }
+    assert.throws(() => insert.run(randomUUID(), 0, '', 0, ''), /constraint/i, 'unknown event');
+  });
+});
+
+test('tampered stored prizes fail closed on read and keep a corrupt event from becoming active', (t) => {
+  const path = fixture(t);
+  const store = createEventStore(path);
+  t.after(() => store.close());
+  const a = store.createEvent({ name: 'A', date: '2025-01-01', place: 'X' });
+  const b = store.createEvent({ name: 'B', date: '2025-01-02', place: 'Y' });
+  store.updateEventPrizes(a.id, prizes(5, '', 0, ''));
+  withDb(path, (db) => {
+    db.exec('PRAGMA ignore_check_constraints = 1');
+    db.prepare("INSERT INTO event_prizes VALUES (?, 1.5, ' padded ', 0, '')").run(b.id);
+  });
+  assert.throws(() => store.selectEvent(b.id), /invalid stored prizes/i);
+  assert.deepEqual(store.loadPrizes(), { eventId: a.id, prizes: prizes(5, '', 0, '') });
+  withDb(path, (db) => {
+    db.exec('PRAGMA ignore_check_constraints = 1');
+    db.prepare("UPDATE event_prizes SET bingoLot = ? WHERE event_id = ?").run('l'.repeat(121), a.id);
+  });
+  assert.throws(() => store.loadPrizes(), /invalid stored prizes/i);
+  // Startup never reads prizes, so a bad prize row cannot keep the application from opening.
+  createEventStore(path).close();
+});
+
+test('updateEventPrizes fails atomically under a concurrent writer lock', (t) => {
+  const path = fixture(t);
+  const store = createEventStore(path);
+  t.after(() => store.close());
+  const a = store.createEvent({ name: 'A', date: '2025-01-01', place: 'X' });
+  withDb(path, (db) => {
+    db.exec('BEGIN IMMEDIATE');
+    try { assert.throws(() => store.updateEventPrizes(a.id, prizes(1, '', 2, '')), /locked|busy/i); }
+    finally { db.exec('ROLLBACK'); }
+  });
+  assert.deepEqual(store.loadPrizes()?.prizes, NONE);
 });
