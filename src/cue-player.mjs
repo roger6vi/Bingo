@@ -23,15 +23,20 @@ export function describeCueStatus({ kind, milestone, preview = false }) {
   if (kind === 'played') return { message: `${cue} played: ${label}`, tone: 'info' };
   if (kind === 'muted') return { message: `${cue} muted: ${label}`, tone: 'info' };
   if (kind === 'failed') return { message: `${cue} sound unavailable (${label}). The game continues.`, tone: 'warning' };
+  if (kind === 'held') return { message: `${cue} waits for Tongo to finish: ${label}`, tone: 'info' };
   return { message: 'Sound cues ready. Nothing plays at startup or on reload.', tone: 'info' };
 }
 
-export function createCuePlayer({ sources, createAudio, storage, onChange }) {
+export function createCuePlayer({ sources, createAudio, storage, onChange, schedule = setTimeout, cancel = clearTimeout }) {
   let settings = readCueSettings(storage);
   let status = { kind: 'idle', milestone: null };
   let current = null;
   // Only the latest request may report; stopping also retires any pending play().
   let sequence = 0;
+  // While the public Tongo presentation runs, no cue sounds: the latest request waits for it to end.
+  let holding = false;
+  let holdTimer = null;
+  let deferred = null;
 
   const emit = () => onChange({ ...settings, status: { ...status } });
   function save() {
@@ -49,6 +54,12 @@ export function createCuePlayer({ sources, createAudio, storage, onChange }) {
     const cue = wiredCue(milestone);
     if (cue === null) return;
     stop();
+    if (holding) {
+      deferred = { milestone, preview };
+      status = { kind: 'held', milestone, preview };
+      emit();
+      return;
+    }
     const mine = sequence;
     if (settings.muted || settings.volume === 0) {
       status = { kind: 'muted', milestone, preview };
@@ -80,10 +91,34 @@ export function createCuePlayer({ sources, createAudio, storage, onChange }) {
     emit();
   }
 
+  function release() {
+    if (holdTimer !== null) cancel(holdTimer);
+    holdTimer = null;
+    if (!holding) return;
+    holding = false;
+    const next = deferred;
+    deferred = null;
+    if (next !== null) void play(next.milestone, { preview: next.preview });
+  }
+
+  // Tongo coordination. `hold()` silences the current cue as soon as a Tongo request starts; pass the
+  // confirmed duration to keep the hold for exactly the presentation window, or call `release()` if
+  // the request failed. The one most recent cue requested meanwhile plays once the window closes.
+  function hold(durationMs) {
+    if (!holding) stop();
+    holding = true;
+    if (holdTimer !== null) cancel(holdTimer);
+    holdTimer = null;
+    if (Number.isFinite(durationMs) && durationMs >= 0) holdTimer = schedule(release, durationMs);
+  }
+
   emit();
   return {
     play,
     stop,
+    hold,
+    release,
+    holding: () => holding,
     settings: () => ({ ...settings }),
     setMuted(muted) { if (typeof muted === 'boolean') update({ ...settings, muted }); },
     setVolume(volume) { if (validVolume(volume)) update({ ...settings, volume }); },
