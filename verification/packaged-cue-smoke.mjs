@@ -56,7 +56,9 @@ async function expectNoReplay(operator) {
   assert.equal(await operator.evaluate(() => window.__plays), 0);
 }
 
-let app;
+// The running app, closed in `finally` so the temporary profile is never removed from under it.
+let app = null;
+const closeApp = async () => { const running = app; app = null; await running?.close(); };
 try {
   const packed = asar.listPackage(archive, { isPack: false }).map((entry) => entry.replaceAll('\\', '/'));
   for (const cue of ['line', 'bingo', 'final']) {
@@ -106,7 +108,7 @@ try {
 
   // Unmuted, so a replay after the restart would really play.
   await operator.fill('#cue-volume', '30');
-  await app.close();
+  await closeApp();
   app = await launch();
   operator = await openBingo(app);
   assert.equal(await operator.inputValue('#cue-volume'), '30');
@@ -115,15 +117,15 @@ try {
   step('restart keeps the cue volume and does not replay the milestone');
 
   await operator.locator('#cue-mute').check();
-  await app.close();
+  await closeApp();
   app = await launch();
   operator = await openBingo(app);
   assert.equal(await operator.locator('#cue-mute').isChecked(), true);
   assert.equal(await operator.inputValue('#cue-volume'), '30');
   await expectNoReplay(operator);
+  await closeApp();
   step('restart keeps mute and still does not replay');
 } finally {
-  // A failed step must not leave the packaged app running on the profile it is about to delete.
-  await app?.close().catch(() => {});
+  await closeApp().catch(() => {});
   rmSync(profile, { recursive: true, force: true });
 }

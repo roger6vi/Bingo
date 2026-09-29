@@ -12,28 +12,27 @@ export function createOperatorController(api, view) {
   let stale = false;
   let error = null;
   let loaded = false;
-  // 'read' when the shown snapshot came from reading the event (startup, reload, event switch), 'draw'
-  // when it acknowledged this operator's own draw. Only the latter may announce a new milestone.
-  let snapshotSource = null;
 
-  function render() {
+  // `reread` marks a snapshot accepted from getCurrentEvent rather than from this window's own draw, so
+  // cues treat it as a baseline: a milestone another process committed before a reload never plays.
+  function render(reread = false) {
     const exhausted = calledNumbers.length === 90;
     view.render({ calledNumbers: [...calledNumbers], remaining: 90 - calledNumbers.length,
       phase, stale, error, pending, manualDisabled: pending || !loaded || exhausted,
       digitalDisabled: pending || !loaded || exhausted, reloadDisabled: pending,
       // The last acknowledged snapshot, kept through stale and failed states (the simulator shows it).
-      snapshot: loaded ? { calledNumbers: [...calledNumbers], phase, lastTransitionAt } : null,
-      snapshotSource: loaded ? snapshotSource : null });
+      snapshot: loaded ? { calledNumbers: [...calledNumbers], phase, lastTransitionAt } : null }, { reread });
   }
 
   let inFlight = Promise.resolve();
-  function request(operation, source, manual = false) {
+  function request(operation, { manual = false, reread = false } = {}) {
     if (pending) return inFlight;
-    inFlight = settle(operation, source, manual);
+    inFlight = settle(operation, manual, reread);
     return inFlight;
   }
 
-  async function settle(operation, source, manual) {
+  async function settle(operation, manual, reread) {
+    let accepted = false;
     pending = true;
     render();
     try {
@@ -44,7 +43,7 @@ export function createOperatorController(api, view) {
           phase = result.snapshot.phase;
           lastTransitionAt = result.snapshot.lastTransitionAt;
           loaded = true;
-          snapshotSource = source;
+          accepted = true;
           stale = false;
           error = null;
           if (manual) view.clearManual();
@@ -62,18 +61,18 @@ export function createOperatorController(api, view) {
       error = connectionError;
     } finally {
       pending = false;
-      render();
+      render(reread && accepted);
     }
   }
 
-  const reload = () => request(() => api.getCurrentEvent(), 'read');
+  const reload = () => request(() => api.getCurrentEvent(), { reread: true });
   const manual = (number) => {
     if (!loaded || calledNumbers.length === 90) return;
-    void request(() => api.drawManual(number), 'draw', true);
+    void request(() => api.drawManual(number), { manual: true });
   };
   const digital = () => {
     if (!loaded || calledNumbers.length === 90) return;
-    void request(() => api.drawDigital(), 'draw');
+    void request(() => api.drawDigital());
   };
   // After the active event changes, drop the old baseline so the new event's history is accepted.
   let resyncQueued = null;

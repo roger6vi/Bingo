@@ -17,7 +17,9 @@ const launch = () => electron.launch({ executablePath, args: launchArgs(profile)
 const step = (name) => console.log(`✓ ${name}`);
 const cueStatus = (page) => page.locator('#cue-status').evaluate((element) => element.message);
 const t = (s) => `2026-09-28T20:00:0${s}.000Z`;
-let app;
+// The running app, closed in `finally` so the temporary profile is never removed from under it.
+let app = null;
+const closeApp = async () => { const running = app; app = null; await running?.close(); };
 try {
   // Seed an already committed line_declared milestone before the app ever starts.
   const store = createEventStore(path.join(profile, 'current-event.sqlite'));
@@ -74,7 +76,7 @@ try {
   assert.deepEqual(await publicWindow.evaluate(() => ({ audio: document.querySelectorAll('audio').length,
     numbers: document.querySelector('#called-numbers').calledNumbers })), { audio: 0, numbers: [5, 17] });
   step('public window shows every called number and loads no cue audio');
-  await app.close();
+  await closeApp();
 
   app = await launch();
   operator = await app.firstWindow();
@@ -83,8 +85,8 @@ try {
   assert.equal(await operator.locator('#cue-mute').isChecked(), true);
   assert.equal(await operator.locator('#cue-status').evaluate((element) => element.hidden), true, 'idle status: nothing has played');
   step('relaunch keeps cue settings and does not replay the milestone');
+  await closeApp();
 } finally {
-  // A failed step must not leave Electron running on the profile it is about to delete.
-  await app?.close().catch(() => {});
+  await closeApp().catch(() => {});
   rmSync(profile, { recursive: true, force: true });
 }
