@@ -123,10 +123,11 @@
                 <bingo-button id="move-public" block>Mover a la pantalla secundaria</bingo-button>
               </div>
               <div class="volume-control">
-                <label for="public-volume">Volumen</label>
-                <input id="public-volume" type="range" min="0" max="100" value="80" disabled aria-describedby="volume-note">
-                <span id="volume-note" class="rail-note">Sin sonido aún</span>
+                <input type="checkbox" id="cue-mute" aria-label="Silenciar avisos">
+                <input id="cue-volume" type="range" min="0" max="100" step="5" aria-label="Volumen de avisos">
+                <input type="button" id="cue-test" value="Probar aviso" class="rail-note">
               </div>
+              <bingo-status id="cue-status" hidden></bingo-status>
             </section>
           </bingo-side-rail>
         </div>

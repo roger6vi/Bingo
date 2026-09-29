@@ -22,6 +22,7 @@ import { createEventsController, today } from './events-controller.mjs';
 import { applyTheme, createThemeController, DEFAULT_THEME, revealAfter } from './theme-controller.mjs';
 import { operatorMessage, PHASE_LABELS_ES, THEME_NAMES_ES } from './operator-copy.mjs';
 import { bindSettings } from './settings-ui.mjs';
+import { bindCueControls } from './cue-ui.mjs';
 
 function required(id, type) {
   const element = document.getElementById(id);
@@ -40,6 +41,11 @@ const phaseStatus = required('phase-status', HTMLElement);
 const eventStatus = required('event-status', HTMLElement);
 const eventError = required('event-error', HTMLElement);
 const themeSelect = required('theme-select', BingoSelectField);
+const cues = bindCueControls({ mute: required('cue-mute', HTMLInputElement), volume: required('cue-volume', HTMLInputElement),
+  test: required('cue-test', HTMLInputElement), status: required('cue-status', HTMLElement) },
+{ createAudio: (url) => new Audio(url),
+  // Resolved per call: a blocked localStorage getter throws, and the player then keeps its defaults.
+  storage: { getItem: (key) => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value) } });
 
 // Configuración edits a draft that only the simulator shows; Save commits it through the same IPC.
 let committedTheme = null;
@@ -136,6 +142,7 @@ const controller = createOperatorController(window.desktop, {
     drawLocks = { manualDisabled: state.manualDisabled, digitalDisabled: state.digitalDisabled,
       reloadDisabled: state.reloadDisabled, pending: state.pending };
     applyLocks();
+    cues.observe(state.snapshot);
     // The simulator shows only committed history; it has no draw path of its own.
     settings.showCommitted(state.snapshot === null
       ? { ok: false, code: 'event_unavailable', message: 'No current event is available.' }
