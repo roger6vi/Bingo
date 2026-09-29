@@ -1,0 +1,26 @@
+# Windows packaging (#41). Kept apart from macOS packaging (#40) so either can merge first;
+# shared keys (appId, productName, files) can move into a common base later via `extends`.
+appId: io.github.roger6vi.bingo
+productName: Bingo
+directories:
+  output: release/windows
+files:
+  # Renderers, preloads and assets are already bundled into dist/; lit is inlined by Vite.
+  - dist/**/*
+  - package.json
+  - "!node_modules/**/*"
+asar: true
+# SQLite is Electron's built-in node:sqlite, so there are no native modules to rebuild.
+npmRebuild: false
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+nsis:
+  # Per-user install under %LOCALAPPDATA%\Programs; no elevation needed.
+  oneClick: true
+  perMachine: false
+  runAfterFinish: false
+  # Upgrades and uninstalls never touch the event database under %APPDATA%.
+  deleteAppDataOnUninstall: false
+  artifactName: Bingo-Setup-${version}-${arch}.${ext}

@@ -5,7 +5,7 @@ import * as fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import test from 'node:test';
+import test, { after } from 'node:test';
 import { drawManual } from '../src/event-core.ts';
 import { createEventStore } from '../src/event-store.ts';
 import { DEFAULT_THEME, THEME_IDS } from '../src/theme.ts';
@@ -17,11 +17,18 @@ const SCHEMA_VERSION = 5;
 const LEGACY_THEME_IDS = ['pixel-classic', 'high-contrast'];
 const LEGACY_DEFAULT_THEME = 'pixel-classic';
 
-function fixture(t: { after: (cleanup: () => void) => void }) {
+// Fixture directories are removed once, after every test in this file has closed its stores. Removing
+// a directory inside a per-test hook races that test's own `store.close()` hooks (hooks run in
+// registration order), and Windows refuses to delete a SQLite file that is still open.
+const fixtureDirectories: string[] = [];
+after(() => {
+  for (const directory of fixtureDirectories) fs.rmSync(directory, { recursive: true, force: true });
+});
+
+function fixture(_t?: unknown) {
   const directory = fs.mkdtempSync(join(tmpdir(), 'bingo-event-store-'));
-  const path = join(directory, 'event.sqlite');
-  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
-  return path;
+  fixtureDirectories.push(directory);
+  return join(directory, 'event.sqlite');
 }
 
 function withDb(path: string, action: (db: DatabaseSync) => void) {
