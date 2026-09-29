@@ -148,9 +148,9 @@ for (const story of stories) {
         const walk = (root) => {
           for (const element of root.querySelectorAll('*')) {
             if (element.shadowRoot) walk(element.shadowRoot);
-            // Never-rendered elements (media sources, a select field's light-DOM options) carry UA radii in newer Chromium.
-            if (['source', 'track', 'script', 'style', 'template', 'link', 'meta'].includes(element.localName)
-              || (element.localName === 'option' && element.parentElement?.localName === 'bingo-select-field')) continue;
+            // Only rendered elements: ones without a box (media sources, a native select's options) draw no corners, but
+            // carry UA radii in newer Chromium.
+            if (element.getClientRects().length === 0) continue;
             const style = getComputedStyle(element);
             const radii = [style.borderTopLeftRadius, style.borderTopRightRadius, style.borderBottomRightRadius, style.borderBottomLeftRadius];
             if (radii.some((radius) => radius !== '0px')) found.push(`${element.localName}${element.id ? `#${element.id}` : ''} (${radii.join(' ')})`);
