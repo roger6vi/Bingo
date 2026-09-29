@@ -40,6 +40,19 @@ try {
   assert.equal(await operator.evaluate(() => window.__plays), 0);
   step('committed line milestone does not replay at startup');
 
+  // Another process commits a bingo while the operator is open; an ordinary reload only shows it.
+  const external = createEventStore(path.join(profile, 'current-event.sqlite'));
+  external.transitionPhase('begin_bingo_check', t(3));
+  external.transitionPhase('declare_bingo', t(4));
+  external.close();
+  await operator.locator('#reload-event').click();
+  await operator.waitForFunction(() => document.querySelector('#phase-status').message === 'Fase: Bingo cantado');
+  // Give a late snapshot time to (wrongly) trigger a cue before asserting.
+  await operator.waitForTimeout(500);
+  assert.equal(await operator.locator('#cue-status').evaluate((element) => element.hidden), true, 'idle status: nothing has played');
+  assert.equal(await operator.evaluate(() => window.__plays), 0);
+  step('an externally committed milestone does not play on an ordinary reload');
+
   await operator.locator('#cue-test').click();
   await operator.waitForFunction(() => /^(Aviso de prueba reproducido|Sonido del aviso de prueba no disponible)/.test(document.querySelector('#cue-status').message));
   assert.equal(await cueStatus(operator), 'Aviso de prueba reproducido: Línea cantada');
@@ -59,7 +72,7 @@ try {
 
   const [publicWindow] = await Promise.all([app.waitForEvent('window'), operator.locator('#open-public button').click()]);
   await publicWindow.waitForFunction(() => document.querySelector('#called-count').value === '2');
-  assert.equal(await publicWindow.locator('#phase-status').evaluate((e) => e.message), 'Current phase: Line declared');
+  assert.equal(await publicWindow.locator('#phase-status').evaluate((e) => e.message), 'Current phase: Bingo declared');
   assert.deepEqual(await publicWindow.evaluate(() => ({ audio: document.querySelectorAll('audio').length,
     numbers: document.querySelector('#called-numbers').calledNumbers })), { audio: 0, numbers: [5, 17] });
   step('public window shows every called number and loads no cue audio');
