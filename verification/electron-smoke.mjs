@@ -256,9 +256,10 @@ async function smoke() {
 
     await step('draft preview reaches only the simulator', async () => {
       simulator = await simulatorFrame(operator);
-      await operator.fill('#settings-name', 'Verbena de prueba');
-      await operator.fill('#settings-place', 'Plaza Mayor');
-      await operator.selectOption('#theme-select', 'high-contrast');
+      // The shared field components wrap native controls in their shadow roots; Playwright pierces them.
+      await operator.fill('#settings-name input', 'Verbena de prueba');
+      await operator.fill('#settings-place input', 'Plaza Mayor');
+      await operator.selectOption('#theme-select select', 'high-contrast');
       await simulator.waitForFunction(() => document.querySelector('#event-name').textContent === 'Verbena de prueba' &&
         document.querySelector('#event-details').textContent.endsWith('· Plaza Mayor') &&
         document.documentElement.dataset.theme === 'high-contrast' && document.querySelector('#called-count').value === '1',
@@ -306,8 +307,8 @@ async function smoke() {
 
     await step('event creation and selection', async () => {
       await operator.click('#tab-events');
-      await operator.fill('#event-name', 'Segundo evento');
-      await operator.fill('#event-place', 'Salón social');
+      await operator.fill('#event-name input', 'Segundo evento');
+      await operator.fill('#event-place input', 'Salón social');
       await operator.click('#create-event-submit');
       await operator.waitForFunction(() => document.querySelector('#event-list').events?.length === 2);
       const byName = (a, b) => a.name.localeCompare(b.name);
@@ -332,8 +333,8 @@ async function smoke() {
       ({ app, operator } = await launch('restart'));
       await operator.waitForFunction(() => document.querySelector('#settings-name')?.value === 'Verbena de prueba' &&
         document.documentElement.dataset.theme === 'high-contrast');
-      assert.equal(await operator.inputValue('#settings-place'), 'Plaza Mayor');
-      assert.equal(await operator.inputValue('#theme-select'), 'high-contrast');
+      assert.equal(await operator.inputValue('#settings-place input'), 'Plaza Mayor');
+      assert.equal(await operator.inputValue('#theme-select select'), 'high-contrast');
       assert.equal(await operator.locator('#event-summary').evaluate((summary) => summary.count), 1);
       await operator.waitForFunction(() => document.querySelector('#event-list').events?.length === 2);
       assert.equal((await eventList(operator)).find((event) => event.active)?.name, 'Verbena de prueba');

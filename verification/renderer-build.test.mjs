@@ -64,7 +64,8 @@ test('built operator shell bundles shared presentation under the offline CSP', (
   const html = text('dist/renderer/operator.html');
   const js = readdirSync(path.join(renderer, 'assets'))
     .filter((file) => file.endsWith('.js')).map((file) => text(`dist/renderer/assets/${file}`)).join('\n');
-  for (const name of ['app-shell', 'tabs', 'tab-panel', 'side-rail', 'operator-board', 'panel', 'status', 'number', 'operator-summary', 'call-history']) {
+  for (const name of ['app-shell', 'tabs', 'tab-panel', 'side-rail', 'operator-board', 'panel', 'status', 'number',
+    'operator-summary', 'call-history', 'text-field', 'date-field', 'select-field', 'form-actions']) {
     assert.ok(js.includes(`bingo-${name}`), `bundled ${name} registration`);
   }
   assert.match(html, /<html lang="es">/);
@@ -73,6 +74,11 @@ test('built operator shell bundles shared presentation under the offline CSP', (
   assert.match(html, /<bingo-operator-board id="operator-board"><\/bingo-operator-board>/);
   assert.match(html, /<bingo-call-history id="called-numbers"/);
   assert.doesNotMatch(html, /<ol id="called-numbers"|id="stale-warning"/);
+  // Every operator form control is a shared, form-associated Lit component; the volume slider is the
+  // one deliberate native control left in the page.
+  assert.doesNotMatch(html, /<select\b/, 'the theme picker is a shared component');
+  assert.match(html, /<input id="public-volume" type="range"/);
+  assert.equal((html.match(/<input\b/g) ?? []).length, 1, 'only the volume range remains a native input');
 });
 
 test('public sample is bundled under renderer and remains opt-in', () => {

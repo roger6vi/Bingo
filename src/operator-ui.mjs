@@ -10,6 +10,11 @@ import './components/bingo-operator-board.mjs';
 import './components/bingo-draw-controls.mjs';
 import './components/bingo-dialog.mjs';
 import './components/bingo-event-list.mjs';
+import { BingoButton } from './components/bingo-button.mjs';
+import { BingoTextField } from './components/bingo-text-field.mjs';
+import { BingoDateField } from './components/bingo-date-field.mjs';
+import { BingoSelectField } from './components/bingo-select-field.mjs';
+import { BingoFormActions } from './components/bingo-form-actions.mjs';
 import './screen.css';
 import { createOperatorController } from './operator-controller.mjs';
 import { createManualDrawHandler } from './manual-draw.mjs';
@@ -34,21 +39,20 @@ const summary = required('event-summary', HTMLElement);
 const phaseStatus = required('phase-status', HTMLElement);
 const eventStatus = required('event-status', HTMLElement);
 const eventError = required('event-error', HTMLElement);
-const themeSelect = required('theme-select', HTMLSelectElement);
+const themeSelect = required('theme-select', BingoSelectField);
 
 // Configuración edits a draft that only the simulator shows; Save commits it through the same IPC.
 let committedTheme = null;
 const settings = bindSettings({
   form: required('settings-form', HTMLFormElement),
-  inputs: { name: required('settings-name', HTMLInputElement), place: required('settings-place', HTMLInputElement),
-    date: required('settings-date', HTMLInputElement) },
-  fieldErrors: { name: required('settings-name-error', HTMLElement), place: required('settings-place-error', HTMLElement),
-    date: required('settings-date-error', HTMLElement) },
+  inputs: { name: required('settings-name', BingoTextField), place: required('settings-place', BingoTextField),
+    date: required('settings-date', BingoDateField) },
   theme: themeSelect,
   state: required('settings-state', HTMLElement),
   error: required('settings-error', HTMLElement),
-  save: required('settings-save', HTMLButtonElement),
-  discard: required('settings-discard', HTMLButtonElement),
+  actions: required('settings-actions', BingoFormActions),
+  save: required('settings-save', BingoButton),
+  discard: required('settings-discard', BingoButton),
   dialog: required('unsaved-dialog', HTMLElement),
   frame: required('public-simulator', HTMLIFrameElement),
   viewport: required('simulator-viewport', HTMLElement),
@@ -149,6 +153,7 @@ const themes = createThemeController(window.desktop, {
     committedTheme = theme;
     if (theme !== null) settings.config.setCommittedTheme(theme);
     themePending = pending;
+    themeSelect.pending = pending;
     applyLocks();
     themeStatus.message = operatorMessage(error) ?? (pending ? 'Guardando tema' : theme === null ? 'Esperando el tema guardado'
       : `Tema guardado: ${THEME_NAMES_ES[theme]}`);
@@ -165,8 +170,9 @@ const eventsStatus = required('events-status', HTMLElement);
 const eventsError = required('events-error', HTMLElement);
 const reloadEvents = required('reload-events', HTMLElement);
 const createForm = required('create-event', HTMLFormElement);
-const createSubmit = required('create-event-submit', HTMLButtonElement);
-const eventDate = required('event-date', HTMLInputElement);
+const createSubmit = required('create-event-submit', BingoButton);
+const createActions = required('create-event-actions', BingoFormActions);
+const eventDate = required('event-date', BingoDateField);
 const banner = required('active-event-banner', HTMLElement);
 eventDate.value = today();
 
@@ -180,6 +186,7 @@ const events = createEventsController(window.desktop, {
     applyLocks();
     reloadEvents.disabled = pending !== null;
     createSubmit.disabled = pending !== null;
+    createActions.pending = pending === 'create';
     eventsStatus.message = pending === 'select' ? 'Activando evento' : pending === 'create' ? 'Creando evento'
       : !loaded ? (pending ? 'Cargando eventos' : 'No se pudieron cargar los eventos')
         : stale ? 'La lista de eventos puede estar desactualizada. Recárgala antes de continuar.'

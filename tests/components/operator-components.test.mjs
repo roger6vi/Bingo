@@ -131,7 +131,18 @@ it('operator page is a Spanish three-tab application shell with shared panels an
   expect(page.querySelectorAll('.active-event-banner')).to.have.length(1);
   expect(page.querySelector('header #active-event-banner')).not.to.equal(null, 'one active-event banner, visible from every tab');
   expect(page.querySelector('#panel-events bingo-event-list#event-list')).not.to.equal(null);
-  expect(page.querySelector('#panel-events input#event-date[type="date"][required]')).not.to.equal(null);
+  // Every operator form control is a shared component; no raw text, date or select controls remain,
+  // except the one deliberate native volume slider in the rail.
+  expect(page.querySelectorAll('main input, main select, main textarea')).to.have.length(1);
+  expect(page.querySelector('main input#public-volume[type="range"]')).not.to.equal(null);
+  expect(page.querySelectorAll('main form button')).to.have.length(0);
+  expect(page.querySelector('#panel-events form#create-event bingo-date-field#event-date[name="date"][required]')).not.to.equal(null);
+  for (const [id, name] of [['event-name', 'name'], ['event-place', 'place']]) {
+    const field = page.querySelector(`#panel-events form#create-event bingo-text-field#${id}`);
+    expect([field.getAttribute('name'), field.hasAttribute('required'), field.getAttribute('maxlength')]).to.deep.equal([name, true, '120']);
+  }
+  expect(page.querySelector('#create-event bingo-form-actions bingo-button#create-event-submit[type="submit"][slot="primary"]').textContent)
+    .to.equal('Crear evento');
   // Bingo: the dominant zone beside a side rail with draw, claim, and public-window controls.
   expect(page.querySelector('#panel-bingo .bingo-workspace > bingo-panel.board-zone > bingo-operator-board#operator-board'))
     .not.to.equal(null, 'the 1–90 board is the dominant zone');
@@ -142,18 +153,21 @@ it('operator page is a Spanish three-tab application shell with shared panels an
     .to.deep.equal([['Línea', true], ['Bingo', true], ['Sorteo de empate', true]]);
   expect(rail.querySelector('[slot="footer"] #open-public')).not.to.equal(null, 'the public-window launch is pinned to the rail');
   expect(rail.querySelector('[slot="footer"] input#public-volume[type="range"]')).not.to.equal(null);
-  expect(page.querySelector('#panel-settings label[for="theme-select"]').textContent).to.equal('Tema para ambas pantallas');
-  for (const id of ['settings-name', 'settings-place', 'settings-date']) {
-    const input = page.querySelector(`#panel-settings form#settings-form .settings-scroll input#${id}[required]`);
-    expect(page.querySelector(`label[for="${id}"]`)).not.to.equal(null);
-    expect(page.getElementById(input.getAttribute('aria-describedby')).classList.contains('field-error')).to.equal(true);
+  expect(page.querySelector('#panel-settings bingo-select-field#theme-select').getAttribute('label')).to.equal('Tema para ambas pantallas');
+  for (const [id, tag, label] of [['settings-name', 'bingo-text-field', 'Nombre'], ['settings-place', 'bingo-text-field', 'Lugar'],
+    ['settings-date', 'bingo-date-field', 'Fecha']]) {
+    const field = page.querySelector(`#panel-settings form#settings-form .settings-scroll ${tag}#${id}[required][disabled]`);
+    expect(field.getAttribute('label')).to.equal(label);
   }
   expect(page.querySelector('#settings-save').textContent).to.equal('Guardar cambios');
   expect(page.querySelector('#settings-form .settings-footer #settings-save[type="submit"]')).not.to.equal(null);
+  // Actions keep one order: status first, secondary, then the primary action last.
+  expect([...page.querySelector('bingo-form-actions#settings-actions').children].map((child) => [child.id, child.slot]))
+    .to.deep.equal([['settings-state', 'status'], ['settings-discard', ''], ['settings-save', 'primary']]);
   const simulator = page.querySelector('#panel-settings figure.simulator iframe#public-simulator');
   expect([simulator.getAttribute('src'), simulator.hasAttribute('inert'), simulator.title])
     .to.deep.equal(['bingo-public://simulator/public.html', true, 'Simulador de la pantalla pública']);
-  expect([...page.querySelectorAll('select#theme-select option')].map((option) => [option.value, option.textContent]))
+  expect([...page.querySelectorAll('bingo-select-field#theme-select option')].map((option) => [option.value, option.textContent]))
     .to.deep.equal([['pixel-classic', 'Píxel clásico'], ['high-contrast', 'Alto contraste']]);
   expect(page.querySelector('bingo-status#theme-status')).not.to.equal(null);
   expect(page.querySelector('bingo-operator-summary#event-summary')).not.to.equal(null);
@@ -560,11 +574,17 @@ it('event details draft into the simulator, validate like the store, and save th
     expect(simulator.last('meta')).to.deep.equal({ name: 'Gran Bingo', date: '2026-09-01', place: 'Plaza' });
     expect(banners.map((banner) => banner.message)).to.deep.equal([committedBanner]);
     type(place, '   ');
-    const placeError = main.querySelector('#settings-place-error');
-    expect([place.getAttribute('aria-invalid'), placeError.hidden, placeError.textContent, save.disabled])
-      .to.deep.equal(['true', false, 'Escribe un lugar de 1 a 120 caracteres.', true]);
+    await place.updateComplete;
+    // The field describes and announces its own error; it is marked invalid, not only colored.
+    const placeError = place.shadowRoot.querySelector('#error');
+    expect([place.error, place.control.getAttribute('aria-invalid'), place.control.getAttribute('aria-describedby'),
+      placeError.getAttribute('aria-live'), placeError.textContent.trim(), place.validity.customError, save.disabled])
+      .to.deep.equal(['Escribe un lugar de 1 a 120 caracteres.', 'true', 'error', 'polite',
+        'Error: Escribe un lugar de 1 a 120 caracteres.', true, true]);
     type(place, 'Plaza');
-    expect([place.getAttribute('aria-invalid'), placeError.hidden, save.disabled]).to.deep.equal(['false', true, false]);
+    await place.updateComplete;
+    expect([place.control.getAttribute('aria-invalid'), place.control.hasAttribute('aria-describedby'), placeError.textContent.trim(),
+      place.validity.valid, save.disabled]).to.deep.equal(['false', false, '', true, false]);
     op.replies.updateEvent = { ok: false, code: 'storage_failure', message: 'Could not save the event details. Reload the events and try again.' };
     save.click();
     await settle();
@@ -702,7 +722,8 @@ it('Configuración keeps a scrolling control column with fixed actions beside a 
       probe.remove();
       await expect(main.querySelector('#panel-settings')).to.be.accessible();
     }
-    expect(getComputedStyle(main.querySelector('#settings-discard')).transitionDuration).to.equal('0s');
+    expect(getComputedStyle(main.querySelector('#settings-discard').button).transitionDuration).to.equal('0s');
+    expect(getComputedStyle(main.querySelector('#settings-name').control).transitionDuration).to.equal('0s');
     // Narrow windows stack the columns and scroll inside the tab, never the document.
     await setViewport({ width: 600, height: 700 });
     await frames();
