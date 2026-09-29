@@ -8,6 +8,7 @@ import { createOperatorGuard, registerEventIpc } from './event-ipc';
 import { registerEventCatalogIpc } from './event-catalog-ipc';
 import { registerThemeIpc } from './theme-ipc';
 import { registerTongoIpc } from './tongo-ipc';
+import { registerPrizeIpc } from './prize-ipc';
 import { createPublicEventDelivery } from './public-event-delivery';
 import { createWindowLifecycle } from './window-lifecycle';
 import { planOperatorWindow, planPublicWindow } from './window-plan';
@@ -67,13 +68,15 @@ if (!app.requestSingleInstanceLock()) {
     const active = store.listEvents().find((event) => event.active);
     return active === undefined ? null : { name: active.name, date: active.date, place: active.place };
   };
-  const publicDelivery = createPublicEventDelivery(store, () => theme.current(), activeMeta);
+  const activePrizes = () => store.loadPrizes()?.prizes ?? null;
+  const publicDelivery = createPublicEventDelivery(store, () => theme.current(), activeMeta, activePrizes);
   const operatorOnly = createOperatorGuard(operator.webContents, operatorFrame, operatorUrl);
   const theme = registerThemeIpc(ipcMain, { load: store.loadTheme, save: store.saveTheme },
     operatorOnly, publicDelivery.publishTheme);
   registerEventCatalogIpc(ipcMain, store, operatorOnly, () => publicDelivery.publishActive(theme.reload()),
     publicDelivery.publishMeta);
   const tongo = registerTongoIpc(ipcMain, store, { authorize: operatorOnly, publish: publicDelivery.publishPresentation });
+  registerPrizeIpc(ipcMain, store, operatorOnly, publicDelivery.publishPrizes);
   registerEventIpc(ipcMain, store, { drawManual, drawDigital }, Math.random,
     operator.webContents, operatorFrame, operatorUrl, publicDelivery.publishCommitted, tongo.playing);
   void operator.loadFile(operatorPath);

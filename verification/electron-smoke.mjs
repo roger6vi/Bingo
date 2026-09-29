@@ -275,14 +275,15 @@ async function smoke() {
     await step('receive-only public boundary and bridge-free simulator', async () => {
       // The simulator is the production public page with no privileged bridge at all.
       assert.deepEqual(await simulator.evaluate(() => ({
-        own: ['desktop', 'publicEvent', 'publicTheme', 'publicEventMeta', 'publicPresentation'].filter((name) => name in window),
+        own: ['desktop', 'publicEvent', 'publicTheme', 'publicEventMeta', 'publicEventPrizes', 'publicPresentation'].filter((name) => name in window),
         parentDesktop: (() => { try { return 'desktop' in window.parent; } catch { return 'blocked'; } })(),
       })), { own: [], parentDesktop: 'blocked' });
       // The public window can only subscribe.
       assert.deepEqual(await publicWindow.evaluate(() => ({
         desktop: 'desktop' in window, require: typeof require,
-        bridges: ['publicEvent', 'publicTheme', 'publicEventMeta', 'publicPresentation'].map((name) => Object.keys(window[name])),
-      })), { desktop: false, require: 'undefined', bridges: [['subscribe'], ['subscribe'], ['subscribe'], ['subscribe']] });
+        bridges: ['publicEvent', 'publicTheme', 'publicEventMeta', 'publicEventPrizes', 'publicPresentation']
+          .map((name) => Object.keys(window[name])),
+      })), { desktop: false, require: 'undefined', bridges: [['subscribe'], ['subscribe'], ['subscribe'], ['subscribe'], ['subscribe']] });
     });
 
     await step('Save / Discard / Cancel guard', async () => {
