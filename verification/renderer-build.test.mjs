@@ -186,3 +186,14 @@ test('the Configuración simulator frames the bundled public page without any pr
   assert.doesNotMatch(main, /nodeIntegrationInSubFrames/);
   assert.doesNotMatch(text('dist/renderer/public.html'), /<iframe\b/);
 });
+
+test('Tongo keeps an operator-only trigger and a receive-only, never-replayed public signal', () => {
+  const main = text('dist/main.js');
+  assert.match(main, /registerTongoIpc\)\(electron_1\.ipcMain, store, \{ authorize: operatorOnly, publish: publicDelivery\.publishPresentation \}\)/);
+  assert.match(main, /publicDelivery\.publishCommitted, tongo\.playing\)/);
+  assert.match(text('dist/preload.js'), /playTongo: \(\) => electron_1\.ipcRenderer\.invoke\('tongo:play'\)/);
+  const publicPreload = text('dist/public-preload.js');
+  assert.match(publicPreload, /exposeInMainWorld\('publicPresentation'/);
+  assert.match(publicPreload, /'public:presentation'/);
+  assert.doesNotMatch(publicPreload, /tongo:play|ipcRenderer\.(?:send|invoke|sendSync)\b/);
+});

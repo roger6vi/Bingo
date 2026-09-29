@@ -11,7 +11,7 @@ const initialSnapshot = (calledNumbers: number[]): StoredSnapshot =>
 type Handler = (event: { sender: object; senderFrame: object | null }, ...args: unknown[]) => unknown;
 
 function fixture(initial: readonly number[] | null = [90, 1], random = () => 0,
-  notify?: (snapshot: EventSnapshot) => void) {
+  notify?: (snapshot: EventSnapshot) => void, presenting?: () => boolean) {
   const sender = {}, frame = { url: 'file:///app/operator.html' }, other = {};
   const handlers = new Map<string, Handler>();
   const calls: string[] = [];
@@ -35,7 +35,7 @@ function fixture(initial: readonly number[] | null = [90, 1], random = () => 0,
   registerEventIpc({ handle: (channel: string, handler: Handler) => {
     assert.equal(handlers.has(channel), false);
     handlers.set(channel, handler);
-  } }, store, rules, random, sender, () => frame, frame.url, notify);
+  } }, store, rules, random, sender, () => frame, frame.url, notify, presenting);
   const invoke = (channel: string, args: unknown[] = [], from = sender, fromFrame: object | null = frame) => {
     const handler = handlers.get(channel);
     assert.ok(handler);
@@ -223,4 +223,18 @@ test('a failed update never acknowledges a proposed snapshot or leaks storage de
   assert.equal(JSON.stringify(result).includes('secret'), false);
   assert.deepEqual(f.snapshot(), [90]);
   assert.deepEqual(f.calls, ['update']);
+});
+
+test('draws are refused without touching store, randomness, or display while Tongo plays', () => {
+  let playing = true;
+  const notified: EventSnapshot[] = [];
+  const f = fixture([1], () => { f.calls.push('random'); return 0; }, (snapshot) => notified.push(snapshot), () => playing);
+  const busy = failure('presentation_active', 'Wait for Tongo to finish, then draw again.');
+  assert.deepEqual(f.invoke(EVENT_CHANNELS.manual, [2]), busy);
+  assert.deepEqual(f.invoke(EVENT_CHANNELS.digital), busy);
+  assert.deepEqual(f.invoke(EVENT_CHANNELS.get), { ok: true, snapshot: initialSnapshot([1]) });
+  assert.deepEqual(f.invoke(EVENT_CHANNELS.manual, [91]), failure('invalid_request', 'Invalid event request.'));
+  assert.deepEqual([f.calls, notified, f.snapshot()], [['load'], [], [1]]);
+  playing = false;
+  assert.deepEqual(f.invoke(EVENT_CHANNELS.manual, [2]), { ok: true, snapshot: initialSnapshot([1, 2]) });
 });

@@ -7,6 +7,7 @@ import { initializeCurrentEvent } from './event-persistence';
 import { createOperatorGuard, registerEventIpc } from './event-ipc';
 import { registerEventCatalogIpc } from './event-catalog-ipc';
 import { registerThemeIpc } from './theme-ipc';
+import { registerTongoIpc } from './tongo-ipc';
 import { createPublicEventDelivery } from './public-event-delivery';
 import { createWindowLifecycle } from './window-lifecycle';
 import { planOperatorWindow, planPublicWindow } from './window-plan';
@@ -72,8 +73,9 @@ if (!app.requestSingleInstanceLock()) {
     operatorOnly, publicDelivery.publishTheme);
   registerEventCatalogIpc(ipcMain, store, operatorOnly, () => publicDelivery.publishActive(theme.reload()),
     publicDelivery.publishMeta);
+  const tongo = registerTongoIpc(ipcMain, store, { authorize: operatorOnly, publish: publicDelivery.publishPresentation });
   registerEventIpc(ipcMain, store, { drawManual, drawDigital }, Math.random,
-    operator.webContents, operatorFrame, operatorUrl, publicDelivery.publishCommitted);
+    operator.webContents, operatorFrame, operatorUrl, publicDelivery.publishCommitted, tongo.playing);
   void operator.loadFile(operatorPath);
 
   const lifecycle = createWindowLifecycle<BrowserWindow>({
