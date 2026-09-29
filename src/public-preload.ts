@@ -5,6 +5,7 @@ const PUBLIC_EVENT_CHANNEL = 'public:event-state';
 const PUBLIC_THEME_CHANNEL = 'public:theme';
 const PUBLIC_META_CHANNEL = 'public:event-meta';
 const PUBLIC_PRIZES_CHANNEL = 'public:event-prizes';
+const PUBLIC_PRESENTATION_CHANNEL = 'public:presentation';
 
 contextBridge.exposeInMainWorld('publicEvent', Object.freeze({
   subscribe: (callback: (result: unknown) => void) => {
@@ -35,5 +36,13 @@ contextBridge.exposeInMainWorld('publicEventPrizes', Object.freeze({
     const listener = (_event: Electron.IpcRendererEvent, prizes: unknown) => callback(prizes);
     ipcRenderer.on(PUBLIC_PRIZES_CHANNEL, listener);
     return () => ipcRenderer.removeListener(PUBLIC_PRIZES_CHANNEL, listener);
+  },
+}));
+
+contextBridge.exposeInMainWorld('publicPresentation', Object.freeze({
+  subscribe: (callback: (presentation: unknown) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, presentation: unknown) => callback(presentation);
+    ipcRenderer.on(PUBLIC_PRESENTATION_CHANNEL, listener);
+    return () => ipcRenderer.removeListener(PUBLIC_PRESENTATION_CHANNEL, listener);
   },
 }));

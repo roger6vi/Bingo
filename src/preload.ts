@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('desktop', Object.freeze({
     ipcRenderer.invoke('prizes:update', id, prizes),
   getTheme: () => ipcRenderer.invoke('theme:get'),
   setTheme: (theme: string) => ipcRenderer.invoke('theme:set', theme),
+  playTongo: () => ipcRenderer.invoke('tongo:play'),
   onPublicStatus: (callback: (pauseSuggested: boolean) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, pauseSuggested: boolean) => callback(pauseSuggested);
     ipcRenderer.on('public-status', listener);
