@@ -61,7 +61,8 @@ try {
   for (const cue of ['line', 'bingo', 'final']) {
     const entries = packed.filter((entry) => new RegExp(`^/dist/renderer/assets/${cue}-[\\w-]+\\.wav$`).test(entry));
     assert.equal(entries.length, 1, `one ${cue} cue in app.asar`);
-    assert.deepEqual(asar.extractFile(archive, entries[0].slice(1)), readFileSync(path.join(root, 'assets', 'cues', `${cue}.wav`)),
+    // extractFile splits on path.sep, so hand it a native path (backslashes on Windows).
+    assert.deepEqual(asar.extractFile(archive, path.join(...entries[0].slice(1).split('/'))), readFileSync(path.join(root, 'assets', 'cues', `${cue}.wav`)),
       `${entries[0]} matches assets/cues/${cue}.wav`);
   }
   assert.ok(!existsSync(path.join(`${archive}.unpacked`, 'dist', 'renderer', 'assets')), 'no renderer asset is unpacked beside app.asar');
