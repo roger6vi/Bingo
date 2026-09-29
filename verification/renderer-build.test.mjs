@@ -200,6 +200,20 @@ test('the Configuración simulator frames the bundled public page without any pr
   assert.doesNotMatch(text('dist/renderer/public.html'), /<iframe\b/);
 });
 
+test('operator cue sounds are emitted as local files, referenced by the operator bundle, never inlined', () => {
+  const assets = readdirSync(path.join(renderer, 'assets'));
+  const bundle = (prefix) => assets.filter((file) => file.startsWith(prefix) && file.endsWith('.js'))
+    .map((file) => text(`dist/renderer/assets/${file}`)).join('\n');
+  const js = bundle('operator-');
+  for (const cue of ['line', 'bingo', 'final']) {
+    const emitted = assets.filter((file) => new RegExp(`^${cue}-[\\w-]+\\.wav$`).test(file));
+    assert.equal(emitted.length, 1, `one bundled ${cue} cue`);
+    assert.ok(js.includes(`new URL("${emitted[0]}",import.meta.url)`), `operator bundle resolves ${emitted[0]} locally`);
+  }
+  assert.doesNotMatch(js, /data:audio\//);
+  assert.doesNotMatch(bundle('public-'), /\.wav\b/, 'the public window loads no cue sounds');
+});
+
 test('Tongo keeps an operator-only trigger and a receive-only, never-replayed public signal', () => {
   const main = text('dist/main.js');
   assert.match(main, /registerTongoIpc\)\(electron_1\.ipcMain, store, \{ authorize: operatorOnly, publish: publicDelivery\.publishPresentation \}\)/);

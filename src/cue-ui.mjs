@@ -19,9 +19,10 @@ export function bindCueControls({ mute, volume, test, status }, { sources = CUE_
   // An explicit operator request, so the level can be checked before the event starts.
   test.addEventListener('click', () => { void player.play('line_declared', { preview: true }); });
   return {
-    // Call with every acknowledged snapshot (or null when none is loaded).
-    observe(snapshot) {
-      const milestone = tracker.observe(snapshot);
+    // Call with every acknowledged snapshot (or null when none is loaded) and the controller's
+    // acknowledgement details; a re-read snapshot only moves the baseline.
+    observe(snapshot, acknowledgement) {
+      const milestone = tracker.observe(snapshot, acknowledgement);
       if (milestone !== null) void player.play(milestone);
     },
     // Wraps the operator's Tongo request so no cue overlaps the public presentation window.

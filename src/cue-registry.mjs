@@ -15,18 +15,19 @@ export function wiredCue(milestone) {
 }
 
 // The first snapshot after startup, a reload, or an event switch is only a baseline, so a milestone
-// that was already committed never replays. Pass null when no snapshot is loaded.
+// that was already committed never replays. Pass null when no snapshot is loaded, and `reread: true`
+// for a snapshot re-read from storage (an ordinary reload) rather than acknowledged for a local request.
 export function createMilestoneTracker() {
   let baseline = null;
   return {
-    observe(snapshot) {
+    observe(snapshot, { reread = false } = {}) {
       if (snapshot === null) {
         baseline = null;
         return null;
       }
       const previous = baseline;
       baseline = { phase: snapshot.phase, lastTransitionAt: snapshot.lastTransitionAt };
-      if (previous === null || snapshot.lastTransitionAt === previous.lastTransitionAt) return null;
+      if (reread || previous === null || snapshot.lastTransitionAt === previous.lastTransitionAt) return null;
       return wiredCue(snapshot.phase) ? snapshot.phase : null;
     },
   };
