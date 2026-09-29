@@ -10,6 +10,7 @@ import './components/bingo-operator-board.mjs';
 import './components/bingo-draw-controls.mjs';
 import './components/bingo-dialog.mjs';
 import './components/bingo-event-list.mjs';
+import './components/bingo-tongo-control.mjs';
 import { BingoButton } from './components/bingo-button.mjs';
 import { BingoTextField } from './components/bingo-text-field.mjs';
 import { BingoDateField } from './components/bingo-date-field.mjs';
@@ -22,6 +23,7 @@ import { createEventsController, today } from './events-controller.mjs';
 import { applyTheme, createThemeController, DEFAULT_THEME, revealAfter } from './theme-controller.mjs';
 import { operatorMessage, PHASE_LABELS_ES, THEME_NAMES_ES } from './operator-copy.mjs';
 import { bindSettings } from './settings-ui.mjs';
+import { createTongoController, tongoPlayable } from './tongo.mjs';
 
 function required(id, type) {
   const element = document.getElementById(id);
@@ -72,8 +74,14 @@ let drawLocks = { manualDisabled: true, digitalDisabled: true, reloadDisabled: f
 let themePending = true;
 let eventsPending = false;
 let eventListRef = null;
+// While Tongo is requested or playing, every other live action waits; it is offered only during play.
+let tongoBusy = false;
+let gameState = null;
+const tongoControl = required('tongo-control', HTMLElement);
+const tongoError = required('tongo-error', HTMLElement);
 function applyLocks() {
-  const locked = selecting || activating;
+  const locked = selecting || activating || tongoBusy;
+  tongoControl.disabled = locked || !tongoPlayable(gameState);
   controls.manualDisabled = locked || drawLocks.manualDisabled;
   controls.digitalDisabled = locked || drawLocks.digitalDisabled;
   controls.reloadDisabled = locked || drawLocks.reloadDisabled;
@@ -82,7 +90,7 @@ function applyLocks() {
   board.pending = drawLocks.pending;
   settings.setLocked(locked || themePending);
   // A second selection must not start until the first one's dependent panels have re-read.
-  if (eventListRef !== null) eventListRef.disabled = eventsPending || activating;
+  if (eventListRef !== null) eventListRef.disabled = eventsPending || activating || tongoBusy;
 }
 
 openPublic.addEventListener('click', () => window.desktop.openPublic());
@@ -103,11 +111,11 @@ const controller = createOperatorController(window.desktop, {
   bind: ({ manual, digital, reload }) => {
     // The board only requests a call; it shows the number called once the acknowledged snapshot arrives.
     board.addEventListener('number-select', (event) => {
-      if (selecting || activating || controls.mode === 'digital') return;
+      if (selecting || activating || tongoBusy || controls.mode === 'digital') return;
       manual(event.detail.number);
     });
     controls.addEventListener('click', (event) => {
-      if (selecting || activating) return;
+      if (selecting || activating || tongoBusy) return;
       const action = event.composedPath().find((node) => node?.id === 'draw-manual' || node?.id === 'draw-digital' || node?.id === 'reload-event');
       if (action?.id === 'draw-manual') createManualDrawHandler(controls.manualInput, manual)();
       else if (action?.id === 'draw-digital') digital();
@@ -133,6 +141,7 @@ const controller = createOperatorController(window.desktop, {
     eventError.message = operatorMessage(state.error) ?? '';
     eventError.tone = 'error';
     eventError.hidden = !state.error;
+    gameState = state;
     drawLocks = { manualDisabled: state.manualDisabled, digitalDisabled: state.digitalDisabled,
       reloadDisabled: state.reloadDisabled, pending: state.pending };
     applyLocks();
@@ -143,6 +152,20 @@ const controller = createOperatorController(window.desktop, {
   },
 });
 void controller.start();
+
+const tongo = createTongoController(window.desktop, {
+  render: ({ busy, progress, error }) => {
+    tongoBusy = busy;
+    tongoControl.progress = progress;
+    tongoError.message = operatorMessage(error) ?? '';
+    tongoError.tone = 'error';
+    tongoError.hidden = !error;
+    applyLocks();
+  },
+});
+tongoControl.addEventListener('tongo-play', () => {
+  if (!tongoBusy && !tongoControl.disabled) void tongo.play();
+});
 
 const themeStatus = required('theme-status', HTMLElement);
 const themes = createThemeController(window.desktop, {
@@ -204,7 +227,7 @@ const events = createEventsController(window.desktop, {
 }, () => Promise.all([controller.resync(), themes.start()]));
 // events.select resolves only after resync() and the theme re-read settle.
 eventList.addEventListener('event-select', async (event) => {
-  if (activating) return;
+  if (activating || tongoBusy) return;
   // Selecting another event would replace the draft: offer Save, Discard, or Cancel first.
   if (await settings.confirmLeave() !== true || activating) return;
   activating = true;

@@ -7,13 +7,13 @@ import { THEME_LABELS } from '../src/theme-controller.mjs';
 const source = (file: string) => readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
 
 // Every English message the operator can receive, from the main process or its own controllers.
-const sources = ['src/event-ipc.ts', 'src/theme-ipc.ts', 'src/event-catalog-ipc.ts',
-  'src/operator-controller.mjs', 'src/events-controller.mjs', 'src/theme-controller.mjs'];
+const sources = ['src/event-ipc.ts', 'src/theme-ipc.ts', 'src/event-catalog-ipc.ts', 'src/tongo-ipc.ts',
+  'src/operator-controller.mjs', 'src/events-controller.mjs', 'src/theme-controller.mjs', 'src/tongo.mjs'];
 
 test('every English operator-facing message has a Spanish translation', () => {
   const english = new Set<string>();
   for (const file of sources) {
-    for (const [, text] of source(file).matchAll(/'((?:Could not|Invalid|No current|All numbers|That number|The event)[^']*)'/g)) {
+    for (const [, text] of source(file).matchAll(/'((?:Could not|Invalid|No current|All numbers|That number|The event|Tongo|Wait for|Open the public)[^']*)'/g)) {
       english.add(text);
     }
   }

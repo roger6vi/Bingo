@@ -206,3 +206,13 @@ test('the bundled public page ships the Tongo overlay but never the trigger', ()
   assert.match(bundle, /publicPresentation/);
   assert.doesNotMatch(bundle, /tongo:play/);
 });
+
+test('the bundled operator page ships the Tongo control in the claims row with its own status', () => {
+  const html = text('dist/renderer/operator.html');
+  assert.match(html, /<div class="claim-buttons">\s*<bingo-button id="claim-line"[^>]*>Línea<\/bingo-button>\s*<bingo-button id="claim-bingo"[^>]*>Bingo<\/bingo-button>\s*<bingo-tongo-control id="tongo-control"><\/bingo-tongo-control>/);
+  assert.match(html, /<bingo-status id="tongo-error" hidden><\/bingo-status>/);
+  const bundle = readdirSync(path.join(renderer, 'assets')).filter((file) => file.endsWith('.js'))
+    .map((file) => text(`dist/renderer/assets/${file}`)).join('\n');
+  assert.match(bundle, /customElements\.define\("bingo-tongo-control"/);
+  assert.match(bundle, /\.playTongo\(\)/);
+});
