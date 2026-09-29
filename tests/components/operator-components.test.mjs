@@ -875,6 +875,9 @@ it('operator board lays out 1–90 in numeric rows with uncalled, called, latest
       document.body.append(probe);
       expect(getComputedStyle(cellOf(board, 3)).backgroundColor).to.equal(getComputedStyle(probe).color, `${theme} called cell`);
       expect(getComputedStyle(cellOf(board, 42)).outlineStyle).to.equal('solid', `${theme} latest ring`);
+      const swatch = (name) => getComputedStyle(board.shadowRoot.querySelector(`.swatch.${name}`)).backgroundColor;
+      expect([swatch('called'), swatch('latest')], `${theme} legend matches the cells`)
+        .to.deep.equal([getComputedStyle(cellOf(board, 3)).backgroundColor, getComputedStyle(cellOf(board, 42)).backgroundColor]);
       probe.remove();
       await expect(board).to.be.accessible();
     }

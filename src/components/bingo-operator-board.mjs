@@ -31,12 +31,17 @@ export class BingoOperatorBoard extends LitElement {
     }
     .legend { display: flex; flex-wrap: wrap; gap: 0.25rem 0.875rem; margin: 0; padding: 0; list-style: none; }
     .legend li { display: inline-flex; align-items: center; gap: 0.375rem; }
+    /* Swatches mirror the cell states they label. */
     .swatch {
       display: inline-block; width: 0.875rem; height: 0.875rem; box-sizing: border-box;
-      border: var(--bingo-border-width-default) solid var(--bingo-color-border); border-radius: var(--bingo-radius-control); background: var(--bingo-color-surface);
+      border: var(--bingo-border-width-default) solid var(--bingo-color-border); border-radius: var(--bingo-radius-control);
+      background: var(--bingo-color-call-uncalled-surface);
     }
-    .swatch.called { border-color: var(--bingo-color-accent); background: var(--bingo-color-accent); }
-    .swatch.latest { border-color: var(--bingo-color-accent); background: var(--bingo-color-accent); outline: 2px solid var(--bingo-color-text); outline-offset: 1px; }
+    .swatch.called { border-color: var(--bingo-color-call-called-surface); background: var(--bingo-color-call-called-surface); }
+    .swatch.latest {
+      border-color: var(--bingo-color-call-latest-surface); background: var(--bingo-color-call-latest-surface);
+      outline: var(--bingo-border-width-strong) solid var(--bingo-color-text); outline-offset: 1px;
+    }
     .state {
       padding: 0.125rem 0.625rem; border: var(--bingo-border-width-default) solid var(--bingo-color-border); border-radius: var(--bingo-radius-control);
       color: var(--bingo-color-text); background: var(--bingo-color-surface); font-weight: var(--bingo-font-emphasis); white-space: nowrap;
