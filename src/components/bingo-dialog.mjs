@@ -19,7 +19,7 @@ export class BingoDialog extends LitElement {
     super();
     this.label = '';
     this.opener = null;
-    this.actions = [{ action: 'cancel', label: 'Cancel', signal: 'dismiss' }, { action: 'confirm', label: 'Confirm', signal: 'confirm' }];
+    this.actions = [{ action: 'cancel', label: 'Cancelar', signal: 'dismiss' }, { action: 'confirm', label: 'Confirmar', signal: 'confirm' }];
   }
   async show() {
     this.opener = document.activeElement;

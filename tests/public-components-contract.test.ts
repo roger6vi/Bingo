@@ -108,15 +108,20 @@ test('public adapter maps controller fields to all display states without mutati
 });
 
 test('both windows display six committed phase labels through a separate accessible status', () => {
-  const labels = ['Drawing', 'Checking line', 'Line declared', 'Checking bingo', 'Bingo declared', 'Finished'];
-  for (const windowName of ['operator', 'public']) {
+  const labels = {
+    public: ['Drawing', 'Checking line', 'Line declared', 'Checking bingo', 'Bingo declared', 'Finished'],
+    // The operator is Spanish; its labels live in the operator copy module.
+    operator: ['Cantando números', 'Comprobando línea', 'Línea cantada', 'Comprobando bingo', 'Bingo cantado', 'Partida terminada'],
+  };
+  for (const windowName of ['operator', 'public'] as const) {
     const page = source(`src/${windowName}.html`);
     const ui = source(`src/${windowName}-ui.mjs`);
+    const copy = windowName === 'operator' ? source('src/operator-copy.mjs') : ui;
     assert.match(page, /<bingo-status id="phase-status"><\/bingo-status>/);
     assert.match(ui, /phaseStatus\.message\s*=/);
     assert.match(ui, /state\.phase/);
-    for (const label of labels) assert.ok(ui.includes(`'${label}'`), `${windowName}: ${label}`);
-    assert.match(ui, /eventError\.message = state\.error/);
+    for (const label of labels[windowName]) assert.ok(copy.includes(`'${label}'`), `${windowName}: ${label}`);
+    assert.match(ui, /eventError\.message = (?:operatorMessage\()?state\.error/);
     assert.match(ui, /eventStatus\.message|status\.message/);
   }
 });

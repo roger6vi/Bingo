@@ -7,7 +7,7 @@ const SIMULATOR_WIDTH = 1920;
 const TEXT_FIELDS = ['name', 'place', 'date'];
 
 export function bindSettings(elements, { saveMeta, saveTheme }) {
-  const { form, inputs, fieldErrors, theme, state, error, save, discard, dialog, frame, viewport } = elements;
+  const { form, inputs, theme, state, error, actions, save, discard, dialog, frame, viewport } = elements;
   const feed = createSimulatorFeed(frame);
   let locked = false;
   let last = null;
@@ -26,13 +26,13 @@ export function bindSettings(elements, { saveMeta, saveTheme }) {
       const input = inputs[field];
       if (draft !== null && input.value !== draft[field]) input.value = draft[field];
       input.disabled = !editable;
-      const message = errors[field] ?? '';
-      input.setAttribute('aria-invalid', String(message !== ''));
-      fieldErrors[field].textContent = message;
-      fieldErrors[field].hidden = message === '';
+      // The field renders, describes and announces its own error.
+      input.error = errors[field] ?? '';
     }
     if (draft?.theme) theme.value = draft.theme;
     theme.disabled = !editable;
+    theme.error = errors.theme ?? '';
+    if (actions) actions.pending = pending;
     save.disabled = !canSave || locked;
     discard.disabled = !dirty || pending || locked;
     state.message = draft === null ? 'Elige un evento activo para configurarlo.'
