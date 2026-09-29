@@ -11,8 +11,12 @@ contextBridge.exposeInMainWorld('desktop', Object.freeze({
   selectEvent: (id: string) => ipcRenderer.invoke('events:select', id),
   updateEvent: (id: string, meta: { name: string; date: string; place: string }) =>
     ipcRenderer.invoke('events:update', id, meta),
+  getPrizes: () => ipcRenderer.invoke('prizes:get'),
+  updatePrizes: (id: string, prizes: { line: { amount: number; lot: string }; bingo: { amount: number; lot: string } }) =>
+    ipcRenderer.invoke('prizes:update', id, prizes),
   getTheme: () => ipcRenderer.invoke('theme:get'),
   setTheme: (theme: string) => ipcRenderer.invoke('theme:set', theme),
+  playTongo: () => ipcRenderer.invoke('tongo:play'),
   onPublicStatus: (callback: (pauseSuggested: boolean) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, pauseSuggested: boolean) => callback(pauseSuggested);
     ipcRenderer.on('public-status', listener);

@@ -35,16 +35,34 @@ test('one least-privilege Ubuntu job installs locked dependencies on Node 24', (
   assert.ok(install.some((step) => /^      run: npm ci$/m.test(step)));
 });
 
-test('Linux browser dependencies precede the six sequential checks', () => {
+test('Linux browser dependencies precede the eight sequential checks', () => {
   const jobSteps = steps(section(workflow, 'jobs'));
   const commands = jobSteps.flatMap((step) => [...step.matchAll(/^      run: (.+)$/gm)].map((match) => match[1]));
   const checks = ['npm test', 'npm run test:tokens', 'npm run build', 'npm run test:build', 'npm run test:components',
+    'npm run storybook:build', 'npm run storybook:verify -- --failures "$RUNNER_TEMP/storybook-verify"',
     'xvfb-run -a npm run test:smoke'];
   assert.deepEqual(commands.slice(-checks.length), checks);
   for (const check of checks) assert.equal(commands.filter((command) => command === check).length, 1, `${check} runs once`);
   assert.doesNotMatch(workflow, /\b(?:continue-on-error|windows-latest|npm publish)\b/);
   assert.ok(commands.indexOf('npm ci') < commands.indexOf(checks[0]));
   assert.ok(commands.some((command) => /playwright install-deps chromium/.test(command) && commands.indexOf(command) < commands.indexOf(checks[0])), 'install Linux Chromium libraries before checks; component script installs the browser');
+  // Only the component script downloads a browser; Storybook verification reuses it, and the download is cached.
+  assert.equal(commands.filter((command) => /playwright install(?!-deps)/.test(command)).length, 0);
+  assert.ok(jobSteps.some((step) => /uses: actions\/cache@v4/.test(step) && /path: ~\/\.cache\/ms-playwright$/m.test(step)
+    && /key: .*hashFiles\('package-lock\.json'\)/.test(step)));
+});
+
+test('Storybook builds and verifies offline after the component tests, with failure artifacts', () => {
+  const jobSteps = steps(section(workflow, 'jobs'));
+  const index = (pattern: RegExp) => jobSteps.findIndex((step) => pattern.test(step));
+  assert.ok(index(/run: npm run test:components$/m) < index(/run: npm run storybook:build$/m), 'reuse the Chromium test:components installed');
+  const verify = jobSteps[index(/run: npm run storybook:verify /m)];
+  assert.match(verify, /^      id: storybook$/m);
+  assert.match(verify, /^      timeout-minutes: \d+$/m);
+  const upload = jobSteps[index(/name: storybook-verify$/m)];
+  assert.match(upload, /uses: actions\/upload-artifact@v4/);
+  assert.match(upload, /^      if: failure\(\) && steps\.storybook\.outcome == 'failure'$/m);
+  assert.match(upload, /path: \$\{\{ runner\.temp \}\}\/storybook-verify$/m);
 });
 
 test('the Electron smoke runs last under Xvfb with the sandbox helper, a timeout, and failure artifacts', () => {
