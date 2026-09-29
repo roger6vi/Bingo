@@ -2,19 +2,21 @@ import type { EventSnapshot } from './event-core';
 import type { EventPrizes } from './event-prizes';
 import type { GamePhase } from './game-phase';
 import type { ThemeId } from './theme';
+import type { TongoPresentation } from './tongo-ipc';
 
 type PhaseSnapshot = EventSnapshot & { readonly phase: GamePhase; readonly lastTransitionAt: string | null };
 
 export const PUBLIC_EVENT_CHANNEL = 'public:event-state';
 export const PUBLIC_THEME_CHANNEL = 'public:theme';
 export const PUBLIC_META_CHANNEL = 'public:event-meta';
+export const PUBLIC_PRESENTATION_CHANNEL = 'public:presentation';
 export const PUBLIC_PRIZES_CHANNEL = 'public:event-prizes';
 
 // The active event's committed name, date, and place; null when it cannot be read.
 export type PublicEventMeta = { readonly name: string; readonly date: string; readonly place: string } | null;
 // The active event's committed prizes; null when they cannot be read.
 export type PublicEventPrizes = EventPrizes | null;
-type Payload = PublicEventResult | ThemeId | PublicEventMeta | PublicEventPrizes;
+type Payload = PublicEventResult | ThemeId | PublicEventMeta | PublicEventPrizes | TongoPresentation;
 
 export type PublicEventResult =
   | { ok: true; snapshot: PhaseSnapshot; eventChanged?: true }
@@ -113,6 +115,14 @@ export function createPublicEventDelivery(
     // After the active event's prizes commit.
     publishPrizes(): void {
       if (current !== null) sendPrizes(current);
+    },
+    // Transient and never resent on attach, so a reloaded or reopened window cannot replay it.
+    // Reports whether the current window accepted it.
+    publishPresentation(presentation: TongoPresentation): boolean {
+      const target = current;
+      if (target === null) return false;
+      send(target, presentation, PUBLIC_PRESENTATION_CHANNEL);
+      return current === target;
     },
     // After the active event changes, resend its theme, metadata, prizes, and committed state in reveal order.
     publishActive(theme: ThemeId): void {
