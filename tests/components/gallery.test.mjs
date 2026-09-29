@@ -49,6 +49,12 @@ it('shows representative sizes and real component states without desktop access'
     const numbers = [...section.querySelectorAll('bingo-number')];
     expect(numbers.some((number) => number.compact) && numbers.some((number) => !number.compact && number.value !== null)).to.equal(true);
     expect(section.querySelector('bingo-number[latest]')).not.to.equal(null);
+    const board = section.querySelector('[data-state="stale"] bingo-operator-board');
+    expect([board.stale, board.calledNumbers.length]).to.deep.equal([true, 4]);
+    expect(section.querySelector('[data-state="pending"] bingo-operator-board').pending).to.equal(true);
+    expect(section.querySelector('[data-state="error"] bingo-text-field').error).to.match(/\S/);
+    expect(section.querySelector('[data-state="pending"] bingo-text-field').pending).to.equal(true);
+    expect(section.querySelector('[data-state="disabled"] bingo-select-field').disabled).to.equal(true);
     expect(window.desktop).to.equal(undefined);
   } finally { cleanup(); }
 });
