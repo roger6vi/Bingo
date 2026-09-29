@@ -38,8 +38,8 @@ try {
   step('committed line milestone does not replay at startup');
 
   await operator.locator('#cue-test').click();
-  await operator.waitForFunction(() => /^Test cue (played|sound unavailable)/.test(document.querySelector('#cue-status').message));
-  assert.equal(await cueStatus(operator), 'Test cue played: Line declared');
+  await operator.waitForFunction(() => /^(Aviso de prueba reproducido|Sonido del aviso de prueba no disponible)/.test(document.querySelector('#cue-status').message));
+  assert.equal(await cueStatus(operator), 'Aviso de prueba reproducido: Línea cantada');
   assert.match(await operator.evaluate(() => window.__src),
     /^file:\/\/.*\/dist\/renderer\/assets\/line-[\w-]+\.wav$/);
   step('built file:// operator page plays the bundled line cue under the offline CSP');

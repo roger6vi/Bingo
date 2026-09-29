@@ -46,12 +46,12 @@ it('controls start silent, persist mute/volume, and cue only committed transitio
   f.cues.observe(snap('bingo_declared', '2026-01-01T00:00:02.000Z'));
   await settle();
   expect(played).to.deep.equal([]);
-  expect([f.status.message, f.status.hidden]).to.deep.equal(['Cue muted: Bingo declared', false]);
+  expect([f.status.message, f.status.hidden]).to.deep.equal(['Aviso silenciado: Bingo cantado', false]);
   f.mute.click();
   f.test.click();
   await settle();
   expect(played).to.deep.equal([CUE_SOURCES.line]);
-  expect(f.status.message).to.equal('Test cue played: Line declared');
+  expect(f.status.message).to.equal('Aviso de prueba reproducido: Línea cantada');
 });
 
 it('a missing cue file warns without throwing and leaves the controls usable', async () => {
@@ -59,7 +59,7 @@ it('a missing cue file warns without throwing and leaves the controls usable', a
   f.cues.observe(snap('drawing', null));
   f.cues.observe(snap('finished', '2026-01-01T00:00:03.000Z'));
   for (let wait = 0; wait < 60 && f.status.tone !== 'warning'; wait++) await new Promise((resolve) => setTimeout(resolve, 50));
-  expect(f.status.message).to.equal('Cue sound unavailable (Game finished). The game continues.');
+  expect(f.status.message).to.equal('Sonido del aviso no disponible (Partida terminada). La partida continúa.');
   expect([f.status.tone, f.status.hidden]).to.deep.equal(['warning', false]);
   expect(f.mute.disabled || f.volume.disabled || f.test.disabled).to.equal(false);
 });

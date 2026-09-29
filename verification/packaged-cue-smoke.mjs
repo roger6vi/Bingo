@@ -83,8 +83,8 @@ try {
   step('packaged operator does not replay the committed line milestone at startup');
 
   await operator.locator('#cue-test').click();
-  await operator.waitForFunction(() => /^Test cue (played|sound unavailable)/.test(document.querySelector('#cue-status').message));
-  assert.equal(await operator.locator('#cue-status').evaluate((e) => e.message), 'Test cue played: Line declared');
+  await operator.waitForFunction(() => /^(Aviso de prueba reproducido|Sonido del aviso de prueba no disponible)/.test(document.querySelector('#cue-status').message));
+  assert.equal(await operator.locator('#cue-status').evaluate((e) => e.message), 'Aviso de prueba reproducido: Línea cantada');
   assert.match(await operator.evaluate(() => window.__src), /^file:\/\/.*\/app\.asar\/dist\/renderer\/assets\/line-[\w-]+\.wav$/);
   const cueNames = packed.filter((entry) => entry.endsWith('.wav')).map((entry) => path.posix.basename(entry));
   const durations = await operator.evaluate((names) => Promise.all(names.map((name) => new Promise((resolve, reject) => {
