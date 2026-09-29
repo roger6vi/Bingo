@@ -4,11 +4,13 @@ import './components/bingo-number.mjs';
 import './components/bingo-latest-draw.mjs';
 import './components/bingo-status.mjs';
 import './components/bingo-number-board.mjs';
+import './components/bingo-tongo.mjs';
 import './screen.css';
 import sampleVideoUrl from '../assets/sample.mp4?url';
 import { createPublicController } from './public-controller.mjs';
 import { applyTheme, revealAfter } from './theme-controller.mjs';
 import { publicBridges, validEventMeta } from './public-bridge.mjs';
+import { createTongoPlayback } from './tongo.mjs';
 
 const bridges = publicBridges(window);
 const unsubscribeTheme = bridges.theme.subscribe((theme) => applyTheme(document.documentElement, theme));
@@ -69,8 +71,15 @@ const controller = createPublicController(bridges.event, {
     eventError.hidden = !state.error;
   },
 });
+// Transient: only signals received by this page play, so a reload or reopen never replays one.
+const tongo = required('tongo', HTMLElement);
+const tongoPlayback = createTongoPlayback(bridges.presentation, {
+  show: () => { tongo.active = true; },
+  hide: () => { tongo.active = false; },
+});
 window.addEventListener('pagehide', () => {
   controller.cleanup();
+  tongoPlayback.cleanup();
   unsubscribeTheme();
   unsubscribeMeta();
   clearTimeout(revealTimer);
