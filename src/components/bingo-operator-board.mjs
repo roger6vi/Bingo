@@ -41,7 +41,7 @@ export class BingoOperatorBoard extends LitElement {
       padding: 0.125rem 0.625rem; border: 1px solid var(--bingo-color-border); border-radius: 999px;
       color: var(--bingo-color-text); background: var(--bingo-color-surface); font-weight: var(--bingo-font-emphasis); white-space: nowrap;
     }
-    .state.warning { color: var(--bingo-color-danger); border-color: var(--bingo-color-danger); }
+    .state.warning { color: var(--bingo-color-error); border-color: var(--bingo-color-error); }
 
     .stage { container-type: size; display: grid; place-items: center; min-width: 0; min-height: 0; }
     .board {
@@ -52,7 +52,7 @@ export class BingoOperatorBoard extends LitElement {
       font-size: max(0.875rem, calc(var(--board-height) / 9 * 0.44));
       border-radius: var(--bingo-radius-surface);
     }
-    :host([stale]) .board { outline: 2px dashed var(--bingo-color-danger); outline-offset: 0.375rem; }
+    :host([stale]) .board { outline: 2px dashed var(--bingo-color-error); outline-offset: 0.375rem; }
     :host([pending]) .board { cursor: progress; }
     [role="row"] { display: grid; grid-template-columns: repeat(10, minmax(0, 1fr)); gap: inherit; min-height: 0; }
     [role="gridcell"] { display: grid; min-width: 0; min-height: 0; }

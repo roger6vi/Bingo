@@ -44,8 +44,8 @@ const baseFieldStyles = css`
   }
   /* Invalid: a thicker inline-start bar and an icon + message, never color alone. */
   .control[aria-invalid="true"] {
-    border-color: var(--bingo-color-danger);
-    box-shadow: inset 3px 0 0 var(--bingo-color-danger);
+    border-color: var(--bingo-color-error);
+    box-shadow: inset 3px 0 0 var(--bingo-color-error);
   }
   .control:disabled {
     color: var(--bingo-color-muted); background: var(--bingo-color-canvas);
@@ -62,7 +62,7 @@ const baseFieldStyles = css`
   .control:not(:disabled) ~ .adornment { color: var(--bingo-color-text); }
   .hint, .error { margin: 0; font-size: calc(var(--bingo-font-size) * 0.875); line-height: var(--bingo-font-tight); }
   .hint { color: var(--bingo-color-muted); }
-  .error { display: flex; align-items: flex-start; gap: var(--bingo-space-small); color: var(--bingo-color-danger); font-weight: var(--bingo-font-emphasis); }
+  .error { display: flex; align-items: flex-start; gap: var(--bingo-space-small); color: var(--bingo-color-error); font-weight: var(--bingo-font-emphasis); }
   /* The empty live region stays in the accessibility tree but out of the grid flow. */
   .error.empty { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
   .error svg { flex: none; width: 1em; height: 1em; margin-top: 0.1em; fill: currentColor; }

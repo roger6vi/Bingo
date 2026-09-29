@@ -308,8 +308,8 @@ it('every control consumes semantic tokens in both themes with a visible focus i
       expect([style.color, style.backgroundColor]).to.deep.equal([token(field, 'color-text'), token(field, 'color-surface')]);
     }
     expect(getComputedStyle(date.control).borderTopColor, 'control boundaries use the 3:1 muted color').to.equal(token(date, 'color-muted'));
-    expect(getComputedStyle(text.control).borderTopColor).to.equal(token(text, 'color-danger'));
-    expect(getComputedStyle(text.shadowRoot.querySelector('#error')).color).to.equal(token(text, 'color-danger'));
+    expect(getComputedStyle(text.control).borderTopColor).to.equal(token(text, 'color-error'));
+    expect(getComputedStyle(text.shadowRoot.querySelector('#error')).color).to.equal(token(text, 'color-error'));
     expect([getComputedStyle(primary).backgroundColor, getComputedStyle(primary).color])
       .to.deep.equal([token(primary, 'color-accent'), token(primary, 'color-canvas')]);
     date.control.focus();
