@@ -3,6 +3,8 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { CUE_SETTINGS_KEY, createCuePlayer, describeCueStatus, readCueSettings } from '../src/cue-player.mjs';
+import { wiredCue } from '../src/cue-registry.mjs';
+import { PHASE_LABELS_ES } from '../src/operator-copy.mjs';
 import { RATE, generateCueBuffers } from '../scripts/generate-cue-audio.mjs';
 
 type State = { muted: boolean; volume: number; status: { kind: string; milestone: string | null; preview?: boolean } };
@@ -32,7 +34,7 @@ test('defaults are unmuted at a moderate level and reported without playing anyt
   const f = fixture();
   assert.deepEqual(f.last(), { muted: false, volume: 0.6, status: { kind: 'idle', milestone: null } });
   assert.equal(f.audio.created.length, 0);
-  assert.match(describeCueStatus(f.last().status).message, /Nothing plays at startup/);
+  assert.match(describeCueStatus(f.last().status).message, /No suena nada al iniciar ni al recargar/);
 });
 
 test('mute and volume persist, and invalid or unreadable stored values fall back to defaults', () => {
@@ -58,7 +60,7 @@ test('a wired cue plays its local file at the operator volume', async () => {
   await f.player.play('bingo_declared');
   assert.deepEqual(f.audio.created.map(({ url, volume }) => ({ url, volume })), [{ url: 'b.wav', volume: 0.4 }]);
   assert.deepEqual(f.last().status, { kind: 'played', milestone: 'bingo_declared', preview: false });
-  assert.equal(describeCueStatus(f.last().status).message, 'Cue played: Bingo declared');
+  assert.equal(describeCueStatus(f.last().status).message, 'Aviso reproducido: Bingo cantado');
   f.player.setVolume(0.8);
   assert.equal(f.audio.created[0].volume, 0.8, 'volume changes reach the playing cue');
 });
@@ -71,7 +73,7 @@ test('muted or zero-volume cues create no audio and say so', async () => {
   f.player.setVolume(0);
   await f.player.play('finished', { preview: true });
   assert.equal(f.audio.created.length, 0);
-  assert.equal(describeCueStatus(f.last().status).message, 'Test cue muted: Game finished');
+  assert.equal(describeCueStatus(f.last().status).message, 'Aviso de prueba silenciado: Partida terminada');
 });
 
 test('unwired milestones such as Tongo are ignored', async () => {
@@ -93,7 +95,7 @@ test('missing or failing media is reported as a warning and the next cue still p
   await f.player.play('line_declared');
   assert.equal(f.last().status.kind, 'failed');
   assert.deepEqual(describeCueStatus(f.last().status),
-    { message: 'Cue sound unavailable (Line declared). The game continues.', tone: 'warning' });
+    { message: 'Sonido del aviso no disponible (Línea cantada). La partida continúa.', tone: 'warning' });
   fail = false;
   await f.player.play('line_declared');
   assert.equal(f.last().status.kind, 'played');
@@ -163,4 +165,25 @@ test('committed cue WAVs satisfy the PCM header contract and exactly match the g
     // so regenerating never silently drifts from what is bundled and shipped.
     assert.ok(committed.equals(generated[cue]), `${cue}: committed WAV must byte-for-byte match scripts/generate-cue-audio.mjs`);
   }
+});
+
+test('cue status copy is Spanish, like the rest of the operator window', () => {
+  for (const [milestone, label] of Object.entries(PHASE_LABELS_ES)) {
+    if (wiredCue(milestone) !== null) assert.equal(wiredCue(milestone)?.label, label, milestone);
+  }
+  const all = ['idle', 'played', 'muted', 'failed', 'held'].flatMap((kind) => [false, true].map((preview) =>
+    describeCueStatus({ kind, milestone: 'line_declared', preview }).message));
+  assert.deepEqual(all, [
+    'Avisos de sonido listos. No suena nada al iniciar ni al recargar.',
+    'Avisos de sonido listos. No suena nada al iniciar ni al recargar.',
+    'Aviso reproducido: Línea cantada',
+    'Aviso de prueba reproducido: Línea cantada',
+    'Aviso silenciado: Línea cantada',
+    'Aviso de prueba silenciado: Línea cantada',
+    'Sonido del aviso no disponible (Línea cantada). La partida continúa.',
+    'Sonido del aviso de prueba no disponible (Línea cantada). La partida continúa.',
+    'Aviso en espera hasta que termine el Tongo: Línea cantada',
+    'Aviso de prueba en espera hasta que termine el Tongo: Línea cantada',
+  ]);
+  for (const message of all) assert.doesNotMatch(message, /\b(Cue|Test|sound|played|muted|declared|finished|game)\b/i, message);
 });

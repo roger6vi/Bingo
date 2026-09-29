@@ -50,7 +50,7 @@ test('a Tongo hold stops the playing cue and defers new ones until the presentat
   await f.player.play('bingo_declared');
   assert.equal(f.created.length, 1, 'nothing sounds during the window');
   assert.deepEqual(f.last(), { kind: 'held', milestone: 'bingo_declared', preview: false });
-  assert.equal(describeCueStatus(f.last()).message, 'Cue waits for Tongo to finish: Bingo declared');
+  assert.equal(describeCueStatus(f.last()).message, 'Aviso en espera hasta que termine el Tongo: Bingo cantado');
 
   f.time.fire();
   await Promise.resolve();
