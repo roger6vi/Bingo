@@ -103,7 +103,7 @@ Fonts are bundled locally (`@fontsource-variable/roboto-mono`, OFL-1.1) and neve
 | Role | Minimum | `high-contrast` | Pairs |
 | --- | --- | --- | --- |
 | `text` | 4.5:1 | 7:1 | text/muted on canvas and surfaces, `on-accent` on accent states, status on surface, number states, celebration, prize, `on-tie` on each tie colour |
-| `ui` | 3:1 | 4.5:1 | focus and `border-strong` on canvas/surface, accent on surface and on `call-called-surface` |
+| `ui` | 3:1 | 4.5:1 | focus and `border-strong` on canvas/surface, accent on surface, `call-called-surface` against `call-uncalled-surface` |
 
 Translucent backgrounds are composited over `color.canvas`, translucent foregrounds over their
 background. Disabled controls are exempt from WCAG contrast; they additionally use `opacity.disabled`.
@@ -137,7 +137,7 @@ committed persistence snapshots (presentation never acknowledges its own intent)
   stays selected, and a veto returns focus to it.
 - **Properties:** `label` (string), `canLeave` (function). **States:** normal, deciding (pending veto).
 - **Accessibility:** `role="tablist"`; arrow keys, Home and End move focus and selection.
-- **Tokens:** `color.focus`.
+- **Tokens:** `border-width.focus`, `color.focus`.
 
 ### `bingo-panel`
 - **Purpose:** titled content region. `compact` is the dense operator variant (thin border, a header
@@ -147,9 +147,10 @@ committed persistence snapshots (presentation never acknowledges its own intent)
 - **Properties:** `heading` (string), `compact` (reflected boolean), `fill` (reflected boolean).
   **States:** normal, empty (heading only), compact, fill.
 - **Accessibility:** section is named by its heading.
-- **Tokens:** `color.surface`, `color.border`, `color.shadow`, `color.muted`, `border-width.strong`,
-  `radius.surface`, `elevation.raised`, `space.layout`, `space.section`, `space.inset-inline`,
-  `font.body`, `font.size`, `font.line`, `font.emphasis`, `font.tracking`.
+- **Tokens:** `border-width.default`, `border-width.strong`, `color.border`, `color.muted`,
+  `color.shadow`, `color.surface`, `elevation.raised`, `font.body`, `font.emphasis`, `font.line`,
+  `font.size`, `font.tracking`, `radius.surface`, `space.inset-inline`, `space.layout`,
+  `space.section`.
 
 ### `bingo-button`
 - **Purpose:** the single, form-associated action control. Inside a form, `type="submit"`/`"reset"`
@@ -159,9 +160,11 @@ committed persistence snapshots (presentation never acknowledges its own intent)
   **States:** normal, hover, active, focus, disabled, pending (owner sets `disabled` while a request
   is outstanding).
 - **Accessibility:** native button semantics and keyboard activation; visible focus ring.
-- **Tokens:** `color.text`, `color.surface`, `color.border`, `color.canvas`, `color.accent`,
-  `color.muted`, `color.focus`, `font.emphasis`, `radius.surface`, `space.inset-compact`,
-  `space.inset-inline`, `space.small`, `motion.normal`.
+- **Tokens:** `border-width.default`, `border-width.focus`, `border-width.strong`, `color.accent`,
+  `color.accent-active`, `color.accent-hover`, `color.border`, `color.border-strong`,
+  `color.disabled`, `color.disabled-surface`, `color.focus`, `color.on-accent`, `color.shadow`,
+  `color.surface`, `color.text`, `font.emphasis`, `motion.easing`, `motion.normal`,
+  `opacity.disabled`, `radius.control`, `space.inset-compact`, `space.inset-inline`, `space.small`.
 
 ### `bingo-number`
 - **Purpose:** one called number, large or compact. **Anatomy:** a `span` chip.
@@ -183,9 +186,10 @@ committed persistence snapshots (presentation never acknowledges its own intent)
   **States:** loading ("Waiting for draw", board only), empty, populated, latest, stale (owner keeps
   the last committed list).
 - **Accessibility:** named list; no live region, no focusable content.
-- **Tokens:** `color.accent`, `color.border`, `color.canvas`, `color.muted`, `color.surface`,
-  `color.text`, `border-width.strong`, `font.emphasis`, `space.inset-compact`, `space.list-indent`,
-  `space.section`, `space.small`.
+- **Tokens:** `border-width.default`, `border-width.strong`, `color.accent`, `color.border`,
+  `color.call-latest`, `color.call-latest-surface`, `color.muted`, `color.surface`, `color.text`,
+  `font.emphasis`, `radius.control`, `space.inset-compact`, `space.list-indent`, `space.section`,
+  `space.small`.
 
 ### `bingo-side-rail`
 - **Purpose:** a labelled vertical rail beside a workspace's dominant zone (e.g. the Bingo tab's
@@ -194,7 +198,7 @@ committed persistence snapshots (presentation never acknowledges its own intent)
   pinned footer slot.
 - **Properties:** `label` (string). **States:** normal, scrolling body.
 - **Accessibility:** the rail is a named region (`aria-label`).
-- **Tokens:** `color.border`, `color.surface`, `radius.surface`.
+- **Tokens:** `border-width.default`, `color.border`, `color.surface`, `radius.surface`.
 
 ### `bingo-operator-board`
 - **Purpose:** the operator's 1–90 board: ten numbers per row in numeric order. It renders only the
@@ -208,9 +212,12 @@ committed persistence snapshots (presentation never acknowledges its own intent)
   called), stale (history may be out of date).
 - **Accessibility:** `role="grid"` with arrow-key navigation; each newly committed latest call is
   announced once via a polite live region; static under reduced motion.
-- **Tokens:** `color.text`, `color.surface`, `color.muted`, `color.border`, `color.accent`,
-  `color.canvas`, `color.error`, `color.focus`, `font.body`, `font.emphasis`, `motion.normal`,
-  `radius.surface`.
+- **Tokens:** `border-width.default`, `border-width.focus`, `border-width.strong`, `color.accent`,
+  `color.border`, `color.call-called`, `color.call-called-surface`, `color.call-latest`,
+  `color.call-latest-surface`, `color.call-uncalled`, `color.call-uncalled-surface`,
+  `color.disabled`, `color.disabled-surface`, `color.error`, `color.focus`, `color.muted`,
+  `color.surface`, `color.text`, `font.body`, `font.emphasis`, `font.tracking`, `motion.normal`,
+  `radius.control`, `radius.surface`.
 
 ### `bingo-field` (base), `bingo-text-field`, `bingo-date-field`, `bingo-select-field`
 - **Purpose:** shared, form-associated Lit controls behind every operator text/date/select input:
@@ -226,11 +233,11 @@ committed persistence snapshots (presentation never acknowledges its own intent)
 - **States:** normal, focus, required, disabled, pending (busy indicator), invalid (announced error).
 - **Accessibility:** native labelled control; the error region is `aria-live="polite"` and
   `aria-describedby`-linked; invalid state is `aria-invalid`, never color alone.
-- **Tokens:** `color.text`, `color.muted`, `color.surface`, `color.canvas`, `color.accent`,
-  `color.error`, `color.focus`, `font.body`, `font.size`, `font.line`, `font.tight`, `font.emphasis`,
-  `radius.surface`, `space.small`, `space.inset-compact`, `space.inset-inline`, `motion.normal`
-  (from `bingo-field`'s shared styles; the subclasses' own styles add nothing beyond
-  `space.inset-inline`, already listed, for `bingo-date-field`'s calendar-icon slot).
+- **Tokens:** `border-width.default`, `border-width.focus`, `color.accent`, `color.border-strong`,
+  `color.disabled`, `color.disabled-surface`, `color.error`, `color.focus`, `color.muted`,
+  `color.surface`, `color.text`, `font.body`, `font.emphasis`, `font.line`, `font.size`,
+  `font.tight`, `font.tracking`, `motion.normal`, `radius.control`, `space.inset-compact`,
+  `space.inset-inline`, `space.small`.
 
 ### `bingo-form-actions`
 - **Purpose:** the action row that ends a form: an optional status (`slot="status"`) at the start,
@@ -239,7 +246,8 @@ committed persistence snapshots (presentation never acknowledges its own intent)
   **Anatomy:** status slot → secondary-actions slot → primary-action slot.
 - **Properties:** `sticky` (reflected), `pending` (reflected). **States:** normal, sticky, pending.
 - **Accessibility:** the row is `role="group"`, with `aria-busy` while pending.
-- **Tokens:** `color.border`, `color.canvas`, `font.size`, `space.inset-inline`, `space.small`.
+- **Tokens:** `border-width.default`, `color.border`, `color.canvas`, `font.size`,
+  `space.inset-inline`, `space.small`.
 
 ### `bingo-latest-draw`
 - **Purpose:** polite announcement of each new committed draw. **Anatomy:** slot + visually hidden
@@ -269,8 +277,9 @@ committed persistence snapshots (presentation never acknowledges its own intent)
 - **States:** manual, digital, pending (disabled), error/stale (reload enabled), focus.
 - **Accessibility:** labelled radio group for the mode; labelled native input with 1–90 validity;
   native button activation; Enter in the number field acts like the manual draw button.
-- **Tokens:** `color.text`, `color.surface`, `color.canvas`, `color.border`, `color.muted`,
-  `color.focus`, `font.emphasis`, `radius.surface`.
+- **Tokens:** `border-width.default`, `border-width.focus`, `color.border`, `color.canvas`,
+  `color.disabled-surface`, `color.focus`, `color.muted`, `color.surface`, `color.text`,
+  `font.emphasis`, `radius.control`.
 
 ### `bingo-event-list`
 - **Purpose:** committed events with an activation intent. **Anatomy:** `ul` of `li` rows, each with
@@ -278,8 +287,8 @@ committed persistence snapshots (presentation never acknowledges its own intent)
   **Properties:** `events`, `disabled`, `loaded`.
 - **States:** not loaded, empty, populated, active (`aria-current`), pending (disabled).
 - **Accessibility:** named list; the active row is `aria-current="true"`.
-- **Tokens:** `color.border`, `color.accent`, `color.canvas`, `color.muted`, `font.emphasis`,
-  `radius.surface`.
+- **Tokens:** `border-width.default`, `color.accent`, `color.border`, `color.muted`,
+  `color.on-accent`, `font.emphasis`, `font.tracking`, `radius.control`.
 
 ### `bingo-dialog`
 - **Purpose:** modal confirmation. **Anatomy:** native `dialog` with heading, slot and action buttons.
