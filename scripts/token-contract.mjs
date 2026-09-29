@@ -25,7 +25,8 @@ const textPairs = [
 ];
 const uiPairs = [
   ['focus', 'canvas'], ['focus', 'surface'], ['border-strong', 'canvas'], ['border-strong', 'surface'],
-  ['accent', 'surface'], ['accent', 'call-called-surface'],
+  // A called number must stand out from an uncalled one without relying on its label.
+  ['accent', 'surface'], ['call-called-surface', 'call-uncalled-surface'],
 ];
 export const contrastPairs = [
   ...textPairs.map(([foreground, background]) => ({ foreground: `color.${foreground}`, background: `color.${background}`, role: 'text' })),

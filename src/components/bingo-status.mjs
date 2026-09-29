@@ -11,7 +11,7 @@ class BingoStatus extends LitElement {
   `;
   constructor() { super(); this.message = 'Waiting for event state'; this.tone = 'info'; }
   render() {
-    return html`<p class=${this.tone} role=${this.tone === 'error' ? 'alert' : 'status'}>${this.message}</p>`;
+    return html`<p part="message" class=${this.tone} role=${this.tone === 'error' ? 'alert' : 'status'}>${this.message}</p>`;
   }
 }
 

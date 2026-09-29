@@ -2,7 +2,6 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
   push:
     branches: [main]
 
@@ -22,6 +21,8 @@ jobs:
       run: npm ci
     - name: Install Chromium system dependencies
       run: npx playwright install-deps chromium
+    - name: Enable the Electron sandbox helper
+      run: sudo chown root:root node_modules/electron/dist/chrome-sandbox && sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
     - name: Test source
       run: npm test
     - name: Test tokens
@@ -32,3 +33,17 @@ jobs:
       run: npm run test:build
     - name: Test browser components
       run: npm run test:components
+    - name: Electron smoke
+      id: smoke
+      timeout-minutes: 5
+      env:
+        SMOKE_ARTIFACTS_DIR: ${{ runner.temp }}/electron-smoke
+      run: xvfb-run -a npm run test:smoke
+    - name: Upload Electron smoke artifacts
+      if: failure() && steps.smoke.outcome == 'failure'
+      uses: actions/upload-artifact@v4
+      with:
+        name: electron-smoke
+        path: ${{ runner.temp }}/electron-smoke
+        if-no-files-found: warn
+        retention-days: 14
