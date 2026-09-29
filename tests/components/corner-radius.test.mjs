@@ -32,9 +32,13 @@ const page = async (path, selector) => {
 };
 // Every element in light and shadow trees, so a hard-coded radius anywhere in either window fails. This also covers
 // controls whose markup is still changing (such as the audio row), which are deliberately not named below.
+// Elements that never render a box are skipped: media <source>s and a select field's light-DOM <option>s,
+// which only feed the shadow <select> (newer Chromium gives both a UA radius).
+const neverRendered = (element) => ['source', 'track', 'script', 'style', 'template', 'link', 'meta'].includes(element.localName)
+  || (element.localName === 'option' && element.parentElement?.localName === 'bingo-select-field');
 function* everyElement(root) {
   for (const element of root.querySelectorAll('*')) {
-    yield element;
+    if (!neverRendered(element)) yield element;
     if (element.shadowRoot) yield* everyElement(element.shadowRoot);
   }
 }

@@ -147,10 +147,13 @@ for (const story of stories) {
         const found = [];
         const walk = (root) => {
           for (const element of root.querySelectorAll('*')) {
+            if (element.shadowRoot) walk(element.shadowRoot);
+            // Never-rendered elements (media sources, a select field's light-DOM options) carry UA radii in newer Chromium.
+            if (['source', 'track', 'script', 'style', 'template', 'link', 'meta'].includes(element.localName)
+              || (element.localName === 'option' && element.parentElement?.localName === 'bingo-select-field')) continue;
             const style = getComputedStyle(element);
             const radii = [style.borderTopLeftRadius, style.borderTopRightRadius, style.borderBottomRightRadius, style.borderBottomLeftRadius];
             if (radii.some((radius) => radius !== '0px')) found.push(`${element.localName}${element.id ? `#${element.id}` : ''} (${radii.join(' ')})`);
-            if (element.shadowRoot) walk(element.shadowRoot);
           }
         };
         walk(document.querySelector('#storybook-root'));

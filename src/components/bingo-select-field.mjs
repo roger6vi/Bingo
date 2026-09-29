@@ -11,7 +11,7 @@ export class BingoSelectField extends BingoField {
   static styles = [fieldStyles, css`
     .control { appearance: none; cursor: pointer; }
     .control:disabled { cursor: not-allowed; }
-    option { color: var(--bingo-color-text); background: var(--bingo-color-surface); }
+    option { color: var(--bingo-color-text); background: var(--bingo-color-surface); border-radius: var(--bingo-radius-control); }
   `];
 
   constructor() {
