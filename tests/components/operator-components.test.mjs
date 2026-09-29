@@ -780,10 +780,30 @@ it('a long event list scrolls inside its panel, never the document', async () =>
       place: 'Sala', phase: 'drawing', active: index === 0 }));
     await list.updateComplete;
     await frames();
-    const body = op.main.querySelector('.events-workspace > bingo-panel').shadowRoot.querySelector('.body');
+    const panelHost = op.main.querySelector('.events-workspace > bingo-panel');
+    const body = panelHost.shadowRoot.querySelector('.body');
     expect(getComputedStyle(body).overflowY).to.equal('auto');
     expect(body.scrollHeight).to.be.greaterThan(body.clientHeight);
     expect(document.scrollingElement.scrollHeight).to.be.at.most(innerHeight);
+    // The panel itself (and its scrolling body) must stay physically bounded within the tab's
+    // viewport: a long list may never inflate the panel past the space the tab grants it.
+    const tabPanel = op.main.querySelector('#panel-events').getBoundingClientRect();
+    const panelRect = panelHost.getBoundingClientRect();
+    const bodyRect = body.getBoundingClientRect();
+    expect(panelRect.bottom).to.be.at.most(tabPanel.bottom + 1);
+    expect(bodyRect.bottom).to.be.at.most(tabPanel.bottom + 1);
+    // Every row, including the last, must be reachable by scrolling the body — not stranded below
+    // the panel's own overflowing bounds.
+    body.scrollTop = body.scrollHeight;
+    await frames();
+    const rows = [...list.shadowRoot.querySelectorAll('li')];
+    const lastRow = rows[rows.length - 1];
+    expect(lastRow, 'a rendered row for the 60th event').to.exist;
+    expect(lastRow.textContent).to.include('Evento 59');
+    const rowRect = lastRow.getBoundingClientRect();
+    const bodyBounds = body.getBoundingClientRect();
+    expect(rowRect.bottom).to.be.at.most(bodyBounds.bottom + 1);
+    expect(rowRect.top).to.be.at.least(bodyBounds.top - 1);
   } finally {
     op.cleanup();
     await setViewport({ width: 800, height: 600 });
