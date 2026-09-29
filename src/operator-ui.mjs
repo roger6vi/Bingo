@@ -41,6 +41,11 @@ const phaseStatus = required('phase-status', HTMLElement);
 const eventStatus = required('event-status', HTMLElement);
 const eventError = required('event-error', HTMLElement);
 const themeSelect = required('theme-select', BingoSelectField);
+const cues = bindCueControls({ mute: required('cue-mute', HTMLInputElement), volume: required('cue-volume', HTMLInputElement),
+  test: required('cue-test', HTMLInputElement), status: required('cue-status', HTMLElement) },
+{ createAudio: (url) => new Audio(url),
+  // Resolved per call: a blocked localStorage getter throws, and the player then keeps its defaults.
+  storage: { getItem: (key) => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value) } });
 
 // Configuración edits a draft that only the simulator shows; Save commits it through the same IPC.
 let committedTheme = null;
@@ -95,12 +100,6 @@ window.desktop.onPublicStatus((pauseSuggested) => {
   publicStatus.tone = 'warning';
   publicStatus.hidden = !pauseSuggested;
 });
-
-const cues = bindCueControls({ mute: required('cue-mute', HTMLElement), volume: required('public-volume', HTMLInputElement),
-  note: required('volume-note', HTMLElement), test: required('cue-test', HTMLElement), status: required('cue-status', HTMLElement) },
-{ createAudio: (url) => new Audio(url),
-  // Resolved per call: a blocked localStorage getter throws, and the player then keeps its defaults.
-  storage: { getItem: (key) => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value) } });
 
 // Manual mode lets the operator call a number from the board; digital mode leaves it read-only.
 board.readonly = controls.mode === 'digital';

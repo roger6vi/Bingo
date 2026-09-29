@@ -201,12 +201,10 @@ body:has(> .operator-app) { padding: 0; overflow: hidden; }
 .claim-buttons bingo-button::part(button) { width: 100%; font-weight: var(--bingo-font-emphasis); }
 .claim-wide { grid-column: 1 / -1; }
 .public-controls { display: grid; gap: 0.5rem; }
-.volume-control { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 0.625rem; margin-top: 0.5rem; }
+.volume-control { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 0.625rem; margin-top: 0.75rem; }
 .volume-control .rail-note { margin: 0; }
 .volume-control label { color: var(--bingo-color-muted); font-size: 0.8125rem; }
 .volume-control input { width: 100%; margin: 0; accent-color: var(--bingo-color-accent); }
-/* The cue mute and test buttons share the slider's row: compact, but still a 24px (WCAG 2.2) target, so the rail fits 720p. */
-.volume-control bingo-button::part(button) { min-height: 1.5rem; padding-block: 0.125rem; font-size: 0.8125rem; }
 
 /* Narrow windows (below the 1280×720 target): workspaces stack and scroll inside the tab, never the page. */
 @media (max-width: 900px) {

@@ -33,25 +33,25 @@ try {
   await operator.click('#tab-bingo');
   await operator.waitForFunction(() => document.querySelector('#event-summary').count === 2);
   assert.equal(await operator.locator('#phase-status').evaluate((e) => e.message), 'Fase: Línea cantada');
-  assert.match(await cueStatus(operator), /No suena nada al abrir ni al recargar/);
+  assert.equal(await operator.locator('#cue-status').evaluate((element) => element.hidden), true, 'idle status: nothing has played');
   assert.equal(await operator.evaluate(() => window.__plays), 0);
   step('committed line milestone does not replay at startup');
 
-  await operator.locator('#cue-test button').click();
-  await operator.waitForFunction(() => /^(Aviso de prueba|No se pudo)/.test(document.querySelector('#cue-status').message));
-  assert.equal(await cueStatus(operator), 'Aviso de prueba: Línea cantada');
+  await operator.locator('#cue-test').click();
+  await operator.waitForFunction(() => /^Test cue (played|sound unavailable)/.test(document.querySelector('#cue-status').message));
+  assert.equal(await cueStatus(operator), 'Test cue played: Line declared');
   assert.match(await operator.evaluate(() => window.__src),
     /^file:\/\/.*\/dist\/renderer\/assets\/line-[\w-]+\.wav$/);
   step('built file:// operator page plays the bundled line cue under the offline CSP');
 
-  await operator.fill('#public-volume', '30');
-  await operator.locator('#cue-mute button').click();
+  await operator.fill('#cue-volume', '30');
+  await operator.locator('#cue-mute').check();
   await operator.reload();
   await operator.click('#tab-bingo');
   await operator.waitForFunction(() => document.querySelector('#event-summary').count === 2);
-  assert.equal(await operator.locator('#cue-mute').textContent(), 'Activar');
-  assert.equal(await operator.inputValue('#public-volume'), '30');
-  assert.match(await cueStatus(operator), /No suena nada al abrir ni al recargar/);
+  assert.equal(await operator.locator('#cue-mute').isChecked(), true);
+  assert.equal(await operator.inputValue('#cue-volume'), '30');
+  assert.equal(await operator.locator('#cue-status').evaluate((element) => element.hidden), true, 'idle status: nothing has played');
   step('mute/volume persist across renderer reload with no replay');
 
   const [publicWindow] = await Promise.all([app.waitForEvent('window'), operator.locator('#open-public button').click()]);
@@ -67,8 +67,8 @@ try {
   operator = await app.firstWindow();
   await operator.click('#tab-bingo');
   await operator.waitForFunction(() => document.querySelector('#event-summary').count === 2);
-  assert.equal(await operator.locator('#cue-mute').textContent(), 'Activar');
-  assert.match(await cueStatus(operator), /No suena nada al abrir ni al recargar/);
+  assert.equal(await operator.locator('#cue-mute').isChecked(), true);
+  assert.equal(await operator.locator('#cue-status').evaluate((element) => element.hidden), true, 'idle status: nothing has played');
   step('relaunch keeps cue settings and does not replay the milestone');
   await app.close();
 } finally {

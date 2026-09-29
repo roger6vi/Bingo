@@ -11,9 +11,10 @@ test('operator cues follow acknowledged snapshots with bundled sounds and never 
   assert.match(read('src/cue-ui.mjs'), /sources = CUE_SOURCES/);
   const html = read('src/operator.html');
   assert.doesNotMatch(html, /\b(?:autoplay|<audio)\b/i);
-  // The rail's volume slider now drives the cues and is enabled; mute and test are shared buttons.
-  assert.match(html, /<label for="public-volume" class="visually-hidden">Volumen de avisos<\/label>/);
-  assert.match(html, /<bingo-button id="cue-mute">Silenciar<\/bingo-button>\s*<input id="public-volume" type="range" min="0" max="100" step="5" value="60" aria-describedby="volume-note">\s*<bingo-button id="cue-test">Probar<\/bingo-button>/);
+  assert.match(html, /<input type="checkbox" id="cue-mute"[^>]*>/);
+  assert.match(html, /<input id="cue-volume" type="range" min="0" max="100" step="5"/);
+  assert.match(html, /<input type="button" id="cue-test"/);
+  assert.match(html, /<bingo-status id="cue-status" hidden><\/bingo-status>/);
 });
 
 test('the public window stays visual-only, so reopening it can never duplicate a cue', () => {
