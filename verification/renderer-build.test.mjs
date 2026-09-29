@@ -197,3 +197,12 @@ test('Tongo keeps an operator-only trigger and a receive-only, never-replayed pu
   assert.match(publicPreload, /'public:presentation'/);
   assert.doesNotMatch(publicPreload, /tongo:play|ipcRenderer\.(?:send|invoke|sendSync)\b/);
 });
+
+test('the bundled public page ships the Tongo overlay but never the trigger', () => {
+  assert.match(text('dist/renderer/public.html'), /<bingo-tongo id="tongo" lang="es"><\/bingo-tongo>/);
+  const assets = readdirSync(path.join(renderer, 'assets')).filter((file) => file.endsWith('.js'));
+  const bundle = assets.map((file) => text(`dist/renderer/assets/${file}`)).join('\n');
+  assert.match(bundle, /customElements\.define\("bingo-tongo"/);
+  assert.match(bundle, /publicPresentation/);
+  assert.doesNotMatch(bundle, /tongo:play/);
+});
