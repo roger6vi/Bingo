@@ -30,7 +30,8 @@ const page = async (path, selector) => {
   const source = new DOMParser().parseFromString(await (await fetch(new URL(path, import.meta.url))).text(), 'text/html');
   return document.importNode(source.querySelector(selector), true);
 };
-// Every element in light and shadow trees, so a hard-coded radius anywhere in either window fails.
+// Every element in light and shadow trees, so a hard-coded radius anywhere in either window fails. This also covers
+// controls whose markup is still changing (such as the audio row), which are deliberately not named below.
 function* everyElement(root) {
   for (const element of root.querySelectorAll('*')) {
     yield element;
@@ -77,7 +78,6 @@ it('every corner is square in both windows and all three themes', async () => {
       'number input': operator.querySelector('bingo-draw-controls').shadowRoot.querySelector('input[type="number"]'),
       dialog: operator.querySelector('bingo-dialog').shadowRoot.querySelector('dialog'),
       'tongo progress': shadow('#tongo-control', 'progress'),
-      'volume slider': operator.querySelector('.volume-control input[type="range"]'),
       'public number': display.querySelector('#latest-number').shadowRoot.querySelector('span'),
       'public board chip': board.shadowRoot.querySelector('bingo-number').shadowRoot.querySelector('span'),
       'public panel': display.querySelector('bingo-panel').shadowRoot.querySelector('section'),
