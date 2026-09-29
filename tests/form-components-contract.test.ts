@@ -46,8 +46,13 @@ test('fields are form-associated with label, hint, announced error and state wir
 
 test('operator forms use only the shared controls and keep every control ID', () => {
   const page = source('src/operator.html');
-  assert.doesNotMatch(page, /<(?:input|select|textarea)\b/, 'no raw text, date or select controls');
-  for (const form of page.match(/<form\b[\s\S]*?<\/form>/g) ?? []) assert.doesNotMatch(form, /<button\b/, 'no raw form buttons');
+  assert.doesNotMatch(page, /<(?:select|textarea)\b/, 'no raw select or textarea controls');
+  for (const form of page.match(/<form\b[\s\S]*?<\/form>/g) ?? []) {
+    assert.doesNotMatch(form, /<input\b/, 'no raw text or date fields in event forms');
+    assert.doesNotMatch(form, /<button\b/, 'no raw form buttons');
+  }
+  // The Bingo side rail has a native range control for volume; it is not an event form field.
+  assert.match(page, /<input id="public-volume" type="range"/);
   for (const [tag, id] of [['text-field', 'event-name'], ['text-field', 'event-place'], ['date-field', 'event-date'],
     ['text-field', 'settings-name'], ['text-field', 'settings-place'], ['date-field', 'settings-date'],
     ['select-field', 'theme-select'], ['button', 'create-event-submit'], ['button', 'settings-save'], ['button', 'settings-discard']]) {

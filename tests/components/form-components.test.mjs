@@ -182,10 +182,10 @@ describe('bingo-date-field', () => {
     await expect(field).to.be.accessible();
   });
 
-  it('typing a date updates the host value', async () => {
+  it('a native date input updates the host value independently of browser locale', async () => {
     const field = await fixture(html`<bingo-date-field label="Fecha"></bingo-date-field>`);
-    field.control.focus();
-    await sendKeys({ type: '09012026' });
+    field.control.value = '2026-09-01';
+    field.control.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
     await field.updateComplete;
     expect(field.value).to.equal('2026-09-01');
   });
