@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -23,9 +23,11 @@ test('the real profile path follows Electron appData + package name per platform
 test('a fresh smoke directory in the temp dir is accepted and passed as --user-data-dir', () => withTemp((temp) => {
   const profile = mkdtempSync(path.join(temp, profilePrefix));
   const options = { temp, realProfile: path.join(temp, 'real') };
-  assert.equal(assertTemporaryProfile(profile, options), profile);
+  // The returned/used path is canonicalized (macOS /var \u2192 /private/var), even though the input is not.
+  const resolvedProfile = realpathSync(profile);
+  assert.equal(assertTemporaryProfile(profile, options), resolvedProfile);
   const args = launchArgs(profile, { ...options, isRoot: false });
-  assert.deepEqual(args.slice(1), [`--user-data-dir=${profile}`]);
+  assert.deepEqual(args.slice(1), [`--user-data-dir=${resolvedProfile}`]);
   assert.ok(launchArgs(profile, { ...options, isRoot: true }).includes('--no-sandbox'));
 }));
 

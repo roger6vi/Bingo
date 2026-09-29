@@ -1,4 +1,7 @@
-import './bingo-shell.mjs';
+import './components/bingo-app-shell.mjs';
+import './components/bingo-tabs.mjs';
+import './components/bingo-side-rail.mjs';
+import './components/bingo-button.mjs';
 import './components/bingo-panel.mjs';
 import './components/bingo-status.mjs';
 import './components/bingo-operator-summary.mjs';
@@ -10,8 +13,8 @@ import './screen.css';
 import { createOperatorController } from './operator-controller.mjs';
 import { createManualDrawHandler } from './manual-draw.mjs';
 import { createEventsController, today } from './events-controller.mjs';
-import { bindTabs } from './operator-tabs.mjs';
-import { applyTheme, createThemeController, DEFAULT_THEME, revealAfter, THEME_LABELS } from './theme-controller.mjs';
+import { applyTheme, createThemeController, DEFAULT_THEME, revealAfter } from './theme-controller.mjs';
+import { operatorMessage, PHASE_LABELS_ES, THEME_NAMES_ES } from './operator-copy.mjs';
 import { bindSettings } from './settings-ui.mjs';
 
 function required(id, type) {
@@ -28,10 +31,6 @@ const history = required('called-numbers', HTMLElement);
 const summary = required('event-summary', HTMLElement);
 const phaseStatus = required('phase-status', HTMLElement);
 const eventStatus = required('event-status', HTMLElement);
-const phaseLabels = {
-  drawing: 'Drawing', checking_line: 'Checking line', line_declared: 'Line declared',
-  checking_bingo: 'Checking bingo', bingo_declared: 'Bingo declared', finished: 'Finished',
-};
 const eventError = required('event-error', HTMLElement);
 const themeSelect = required('theme-select', HTMLSelectElement);
 
@@ -81,7 +80,7 @@ openPublic.addEventListener('click', () => window.desktop.openPublic());
 movePublic.addEventListener('click', () => window.desktop.movePublicToSecondary());
 window.desktop.onPublicStatus((pauseSuggested) => {
   publicStatus.message = pauseSuggested
-    ? 'Secondary display disconnected. Public output moved to primary preview; pause bingo until ready.'
+    ? 'Pantalla secundaria desconectada: la salida pública pasó a la vista previa principal. Pausa el bingo hasta que esté lista.'
     : '';
   publicStatus.tone = 'warning';
   publicStatus.hidden = !pauseSuggested;
@@ -103,14 +102,14 @@ const controller = createOperatorController(window.desktop, {
     summary.latest = state.calledNumbers.at(-1) ?? null;
     summary.count = state.calledNumbers.length;
     summary.remaining = state.remaining;
-    phaseStatus.message = state.phase === null ? 'Current phase: waiting for event state'
-      : `Current phase: ${phaseLabels[state.phase]}`;
+    phaseStatus.message = state.phase === null ? 'Fase: esperando el estado del evento'
+      : `Fase: ${PHASE_LABELS_ES[state.phase]}`;
     phaseStatus.tone = 'info';
-    eventStatus.message = state.stale ? 'Event history may be stale. Reload before relying on it.'
-      : state.pending ? 'Loading event state' : state.manualDisabled && state.remaining > 0
-        ? 'Waiting for event state' : 'Event ready';
+    eventStatus.message = state.stale ? 'El historial puede estar desactualizado. Recarga el evento antes de seguir.'
+      : state.pending ? 'Cargando el evento' : state.manualDisabled && state.remaining > 0
+        ? 'Esperando el estado del evento' : state.remaining === 0 ? 'Todas las bolas cantadas' : 'Evento listo';
     eventStatus.tone = state.stale ? 'warning' : 'info';
-    eventError.message = state.error ?? '';
+    eventError.message = operatorMessage(state.error) ?? '';
     eventError.tone = 'error';
     eventError.hidden = !state.error;
     drawLocks = { manualDisabled: state.manualDisabled, digitalDisabled: state.digitalDisabled,
@@ -134,16 +133,15 @@ const themes = createThemeController(window.desktop, {
     if (theme !== null) settings.config.setCommittedTheme(theme);
     themePending = pending;
     applyLocks();
-    themeStatus.message = error ?? (pending ? 'Guardando tema' : theme === null ? 'Esperando el tema guardado'
-      : `Tema guardado: ${THEME_LABELS[theme]}`);
+    themeStatus.message = operatorMessage(error) ?? (pending ? 'Guardando tema' : theme === null ? 'Esperando el tema guardado'
+      : `Tema guardado: ${THEME_NAMES_ES[theme]}`);
     themeStatus.tone = error ? 'error' : 'info';
   },
 });
 void themes.start();
 
-bindTabs(document.querySelector('[role="tablist"]'), {
-  canLeave: (current) => (current.id === 'tab-settings' ? settings.confirmLeave() : true),
-});
+// Leaving Configuración with unsaved edits offers Save, Discard, or Cancel first.
+required('workspace-tabs', HTMLElement).canLeave = (current) => (current.id === 'tab-settings' ? settings.confirmLeave() : true);
 const eventList = required('event-list', HTMLElement);
 eventListRef = eventList;
 const eventsStatus = required('events-status', HTMLElement);
@@ -152,7 +150,7 @@ const reloadEvents = required('reload-events', HTMLElement);
 const createForm = required('create-event', HTMLFormElement);
 const createSubmit = required('create-event-submit', HTMLButtonElement);
 const eventDate = required('event-date', HTMLInputElement);
-const banners = [...document.querySelectorAll('.active-event-banner')];
+const banner = required('active-event-banner', HTMLElement);
 eventDate.value = today();
 
 // Both dependent panels re-read the newly committed event and its theme.
@@ -170,16 +168,14 @@ const events = createEventsController(window.desktop, {
         : stale ? 'La lista de eventos puede estar desactualizada. Recárgala antes de continuar.'
           : `${list.length} evento${list.length === 1 ? '' : 's'}`;
     eventsStatus.tone = stale ? 'warning' : 'info';
-    eventsError.message = error ?? '';
+    eventsError.message = operatorMessage(error) ?? '';
     eventsError.tone = 'error';
     eventsError.hidden = !error;
     // A stale list may predate an acknowledged save; the store rejects a draft for an inactive event anyway.
     if (!stale) settings.config.setCommittedEvent(active);
-    for (const banner of banners) {
-      banner.message = active ? `Evento activo: ${active.name} — ${active.date}, ${active.place}`
-        : loaded ? 'Ningún evento activo. Elige uno en Eventos.' : 'Cargando evento activo';
-      banner.tone = active && !stale ? 'info' : 'warning';
-    }
+    banner.message = active ? `Evento activo: ${active.name} — ${active.date}, ${active.place}`
+      : loaded ? 'Ningún evento activo. Elige uno en Eventos.' : 'Cargando evento activo';
+    banner.tone = active && !stale ? 'info' : 'warning';
   },
 }, () => Promise.all([controller.resync(), themes.start()]));
 // events.select resolves only after resync() and the theme re-read settle.

@@ -29,6 +29,22 @@ export function defaultUserData({ platform = process.platform, env = process.env
   return path.join(appData, appName);
 }
 
+// Resolves symlinks in whatever prefix of `target` already exists (macOS /var → /private/var), and
+// rejoins the remaining, not-yet-created path segments unresolved. Safe for paths that do not exist yet:
+// it never calls realpathSync on a missing entry, only on the deepest existing ancestor.
+function canonicalizeExistingAncestor(target) {
+  let current = path.resolve(target);
+  const missingSuffix = [];
+  while (!existsSync(current)) {
+    const parent = path.dirname(current);
+    if (parent === current) return current; // no existing ancestor (e.g. root itself is missing)
+    missingSuffix.unshift(path.basename(current));
+    current = parent;
+  }
+  const resolvedBase = realpathSync(current);
+  return missingSuffix.length ? path.join(resolvedBase, ...missingSuffix) : resolvedBase;
+}
+
 // Throws unless `profile` is an existing smoke directory directly inside the OS temp dir. Paths are
 // compared after resolving symlinks (macOS /var → /private/var), so the real profile can never qualify.
 export function assertTemporaryProfile(profile, { temp = tmpdir(), realProfile = defaultUserData() } = {}) {
@@ -39,7 +55,9 @@ export function assertTemporaryProfile(profile, { temp = tmpdir(), realProfile =
   if (path.dirname(resolved) !== resolvedTemp || !path.basename(resolved).startsWith(profilePrefix)) {
     throw new Error(`Refusing to launch Electron: --user-data-dir ${resolved} is not a ${profilePrefix}* directory in ${resolvedTemp}`);
   }
-  const real = existsSync(realProfile) ? realpathSync(realProfile) : path.resolve(realProfile);
+  // The real profile may not exist yet (first launch ever); canonicalize only its existing ancestor so a
+  // symlinked temp root (e.g. macOS /var) cannot make an overlapping path escape detection.
+  const real = canonicalizeExistingAncestor(realProfile);
   if (within(real, resolved) || within(resolved, real)) {
     throw new Error(`Refusing to launch Electron: --user-data-dir ${resolved} overlaps the real profile ${real}`);
   }
@@ -169,7 +187,7 @@ async function smoke() {
     console.error(`Smoke artifacts written to ${artifacts}`);
   };
 
-  const banner = (page) => page.locator('#panel-settings .active-event-banner').evaluate((element) => element.message);
+  const banner = (page) => page.locator('#active-event-banner').evaluate((element) => element.message);
   const simulatorFrame = async (page) => {
     const frame = await (await page.locator('#public-simulator').elementHandle()).contentFrame();
     await frame.waitForFunction(() => document.documentElement.dataset.theme !== undefined, null, { timeout: stepTimeout });
@@ -194,6 +212,23 @@ async function smoke() {
         assert.equal(await operator.locator(`#${tab}`).getAttribute('aria-selected'), 'true', `${tab} is selected`);
         assert.deepEqual(await visiblePanels(operator), [panel], `only ${panel} is visible`);
       }
+    });
+
+    await step('full-viewport tabs without document scroll', async () => {
+      // The operator is a full-viewport application: no document scroll on any tab at desktop sizes.
+      // Playwright's CDP viewport override is used instead of BrowserWindow content-size, which the OS
+      // clamps to the physical display's work area: this exercises real layout/rendering at both sizes
+      // regardless of the host machine's actual screen size.
+      for (const [width, height] of [[1280, 720], [1920, 1080]]) {
+        await operator.setViewportSize({ width, height });
+        await operator.waitForFunction((size) => innerWidth === size[0] && innerHeight === size[1], [width, height]);
+        for (const tab of ['events', 'settings', 'bingo']) {
+          await operator.click(`#tab-${tab}`);
+          const scroll = await operator.evaluate(() => [document.scrollingElement.scrollWidth, document.scrollingElement.scrollHeight]);
+          assert.deepEqual(scroll, [width, height], `${tab} at ${width}×${height}`);
+        }
+      }
+      await operator.click('#tab-events');
     });
 
     await step('committed draw reaches the public window', async () => {
