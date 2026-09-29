@@ -23,10 +23,12 @@ const within = (parent, child) => child === parent || child.startsWith(`${parent
 
 // Electron's default userData for this app (appData + package name) — the real profile to protect.
 export function defaultUserData({ platform = process.platform, env = process.env, home = homedir() } = {}) {
-  const appData = platform === 'darwin' ? path.join(home, 'Library', 'Application Support')
-    : platform === 'win32' ? env.APPDATA ?? path.join(home, 'AppData', 'Roaming')
-      : env.XDG_CONFIG_HOME || path.join(home, '.config');
-  return path.join(appData, appName);
+  // Join with the simulated platform's rules, so the result does not depend on the host running the test.
+  const join = platform === 'win32' ? path.win32.join : path.posix.join;
+  const appData = platform === 'darwin' ? join(home, 'Library', 'Application Support')
+    : platform === 'win32' ? env.APPDATA ?? join(home, 'AppData', 'Roaming')
+      : env.XDG_CONFIG_HOME || join(home, '.config');
+  return join(appData, appName);
 }
 
 // Resolves symlinks in whatever prefix of `target` already exists (macOS /var → /private/var), and
