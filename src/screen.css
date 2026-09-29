@@ -196,7 +196,8 @@ body:has(> .operator-app) { padding: 0; overflow: hidden; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .public-controls bingo-button::part(button) { min-height: 2rem; }
 .rail-section bingo-status { margin-top: 0.5rem; }
-.claim-buttons { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0.5rem; }
+/* Línea, Bingo and Tongo share the first row, so Tongo adds no rail height at 1280×720. */
+.claim-buttons { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.5rem; }
 .claim-buttons bingo-button { display: block; }
 .claim-buttons bingo-button::part(button) { width: 100%; font-weight: var(--bingo-font-emphasis); }
 .claim-wide { grid-column: 1 / -1; }
