@@ -10,7 +10,7 @@ import { manyEvents } from '../../.storybook/lib/fixtures.mjs';
 const shell = ({ status, rows }) => html`<bingo-app-shell lang="es" class="operator-app">
   <header slot="header" class="app-header" style="grid-template-columns: auto minmax(0, 1fr)">
     <div class="app-brand"><span class="app-mark" aria-hidden="true">90</span><h1>Consola del operador</h1></div>
-    <bingo-status class="active-event-banner" message="Evento activo: Bingo solidario de primavera"></bingo-status>
+    <bingo-status class="active-event-banner" message="Bingo solidario de primavera — 2026-10-03, Casal del barrio"></bingo-status>
   </header>
   <main class="app-main">
     <bingo-panel heading="Eventos" compact fill>

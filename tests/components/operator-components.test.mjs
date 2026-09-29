@@ -576,7 +576,7 @@ it('event details draft into the simulator, validate like the store, and save th
     const date = main.querySelector('#settings-date');
     const save = main.querySelector('#settings-save');
     const banners = [main.querySelector('#active-event-banner')];
-    const committedBanner = 'Evento activo: Verbena — 2026-08-15, Plaza';
+    const committedBanner = 'Verbena — 2026-08-15, Plaza';
     expect([name.value, place.value, date.value, name.disabled]).to.deep.equal(['Verbena', 'Plaza', '2026-08-15', false]);
     expect(banners.map((banner) => banner.message)).to.deep.equal([committedBanner]);
     expect(simulator.last('event')).to.deep.equal({ ok: true, eventChanged: true,
@@ -611,7 +611,7 @@ it('event details draft into the simulator, validate like the store, and save th
     save.click();
     await settle();
     expect(requests).to.deep.equal([request, request]);
-    const saved = 'Evento activo: Gran Bingo — 2026-09-01, Plaza';
+    const saved = 'Gran Bingo — 2026-09-01, Plaza';
     expect(banners.map((banner) => [banner.message, banner.tone])).to.deep.equal([[saved, 'info']]);
     expect([name.value, main.querySelector('#settings-state').message, main.querySelector('#settings-error').hidden])
       .to.deep.equal(['Gran Bingo', 'Sin cambios pendientes.', true]);
