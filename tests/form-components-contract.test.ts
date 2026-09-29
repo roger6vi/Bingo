@@ -51,8 +51,9 @@ test('operator forms use only the shared controls and keep every control ID', ()
     assert.doesNotMatch(form, /<input\b/, 'no raw text or date fields in event forms');
     assert.doesNotMatch(form, /<button\b/, 'no raw form buttons');
   }
-  // The Bingo side rail has a native range control for volume; it is not an event form field.
-  assert.match(page, /<input id="public-volume" type="range"/);
+  // The Bingo side rail has native cue controls (mute checkbox, volume range); they are not event form fields.
+  assert.match(page, /<input type="checkbox" id="cue-mute"[^>]*>/);
+  assert.match(page, /<input id="cue-volume" type="range"/);
   for (const [tag, id] of [['text-field', 'event-name'], ['text-field', 'event-place'], ['date-field', 'event-date'],
     ['text-field', 'settings-name'], ['text-field', 'settings-place'], ['date-field', 'settings-date'],
     ['select-field', 'theme-select'], ['button', 'create-event-submit'], ['button', 'settings-save'], ['button', 'settings-discard']]) {

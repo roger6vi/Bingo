@@ -74,11 +74,13 @@ test('built operator shell bundles shared presentation under the offline CSP', (
   assert.match(html, /<bingo-operator-board id="operator-board"><\/bingo-operator-board>/);
   assert.match(html, /<bingo-call-history id="called-numbers"/);
   assert.doesNotMatch(html, /<ol id="called-numbers"|id="stale-warning"/);
-  // Every operator form control is a shared, form-associated Lit component; the volume slider is the
-  // one deliberate native control left in the page.
+  // Every operator form control is a shared, form-associated Lit component; the cue mute checkbox,
+  // volume slider, and test trigger are the deliberate native controls left in the page.
   assert.doesNotMatch(html, /<select\b/, 'the theme picker is a shared component');
-  assert.match(html, /<input id="public-volume" type="range"/);
-  assert.equal((html.match(/<input\b/g) ?? []).length, 1, 'only the volume range remains a native input');
+  assert.match(html, /<input type="checkbox" id="cue-mute"[^>]*>/);
+  assert.match(html, /<input id="cue-volume" type="range"/);
+  assert.match(html, /<input type="button" id="cue-test"/);
+  assert.equal((html.match(/<input\b/g) ?? []).length, 3, 'only the cue mute, volume, and test controls remain native inputs');
 });
 
 test('public sample is bundled under renderer and remains opt-in', () => {

@@ -28,6 +28,7 @@ import operatorSource from '../../src/operator.html?raw';
 import publicSource from '../../src/public.html?raw';
 import sampleVideoUrl from '../../assets/sample.mp4?url';
 import { validateDraft } from '../../src/configuration-controller.mjs';
+import { DEFAULT_CUE_SETTINGS } from '../../src/cue-player.mjs';
 import { DEFAULT_THEME } from '../../src/theme-controller.mjs';
 import { operatorMessage, PHASE_LABELS_ES, THEME_NAMES_ES } from '../../src/operator-copy.mjs';
 import { ACTIVE_EVENT, EVENTS, PHASE_LABELS } from './fixtures.mjs';
@@ -144,6 +145,12 @@ export function operatorScreen(options) {
     : game.pending ? 'Actualizando el evento' : manualDisabled && remaining > 0 ? 'Esperando el estado del evento'
       : remaining === 0 ? 'Todas las bolas cantadas' : 'Evento listo', game.stale ? 'warning' : 'info');
   status($('event-error'), operatorMessage(game.error) ?? '', 'error', !game.error);
+  // Sound cues, as bindCueControls renders a fresh profile: default level, idle status hidden.
+  const cueLevel = Math.round(DEFAULT_CUE_SETTINGS.volume * 100);
+  $('cue-mute').checked = DEFAULT_CUE_SETTINGS.muted;
+  $('cue-volume').value = String(cueLevel);
+  $('cue-volume').setAttribute('aria-valuetext', `${cueLevel}%`);
+  $('cue-status').hidden = true;
   status($('public-status'), state.publicWarning
     ? 'Pantalla secundaria desconectada: la salida pública pasó a la vista previa principal. Pausa el bingo hasta que esté lista.'
     : '', 'warning', !state.publicWarning);
