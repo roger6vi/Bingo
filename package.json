@@ -20,16 +20,25 @@
     "package:mac": "npm run build && electron-builder --mac --publish never -c.mac.identity=- -c.mac.notarize=false",
     "package:mac:signed": "npm run build && electron-builder --mac --publish never -c.forceCodeSigning=true",
     "package:win": "npm run build && electron-builder --win nsis --x64 --config electron-builder.win.yml --publish never",
-    "test:package": "node verification/packaged-smoke.mjs"
+    "test:package": "node verification/packaged-smoke.mjs",
+    "storybook": "npm run build:tokens && storybook dev --port 6006 --no-open --no-version-updates --disable-telemetry",
+    "storybook:build": "npm run build:tokens && storybook build --quiet --disable-telemetry --output-dir storybook-static",
+    "storybook:verify": "node .storybook/verify.mjs"
   },
   "devDependencies": {
     "@open-wc/testing": "5.0.0",
+    "@storybook/addon-a11y": "10.6.0",
+    "@storybook/addon-docs": "10.6.0",
+    "@storybook/web-components-vite": "10.6.0",
     "@types/node": "24.7.0",
     "@web/test-runner": "1.0.0",
     "@web/test-runner-playwright": "1.0.0",
+    "axe-core": "4.13.0",
     "electron": "41.10.3",
     "electron-builder": "26.15.3",
     "playwright": "1.63.0",
+    "storybook": "10.6.0",
+    "storybook-addon-pseudo-states": "10.6.0",
     "style-dictionary": "5.5.5",
     "typescript": "5.9.3",
     "vite": "7.3.6"
