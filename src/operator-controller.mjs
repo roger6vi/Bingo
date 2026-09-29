@@ -13,23 +13,26 @@ export function createOperatorController(api, view) {
   let error = null;
   let loaded = false;
 
-  function render() {
+  // `reread` marks a snapshot accepted from getCurrentEvent rather than from this window's own draw, so
+  // cues treat it as a baseline: a milestone another process committed before a reload never plays.
+  function render(reread = false) {
     const exhausted = calledNumbers.length === 90;
     view.render({ calledNumbers: [...calledNumbers], remaining: 90 - calledNumbers.length,
       phase, stale, error, pending, manualDisabled: pending || !loaded || exhausted,
       digitalDisabled: pending || !loaded || exhausted, reloadDisabled: pending,
       // The last acknowledged snapshot, kept through stale and failed states (the simulator shows it).
-      snapshot: loaded ? { calledNumbers: [...calledNumbers], phase, lastTransitionAt } : null });
+      snapshot: loaded ? { calledNumbers: [...calledNumbers], phase, lastTransitionAt } : null }, { reread });
   }
 
   let inFlight = Promise.resolve();
-  function request(operation, manual = false) {
+  function request(operation, { manual = false, reread = false } = {}) {
     if (pending) return inFlight;
-    inFlight = settle(operation, manual);
+    inFlight = settle(operation, manual, reread);
     return inFlight;
   }
 
-  async function settle(operation, manual) {
+  async function settle(operation, manual, reread) {
+    let accepted = false;
     pending = true;
     render();
     try {
@@ -40,6 +43,7 @@ export function createOperatorController(api, view) {
           phase = result.snapshot.phase;
           lastTransitionAt = result.snapshot.lastTransitionAt;
           loaded = true;
+          accepted = true;
           stale = false;
           error = null;
           if (manual) view.clearManual();
@@ -57,14 +61,14 @@ export function createOperatorController(api, view) {
       error = connectionError;
     } finally {
       pending = false;
-      render();
+      render(reread && accepted);
     }
   }
 
-  const reload = () => request(() => api.getCurrentEvent());
+  const reload = () => request(() => api.getCurrentEvent(), { reread: true });
   const manual = (number) => {
     if (!loaded || calledNumbers.length === 90) return;
-    void request(() => api.drawManual(number), true);
+    void request(() => api.drawManual(number), { manual: true });
   };
   const digital = () => {
     if (!loaded || calledNumbers.length === 90) return;

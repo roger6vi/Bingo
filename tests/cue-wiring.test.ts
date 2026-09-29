@@ -7,7 +7,7 @@ const root = path.resolve(import.meta.dirname, '..');
 const read = (file: string) => readFileSync(path.join(root, file), 'utf8');
 
 test('operator cues follow acknowledged snapshots with bundled sounds and never autoplay', () => {
-  assert.match(read('src/operator-ui.mjs'), /cues\.observe\(state\.snapshot\)/);
+  assert.match(read('src/operator-ui.mjs'), /render: \(state, acknowledgement\) => \{[\s\S]*cues\.observe\(state\.snapshot, acknowledgement\)/);
   assert.match(read('src/cue-ui.mjs'), /sources = CUE_SOURCES/);
   const html = read('src/operator.html');
   assert.doesNotMatch(html, /\b(?:autoplay|<audio)\b/i);
