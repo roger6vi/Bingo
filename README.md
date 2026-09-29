@@ -33,6 +33,10 @@ xvfb-run -a npm run test:smoke
 
 The runner installs Chromium's Linux system dependencies with `npx playwright install-deps chromium`; `npm run test:components` installs Chromium itself before running Web Test Runner. Before the checks it makes Electron's `chrome-sandbox` helper setuid root, so the smoke runs with the Chromium sandbox enabled on Ubuntu. The smoke step has a five-minute limit; when it fails, its screenshots and log are uploaded as the `electron-smoke` workflow artifact. The single job keeps token-generated CSS and build artifacts sequential. To reproduce the checks locally, use Node.js 24, run `npm ci`, provision Playwright's Chromium system dependencies on Linux, then run the commands above in order. CI tests source, token contracts, built artifacts, browser components, and one Electron launch on Linux; it does not package the application or validate macOS or Windows runtime/packaging. Hosted CI results require a published branch or PR; required-check branch protection is not configured here.
 
+## Windows package
+
+A separate `Windows package` workflow builds unsigned per-user NSIS installers on `windows-latest`, then installs, upgrades, relaunches and uninstalls the packaged app against a temporary `--user-data-dir`. On Windows, `npm run package:win` writes the installer to ignored `release/windows/`. See [docs/windows-packaging.md](docs/windows-packaging.md) for what is verified, platform differences, and what remains unverified.
+
 ## Next work
 
 The first production steps are tracked as GitHub issues:
