@@ -53,6 +53,10 @@ jobs:
         Start-Process -Wait (Resolve-Path release/windows/Bingo-Setup-0.1.1-x64.exe) -ArgumentList '/S'
         $app = ./scripts/windows-installed.ps1 -Version 0.1.1
         node verification/packaged-smoke.mjs $app $env:BINGO_DATA upgraded
+    - name: Smoke installed cue sounds and no-replay across restarts
+      run: |
+        $app = ./scripts/windows-installed.ps1 -Version 0.1.1
+        node verification/packaged-cue-smoke.mjs $app
     - name: Uninstall keeps event data
       run: |
         ./scripts/windows-installed.ps1 -Uninstall

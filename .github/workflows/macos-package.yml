@@ -41,6 +41,8 @@ jobs:
       run: codesign --verify --deep --strict --verbose=2 release/mac-arm64/Bingo.app
     - name: Smoke packaged app with a temporary user-data directory
       run: npm run test:package
+    - name: Smoke packaged cue sounds and no-replay across restarts
+      run: node verification/packaged-cue-smoke.mjs
     - uses: actions/upload-artifact@v4
       with:
         name: bingo-macos-unsigned-${{ github.sha }}
