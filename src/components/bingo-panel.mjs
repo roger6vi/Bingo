@@ -37,8 +37,12 @@ class BingoPanel extends LitElement {
     }
     :host([compact]) h2 { margin: 0; font-size: 0.75rem; letter-spacing: 0.08em; color: var(--bingo-color-muted); }
     :host([compact]) .body { padding: 0.875rem; }
-    :host([fill]) { height: 100%; min-height: 0; }
-    :host([fill]) section { display: flex; flex-direction: column; }
+    /* "fill" must not rely on a bare percentage height: an ancestor grid/flex track that ends up
+       auto-sized around content (rather than stretched) leaves height: 100% resolving against an
+       indefinite box, so a long list grows the section instead of scrolling inside it. Chaining an
+       explicit flex column from the host down to .body keeps every level self-bounded instead. */
+    :host([fill]) { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+    :host([fill]) section { display: flex; flex-direction: column; flex: 1; min-height: 0; }
     :host([fill]) .body { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
   `;
   constructor() { super(); this.heading = ''; this.compact = false; this.fill = false; }
