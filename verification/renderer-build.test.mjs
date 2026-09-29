@@ -64,13 +64,15 @@ test('built operator shell bundles shared presentation under the offline CSP', (
   const html = text('dist/renderer/operator.html');
   const js = readdirSync(path.join(renderer, 'assets'))
     .filter((file) => file.endsWith('.js')).map((file) => text(`dist/renderer/assets/${file}`)).join('\n');
-  for (const name of ['panel', 'status', 'number', 'operator-summary', 'call-history']) {
+  for (const name of ['panel', 'status', 'number', 'operator-summary', 'call-history',
+    'text-field', 'date-field', 'select-field', 'form-actions']) {
     assert.ok(js.includes(`bingo-${name}`), `bundled ${name} registration`);
   }
   assert.match(html, /<main>[\s\S]*<h1>Operator console<\/h1>/);
   assert.match(html, /<bingo-operator-summary id="event-summary"/);
   assert.match(html, /<bingo-call-history id="called-numbers"/);
   assert.doesNotMatch(html, /<ol id="called-numbers"|id="stale-warning"/);
+  assert.doesNotMatch(html, /<(?:input|select)\b/, 'form controls are shared components');
 });
 
 test('public sample is bundled under renderer and remains opt-in', () => {

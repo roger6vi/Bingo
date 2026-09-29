@@ -29,7 +29,7 @@ try {
   let app = await launch();
   assert.equal(realpathSync(await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'))), realpathSync(profile));
   let operator = await app.firstWindow();
-  await operator.waitForFunction(() => document.querySelector('#settings-name')?.value !== '');
+  await operator.waitForFunction(() => (document.querySelector('#settings-name')?.value ?? '') !== '');
   assert.ok(existsSync(path.join(profile, 'current-event.sqlite')), 'the database lives in the temporary profile');
   step('isolated profile');
 
@@ -47,9 +47,10 @@ try {
   assert.equal(await operator.locator('#tab-settings').getAttribute('aria-selected'), 'true');
   step('keyboard tab navigation');
   const simulator = await simulatorFrame(operator);
-  await operator.fill('#settings-name', 'Verbena de prueba');
-  await operator.fill('#settings-place', 'Plaza Mayor');
-  await operator.selectOption('#theme-select', 'high-contrast');
+  // The shared field components wrap native controls in their shadow roots; Playwright pierces them.
+  await operator.fill('#settings-name input', 'Verbena de prueba');
+  await operator.fill('#settings-place input', 'Plaza Mayor');
+  await operator.selectOption('#theme-select select', 'high-contrast');
   await simulator.waitForFunction(() => document.querySelector('#event-name').textContent === 'Verbena de prueba' &&
     document.querySelector('#event-details').textContent.endsWith('· Plaza Mayor') &&
     document.documentElement.dataset.theme === 'high-contrast' && document.querySelector('#called-count').value === '1');
@@ -97,8 +98,8 @@ try {
   operator = await app.firstWindow();
   await operator.waitForFunction(() => document.querySelector('#settings-name')?.value === 'Verbena de prueba' &&
     document.documentElement.dataset.theme === 'high-contrast');
-  assert.equal(await operator.inputValue('#settings-place'), 'Plaza Mayor');
-  assert.equal(await operator.inputValue('#theme-select'), 'high-contrast');
+  assert.equal(await operator.inputValue('#settings-place input'), 'Plaza Mayor');
+  assert.equal(await operator.inputValue('#theme-select select'), 'high-contrast');
   assert.equal(await operator.locator('#event-summary').evaluate((summary) => summary.count), 1);
   step('saved configuration and history survive restart');
   await app.close();

@@ -37,15 +37,14 @@ button:disabled { color: var(--bingo-color-muted); background: var(--bingo-color
 .operator-layout { display: grid; gap: var(--bingo-space-section); }
 .operator-layout bingo-panel { min-width: 0; }
 .operator-layout bingo-status { margin-block: var(--bingo-space-section); }
-.operator-layout select { margin-inline: var(--bingo-space-small); padding: var(--bingo-space-inset-compact); }
 .public-controls { display: flex; flex-wrap: wrap; gap: var(--bingo-space-small); }
 .operator-tabs { display: flex; flex-wrap: wrap; border-bottom: 2px solid var(--bingo-color-border); }
 .operator-tabs [role="tab"] { margin: 0 var(--bingo-space-small) 0 0; }
 .operator-tabs [role="tab"][aria-selected="true"] { color: var(--bingo-color-canvas); background: var(--bingo-color-accent); }
 [role="tabpanel"] { margin-top: var(--bingo-space-section); }
 .active-event-banner { margin-block-end: var(--bingo-space-section); }
-.event-form { display: grid; gap: var(--bingo-space-small); justify-items: start; }
-.event-form input { padding: var(--bingo-space-inset-compact); }
+/* Form controls are shared components (bingo-*-field, bingo-form-actions); this only stacks them. */
+.event-form, .form-fields { display: grid; gap: var(--bingo-space-inset-inline); max-width: 36rem; }
 
 bingo-shell:has(#panel-settings:not([hidden])) { max-width: none; }
 /* Configuración: a scrollable control column beside a large, fixed 16:9 public simulator. */
@@ -63,11 +62,6 @@ bingo-shell:has(#panel-settings:not([hidden])) { max-width: none; }
   overflow-y: auto;
   padding: var(--bingo-space-small);
 }
-.settings-controls select { margin-inline: var(--bingo-space-small); padding: var(--bingo-space-inset-compact); }
-.settings-actions { display: flex; flex-wrap: wrap; gap: var(--bingo-space-small); }
-.field-error { margin: 0; color: var(--bingo-color-danger); font-weight: var(--bingo-font-emphasis); }
-.field-error[hidden] { display: none; }
-input[aria-invalid="true"] { border-color: var(--bingo-color-danger); }
 .simulator { position: sticky; top: var(--bingo-space-section); min-width: 0; margin: 0; }
 .simulator-viewport {
   position: relative;

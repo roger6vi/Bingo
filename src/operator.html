@@ -24,13 +24,12 @@
         </bingo-panel>
         <bingo-panel heading="Nuevo evento">
           <form id="create-event" class="event-form">
-            <label for="event-name">Nombre</label>
-            <input id="event-name" name="name" required maxlength="120" autocomplete="off">
-            <label for="event-place">Lugar</label>
-            <input id="event-place" name="place" required maxlength="120" autocomplete="off">
-            <label for="event-date">Fecha</label>
-            <input id="event-date" name="date" type="date" required>
-            <button type="submit" id="create-event-submit">Crear evento</button>
+            <bingo-text-field id="event-name" name="name" label="Nombre" required maxlength="120" autocomplete="off"></bingo-text-field>
+            <bingo-text-field id="event-place" name="place" label="Lugar" required maxlength="120" autocomplete="off"></bingo-text-field>
+            <bingo-date-field id="event-date" name="date" label="Fecha" required></bingo-date-field>
+            <bingo-form-actions id="create-event-actions">
+              <bingo-button slot="primary" variant="primary" type="submit" id="create-event-submit">Crear evento</bingo-button>
+            </bingo-form-actions>
           </form>
         </bingo-panel>
       </div>
@@ -41,31 +40,26 @@
         <form id="settings-form" class="settings-controls" novalidate>
           <bingo-panel heading="Datos del evento">
             <div class="event-form">
-              <label for="settings-name">Nombre</label>
-              <input id="settings-name" name="name" required maxlength="120" autocomplete="off" aria-describedby="settings-name-error" disabled>
-              <p id="settings-name-error" class="field-error" hidden></p>
-              <label for="settings-place">Lugar</label>
-              <input id="settings-place" name="place" required maxlength="120" autocomplete="off" aria-describedby="settings-place-error" disabled>
-              <p id="settings-place-error" class="field-error" hidden></p>
-              <label for="settings-date">Fecha</label>
-              <input id="settings-date" name="date" type="date" required aria-describedby="settings-date-error" disabled>
-              <p id="settings-date-error" class="field-error" hidden></p>
+              <bingo-text-field id="settings-name" name="name" label="Nombre" required maxlength="120" autocomplete="off" disabled></bingo-text-field>
+              <bingo-text-field id="settings-place" name="place" label="Lugar" required maxlength="120" autocomplete="off" disabled></bingo-text-field>
+              <bingo-date-field id="settings-date" name="date" label="Fecha" required disabled></bingo-date-field>
             </div>
           </bingo-panel>
           <bingo-panel heading="Tema de las pantallas">
-            <label for="theme-select">Tema para ambas pantallas</label>
-            <select id="theme-select" disabled>
-              <option value="pixel-classic">Pixel classic</option>
-              <option value="high-contrast">High contrast</option>
-            </select>
-            <bingo-status id="theme-status"></bingo-status>
+            <div class="form-fields">
+              <bingo-select-field id="theme-select" name="theme" label="Tema para ambas pantallas" disabled>
+                <option value="pixel-classic">Pixel classic</option>
+                <option value="high-contrast">High contrast</option>
+              </bingo-select-field>
+              <bingo-status id="theme-status"></bingo-status>
+            </div>
           </bingo-panel>
-          <bingo-status id="settings-state"></bingo-status>
           <bingo-status id="settings-error" hidden></bingo-status>
-          <div class="settings-actions">
-            <button type="submit" id="settings-save" disabled>Guardar cambios</button>
-            <button type="button" id="settings-discard" disabled>Descartar cambios</button>
-          </div>
+          <bingo-form-actions id="settings-actions" class="settings-actions" sticky>
+            <bingo-status id="settings-state" slot="status"></bingo-status>
+            <bingo-button id="settings-discard" disabled>Descartar cambios</bingo-button>
+            <bingo-button slot="primary" variant="primary" type="submit" id="settings-save" disabled>Guardar cambios</bingo-button>
+          </bingo-form-actions>
         </form>
         <figure class="simulator">
           <div class="simulator-viewport" id="simulator-viewport">
