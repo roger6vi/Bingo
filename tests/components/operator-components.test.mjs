@@ -1085,6 +1085,9 @@ it('the Bingo tab plays Tongo once from the claims rail, locking every live acti
     expect(requests.filter((request) => request === 'tongo')).to.have.length(1);
     expect([tongoError.hidden, tongoError.tone, tongoError.message])
       .to.deep.equal([false, 'error', 'Abre la pantalla pública y vuelve a intentar el Tongo.']);
+    await frames();
+    expect(tongoError.getBoundingClientRect().bottom).to.be.at.most(rail.getBoundingClientRect().bottom + 1,
+      'the whole refusal is visible in the rail');
     expect([control.progress, control.disabled, board.disabled]).to.deep.equal([null, false, false]);
     // An acknowledged Tongo locks draws, the board, reload, event selection and settings until it ends.
     let acknowledge;

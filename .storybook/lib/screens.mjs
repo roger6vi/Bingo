@@ -206,6 +206,10 @@ export function operatorScreen(options) {
     new ResizeObserver(scale).observe(viewport);
     scale();
     if (settings.dialog) void dialog.show();
+    // As operator-ui.mjs does, a Tongo refusal is scrolled into view in the rail.
+    if (tongo.error && state.tab === 'bingo') {
+      void $('tongo-error').updateComplete.then(() => $('tongo-error').scrollIntoView({ block: 'nearest' }));
+    }
   });
   return container;
 }

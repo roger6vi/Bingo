@@ -159,7 +159,11 @@ const tongo = createTongoController(window.desktop, {
     tongoControl.progress = progress;
     tongoError.message = operatorMessage(error) ?? '';
     tongoError.tone = 'error';
+    // A refusal adds a status line below the claims; the rail has no spare height at 1280×720, so bring
+    // it into view instead of leaving it clipped at the bottom of the rail.
+    const shown = Boolean(error) && tongoError.hidden;
     tongoError.hidden = !error;
+    if (shown) void tongoError.updateComplete.then(() => tongoError.scrollIntoView({ block: 'nearest' }));
     applyLocks();
   },
 });
