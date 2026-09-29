@@ -1,4 +1,4 @@
-// Isolated Electron smoke of the built app (#59, #72, #77, #78): `npm run test:smoke`, or in CI
+// Isolated Electron smoke of the built app (#59, #60, #72, #77, #78): `npm run test:smoke`, or in CI
 // `xvfb-run -a npm run test:smoke`. It rebuilds when dist/ is missing or older than its sources, and on
 // Linux without a display re-runs itself under `xvfb-run -a`. Every launch uses a fresh temporary
 // --user-data-dir that is verified before and after startup; the real profile is never used and the
@@ -197,6 +197,10 @@ async function smoke() {
   };
   const visiblePanels = (page) => page.evaluate(() => [...document.querySelectorAll('[role="tabpanel"]')]
     .filter((panel) => !panel.hidden).map((panel) => panel.id));
+  const boards = (...pages) => Promise.all(pages.map((page) => page.evaluate(() =>
+    [[...document.querySelector('#called-numbers').calledNumbers], document.querySelector('#phase-status').message])));
+  const tongoState = (page) => page.evaluate(() => ({ progress: document.querySelector('#tongo-control').progress,
+    error: document.querySelector('#tongo-error').hidden ? null : document.querySelector('#tongo-error').message }));
   const eventList = (page) => page.locator('#event-list').evaluate((list) => list.events.map(({ name, active }) => ({ name, active })));
 
   const run = async () => {
@@ -230,6 +234,17 @@ async function smoke() {
           assert.deepEqual(scroll, [width, height], `${tab} at ${width}×${height}`);
         }
       }
+      await operator.click('#tab-events');
+    });
+
+    await step('Tongo without a public window is refused', async () => {
+      // No acknowledgement and no playback: main only acknowledges a signal a live public window accepted.
+      await operator.click('#tab-bingo');
+      await operator.waitForFunction(() => !document.querySelector('#tongo-control').disabled);
+      await operator.locator('#tongo-control button').click();
+      await operator.waitForFunction(() => !document.querySelector('#tongo-error').hidden);
+      assert.deepEqual(await tongoState(operator),
+        { progress: null, error: 'Abre la pantalla pública y vuelve a intentar el Tongo.' });
       await operator.click('#tab-events');
     });
 
@@ -329,6 +344,46 @@ async function smoke() {
       await publicWindow.waitForFunction(() => document.querySelector('#event-name').textContent === 'Verbena de prueba' &&
         document.querySelector('#called-count').value === '1');
       await operator.waitForFunction(() => document.querySelector('#event-summary').count === 1);
+    });
+
+    await step('Tongo plays once, blocks live actions, and restores the committed board', async () => {
+      await publicWindow.emulateMedia({ reducedMotion: 'reduce' });
+      await operator.click('#tab-bingo');
+      const committed = await boards(operator, publicWindow);
+      await operator.waitForFunction(() => !document.querySelector('#tongo-control').disabled);
+      await operator.locator('#tongo-control button').click();
+      await publicWindow.waitForFunction(() => document.querySelector('#tongo').active === true);
+      assert.equal(await publicWindow.locator('#tongo').evaluate((overlay) =>
+        getComputedStyle(overlay.shadowRoot.querySelector('.card')).animationName), 'none', 'static under reduced motion');
+      assert.equal(await publicWindow.locator('#tongo').evaluate((overlay) =>
+        overlay.shadowRoot.querySelector('[role="status"]').textContent), '¡Tongo! Reclamación no válida. El juego continúa.');
+      await operator.waitForFunction(() => document.querySelector('#tongo-control').progress !== null &&
+        document.querySelector('#operator-board').disabled && document.querySelector('#draw-controls').manualDisabled &&
+        document.querySelector('#event-list').disabled);
+      assert.equal((await tongoState(operator)).error, null);
+      // Main refuses a second Tongo and any draw even if the renderer bypassed its locks.
+      assert.deepEqual(await operator.evaluate(() => Promise.all([window.desktop.playTongo(), window.desktop.drawDigital(),
+        window.desktop.drawManual(50)]).then((results) => results.map((result) => result.code))),
+      ['busy', 'presentation_active', 'presentation_active']);
+      assert.deepEqual(await boards(operator, publicWindow), committed);
+      await publicWindow.waitForFunction(() => document.querySelector('#tongo').active === false);
+      await operator.waitForFunction(() => document.querySelector('#tongo-control').progress === null &&
+        !document.querySelector('#operator-board').disabled && !document.querySelector('#event-list').disabled);
+      assert.deepEqual(await boards(operator, publicWindow), committed);
+    });
+
+    await step('reloads during Tongo do not replay it', async () => {
+      const committed = await boards(operator, publicWindow);
+      await operator.locator('#tongo-control button').click();
+      await publicWindow.waitForFunction(() => document.querySelector('#tongo').active === true);
+      await Promise.all([publicWindow.reload(), operator.reload()]);
+      await publicWindow.waitForFunction(() => document.querySelector('#called-count')?.value === '1');
+      await operator.waitForFunction(() => document.querySelector('#event-summary')?.count === 1);
+      assert.equal(await publicWindow.evaluate(() => document.querySelector('#tongo').active), false);
+      assert.equal((await tongoState(operator)).progress, null);
+      await operator.waitForTimeout(3200);
+      assert.equal(await publicWindow.evaluate(() => document.querySelector('#tongo').active), false);
+      assert.deepEqual(await boards(operator, publicWindow), committed);
     });
     await close(app);
 

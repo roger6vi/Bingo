@@ -41,7 +41,7 @@ async function loadOperator() {
   screen.textContent = (await (await fetch(new URL('../../src/screen.css', import.meta.url))).text()).replace(/@import [^;]+;/g, '');
   document.head.append(screen);
   const requests = [];
-  const replies = { setTheme: null, updateEvent: null, drawManual: null };
+  const replies = { setTheme: null, updateEvent: null, drawManual: null, playTongo: null };
   let theme = 'jules';
   let events = [
     { id: 'a', name: 'Verbena', date: '2026-08-15', place: 'Plaza', phase: 'drawing', createdAt: '2026-01-01T00:00:00.000Z', active: true },
@@ -55,6 +55,11 @@ async function loadOperator() {
       return replies.drawManual ? replies.drawManual(number) : { ok: false, message: 'unexpected' };
     },
     drawDigital: async () => { requests.push('draw'); return { ok: false, message: 'unexpected' }; },
+    playTongo: async () => {
+      requests.push('tongo');
+      return replies.playTongo ? replies.playTongo()
+        : { ok: false, code: 'public_unavailable', message: 'Open the public window, then try Tongo again.' };
+    },
     onPublicStatus: () => {}, openPublic: () => {}, movePublicToSecondary: () => {},
     getTheme: async () => ({ ok: true, theme }),
     setTheme: async (next) => {
@@ -1055,6 +1060,66 @@ it('the Bingo tab calls a board number through the manual draw IPC and shows it 
     expect(rail.scrollHeight).to.be.at.most(rail.clientHeight, 'the rail fits at 1280×720');
     expect(document.scrollingElement.scrollHeight).to.be.at.most(innerHeight);
     await expect(main.querySelector('#panel-bingo')).to.be.accessible();
+  } finally {
+    op.cleanup();
+    await setViewport({ width: 800, height: 600 });
+  }
+});
+
+it('the Bingo tab plays Tongo once from the claims rail, locking every live action until it ends', async () => {
+  await setViewport({ width: 1280, height: 720 });
+  const op = await loadOperator();
+  try {
+    const { main, requests, replies } = op;
+    main.querySelector('#tab-bingo').click();
+    const board = main.querySelector('#operator-board');
+    const controls = main.querySelector('#draw-controls');
+    const control = main.querySelector('bingo-side-rail .claim-buttons > bingo-tongo-control#tongo-control');
+    expect(control).not.to.equal(null, 'Tongo sits with the claims in the rail');
+    const tongoError = main.querySelector('.rail-section bingo-status#tongo-error');
+    await settle();
+    await control.updateComplete;
+    expect(control.disabled).to.equal(false, 'offered while the fresh event is drawing');
+    const rail = main.querySelector('bingo-side-rail').shadowRoot.querySelector('.body');
+    expect(rail.scrollHeight).to.be.at.most(rail.clientHeight, 'the rail still fits at 1280×720');
+    // A refusal explains in Spanish and plays nothing.
+    control.button.click();
+    await settle();
+    await control.updateComplete;
+    expect(requests.filter((request) => request === 'tongo')).to.have.length(1);
+    expect([tongoError.hidden, tongoError.tone, tongoError.message])
+      .to.deep.equal([false, 'error', 'Abre la pantalla pública y vuelve a intentar el Tongo.']);
+    await frames();
+    expect(tongoError.getBoundingClientRect().bottom).to.be.at.most(rail.getBoundingClientRect().bottom + 1,
+      'the whole refusal is visible in the rail');
+    expect([control.progress, control.disabled, board.disabled]).to.deep.equal([null, false, false]);
+    // An acknowledged Tongo locks draws, the board, reload, event selection and settings until it ends.
+    let acknowledge;
+    replies.playTongo = () => new Promise((resolve) => { acknowledge = resolve; });
+    control.button.click();
+    await settle();
+    control.button.click();
+    await settle();
+    expect(requests.filter((request) => request === 'tongo')).to.have.length(2, 'one request at a time');
+    expect([control.disabled, board.disabled, controls.manualDisabled, controls.reloadDisabled,
+      main.querySelector('#event-list').disabled]).to.deep.equal([true, true, true, true, true]);
+    acknowledge({ ok: true, presentation: { kind: 'tongo', id: 1, durationMs: 500 } });
+    await settle();
+    await control.updateComplete;
+    expect(control.shadowRoot.querySelector('progress')).not.to.equal(null);
+    expect(tongoError.hidden).to.equal(true, 'a new request clears the last refusal');
+    await frames();
+    expect(rail.scrollHeight).to.be.at.most(rail.clientHeight, 'the rail still fits while Tongo plays');
+    const draws = requests.filter((request) => request === 'draw').length;
+    cellOf(board, 50).click();
+    await settle();
+    expect(requests.filter((request) => request === 'draw')).to.have.length(draws, 'no draw while Tongo plays');
+    await expect(main.querySelector('#panel-bingo')).to.be.accessible();
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    await control.updateComplete;
+    expect([control.progress, control.disabled, board.disabled, controls.manualDisabled,
+      main.querySelector('#event-list').disabled]).to.deep.equal([null, false, false, false, false]);
+    expect(board.calledNumbers).to.deep.equal([4, 9], 'Tongo never changes the game');
   } finally {
     op.cleanup();
     await setViewport({ width: 800, height: 600 });

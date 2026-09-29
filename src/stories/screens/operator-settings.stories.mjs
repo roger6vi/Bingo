@@ -51,3 +51,9 @@ export const LeaveGuard = {
   name: 'Leave with unsaved changes',
   args: { settings: { draft, dialog: true }, simulatorStory: draftPreview },
 };
+
+export const TongoLocked = {
+  name: 'Locked · Tongo playing',
+  parameters: { docs: { description: { story: 'Saving waits until the Tongo presentation ends; the draft is kept.' } } },
+  args: { settings: { draft }, tongo: { progress: 0.4 }, simulatorStory: draftPreview },
+};

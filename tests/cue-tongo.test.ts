@@ -141,7 +141,7 @@ test('every operator Tongo request is routed through the cue controls', () => {
   const source = readFileSync(path.resolve(import.meta.dirname, '../src/operator-ui.mjs'), 'utf8');
   assert.match(source, /playTongo: \(\) => cues\.playTongo\(\(\) => window\.desktop\.playTongo\(\)\)/);
   assert.doesNotMatch(source.replace(/window\.desktop\.playTongo\(\)\)/, ''), /window\.desktop\.playTongo/);
-  for (const factory of ['createOperatorController', 'createThemeController', 'createEventsController']) {
+  for (const factory of ['createOperatorController', 'createThemeController', 'createEventsController', 'createTongoController']) {
     assert.match(source, new RegExp(`${factory}\\(desktop,`), factory);
   }
 });
