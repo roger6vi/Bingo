@@ -8,6 +8,7 @@ import {
 
 const legal: readonly [GamePhase, PhaseTransitionIntent, GamePhase][] = [
   ['drawing', 'begin_line_check', 'checking_line'],
+  ['drawing', 'declare_line_directly', 'line_declared'],
   ['checking_line', 'declare_line', 'line_declared'],
   ['checking_line', 'reject_line_claim', 'drawing'],
   ['line_declared', 'begin_bingo_check', 'checking_bingo'],

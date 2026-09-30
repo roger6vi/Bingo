@@ -11,7 +11,7 @@ export interface PhaseState {
 }
 
 const transitions = {
-  drawing: { begin_line_check: 'checking_line' },
+  drawing: { begin_line_check: 'checking_line', declare_line_directly: 'line_declared' },
   checking_line: { declare_line: 'line_declared', reject_line_claim: 'drawing' },
   line_declared: { begin_bingo_check: 'checking_bingo', correct_line_declaration: 'drawing' },
   checking_bingo: { declare_bingo: 'bingo_declared', reject_bingo_claim: 'line_declared' },
