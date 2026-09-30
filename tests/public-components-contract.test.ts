@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 const source = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
-const names = ['panel', 'number', 'latest-draw', 'status', 'number-board'];
+const names = ['panel', 'number', 'latest-draw', 'status', 'number-board', 'prize-display'];
 
 test('component browser script provisions Playwright Chromium before tokens and WTR', () => {
   const scripts = JSON.parse(source('package.json')).scripts;
@@ -14,7 +14,7 @@ test('component browser script provisions Playwright Chromium before tokens and 
   );
 });
 
-test('five Lit elements register exactly once and consume only semantic styling', () => {
+test('six Lit elements register exactly once and consume only semantic styling', () => {
   for (const name of names) {
     const code = source(`src/components/bingo-${name}.mjs`);
     assert.match(code, /import\s*\{[^}]*LitElement[^}]*html[^}]*\}\s*from ['"]lit['"]/);
@@ -47,14 +47,22 @@ test('panel, number, latest draw and status expose semantic accessible contracts
   assert.match(status, /\$\{this\.message\}/);
 });
 
-test('number board owns ordered list and remains display-only', () => {
+test('number board is a passive fixed 1\u201390 grid', () => {
   const board = source('src/components/bingo-number-board.mjs');
   assert.match(board, /calledNumbers: \{ attribute: false \}/);
-  assert.match(board, /<ol aria-label="Called numbers in draw order">/);
-  assert.match(board, /<li aria-current=/);
+  assert.match(board, /length: 90/);
+  assert.match(board, /grid-template-columns: repeat\(10, minmax\(0, 1fr\)\)/);
+  assert.match(board, /grid-template-rows: repeat\(9, minmax\(0, 1fr\)\)/);
   assert.match(board, /li\[aria-current\]\s*\{[^}]*outline:[^}]*var\(--bingo-color-accent\)/);
-  assert.match(board, /<bingo-number \.value=\$\{number\} \.compact=\$\{true\}/);
-  assert.doesNotMatch(board, /aria-live|addEventListener|localStorage|replaceChildren|\.sort\(|\.slice\(/);
+  assert.doesNotMatch(board, /aria-live|addEventListener|@click|<button|tabindex|localStorage|replaceChildren|\.sort\(|\.slice\(/);
+});
+
+test('prize display shows both prizes from committed data only', () => {
+  const prizes = source('src/components/bingo-prize-display.mjs');
+  assert.match(prizes, /prizes: \{ attribute: false \}/);
+  assert.match(prizes, /PRIZE_LABELS/);
+  assert.match(prizes, /formatEuros/);
+  assert.doesNotMatch(prizes, /aria-live|addEventListener|@click|<button|<input|<form/);
 });
 
 test('draw numbers keep display type while empty labels fit their host', () => {
@@ -69,22 +77,21 @@ test('draw numbers keep display type while empty labels fit their host', () => {
   assert.match(number, /span\.empty\s*\{[^}]*font:[^}]*var\(--bingo-font-size\)[^}]*overflow-wrap:\s*anywhere/);
 });
 
-test('public markup composes the shell with one main and h1, draw order and separate opt-in media', () => {
+test('public markup composes event identity, the fixed board and latest ball with both prizes', () => {
   const page = source('src/public.html');
   for (const name of names) assert.match(page, new RegExp(`<bingo-${name}\\b`));
   assert.equal([...page.matchAll(/<main\b/g)].length, 1);
   assert.equal([...page.matchAll(/<h1\b/g)].length, 1);
   assert.match(page, /<h1 id="event-name">Current event<\/h1>/);
   assert.match(page, /<p id="event-details" class="event-details" hidden><\/p>/);
-  for (const id of ['called-numbers', 'called-count', 'remaining-count']) assert.ok(page.includes(`id="${id}"`));
+  for (const id of ['called-numbers', 'called-count', 'remaining-count', 'prizes']) assert.ok(page.includes(`id="${id}"`));
   assert.match(page, /Called: <output id="called-count" aria-live="off">0<\/output>/);
   assert.match(page, /Remaining: <output id="remaining-count" aria-live="off">90<\/output>/);
   assert.doesNotMatch(page, /aria-live="polite"/);
   assert.match(page, /<bingo-number-board id="called-numbers"><\/bingo-number-board>/);
-  assert.doesNotMatch(page, /<ol id="called-numbers"/);
-  assert.match(page, /Sample media preview \(not event state\)/);
-  assert.match(page, /<video\b[^>]*controls[^>]*preload="none"/);
-  assert.doesNotMatch(page, /\bautoplay\b|<style\b/);
+  assert.match(page, /<bingo-prize-display id="prizes" lang="es"><\/bingo-prize-display>/);
+  assert.ok(page.indexOf('id="event-name"') < page.indexOf('id="called-numbers"') && page.indexOf('id="called-numbers"') < page.indexOf('id="latest-draw"'));
+  assert.doesNotMatch(page, /<ol\b|<video|<button|<input|sample|\bautoplay\b|<style\b/i);
 });
 
 test('public adapter maps controller fields to all display states without mutating authority', () => {
@@ -104,7 +111,10 @@ test('public adapter maps controller fields to all display states without mutati
   assert.match(ui, /latestNumber\.emptyLabel = state\.loaded \? 'No draws yet' : 'Waiting for draw'/);
   assert.match(ui, /history\.calledNumbers = state\.calledNumbers/);
   assert.match(ui, /history\.loaded = state\.loaded/);
-  assert.doesNotMatch(ui, /replaceChildren|HTMLOListElement/);
+  assert.doesNotMatch(ui, /replaceChildren|HTMLOListElement|sample|\.mp4/i);
+  assert.match(ui, /bridges\.prizes\.subscribe/);
+  assert.match(ui, /prizes\.prizes = validPrizes\(value\) \? value : null/);
+  assert.match(ui, /unsubscribePrizes\(\)/);
 });
 
 test('both windows display six committed phase labels through a separate accessible status', () => {

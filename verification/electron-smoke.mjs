@@ -263,6 +263,13 @@ async function smoke() {
       [publicWindow] = await Promise.all([app.waitForEvent('window'), operator.locator('#open-public button').click()]);
       await publicWindow.waitForFunction(() => document.querySelectorAll('#called-numbers').length === 1 &&
         document.querySelector('#called-count').value === '1' && document.querySelector('#event-name').textContent === 'Evento actual');
+      // The audience board is the passive fixed 1–90 grid with the committed call; prizes are always shown.
+      assert.deepEqual(await publicWindow.evaluate(async () => {
+        await document.querySelector('#called-numbers').updateComplete;
+        const cells = [...document.querySelector('#called-numbers').shadowRoot.querySelectorAll('li')];
+        return [cells.length, cells.find((cell) => cell.dataset.state === 'latest')?.textContent.trim().slice(0, 2),
+          document.querySelector('#prizes').shadowRoot.querySelectorAll('dt').length, document.querySelectorAll('video,button,input').length];
+      }), [90, '42', 2, 0]);
     });
 
     await step('keyboard tab navigation', async () => {

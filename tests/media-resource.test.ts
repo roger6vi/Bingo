@@ -5,13 +5,12 @@ import test from 'node:test';
 
 const root = path.resolve(import.meta.dirname, '..');
 
-test('public page keeps manual playback and imports local media via Vite URL', () => {
+// The sample clip is a development asset, not event state: the public display no longer plays it, so
+// the audience page can neither load nor autoplay media while the offline asset stays available.
+test('public page ships no sample media and keeps the offline sample asset out of its entry', () => {
   const html = readFileSync(path.join(root, 'src/public.html'), 'utf8');
   const entry = readFileSync(path.join(root, 'src/public-ui.mjs'), 'utf8');
-  assert.match(html, /<video\b[^>]*\bcontrols\b[^>]*preload="none"/i);
-  assert.doesNotMatch(html, /\bautoplay\b/i);
-  assert.match(html, /<source\b[^>]*id="sample-video-source"[^>]*type="video\/mp4"/i);
-  assert.match(entry, /import sampleVideoUrl from '\.\.\/assets\/sample\.mp4\?url';/);
-  assert.match(entry, /sampleSource\.src = sampleVideoUrl/);
+  assert.doesNotMatch(html, /<video\b|<source\b|\bautoplay\b/i);
+  assert.doesNotMatch(entry, /sample\.mp4|sampleVideoUrl|sample-video-source/);
   assert.ok(statSync(path.join(root, 'assets/sample.mp4')).size > 0);
 });

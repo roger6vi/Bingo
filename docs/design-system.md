@@ -176,20 +176,38 @@ committed persistence snapshots (presentation never acknowledges its own intent)
   `elevation.raised`, `space.inset-compact`, `font.body`, `font.display`, `font.size`, `font.line`,
   `font.tight`, `font.emphasis`.
 
-### `bingo-number-board` (public) and `bingo-call-history` (operator)
-- **Purpose:** ordered list of committed calls. The public board shows the full history (heading,
-  empty text, `ol` of `li > bingo-number`; the last item has `aria-current="true"` and passes
-  `latest` to its chip). The operator's `bingo-call-history` renders the same full list when
-  `limit` is unset, or (with `limit`, in the side rail) a compact strip of only the last calls,
-  as plain chips with the latest one highlighted.
-- **Properties:** `calledNumbers` (array), `loaded` (board only), `limit` (call-history only).
-  **States:** loading ("Waiting for draw", board only), empty, populated, latest, stale (owner keeps
+### `bingo-number-board` (public)
+- **Purpose:** the audience's passive 1–90 board: a fixed ten-column grid (1–10 … 81–90) whose cells
+  never move; committed calls only recolour their cell by number, never by draw order.
+- **Properties:** `calledNumbers` (array), `loaded`. **States:** loading ("Waiting for draw"),
+  empty, uncalled, called, latest (`aria-current="true"` plus an accent outline), stale (owner keeps
   the last committed list).
-- **Accessibility:** named list; no live region, no focusable content.
+- **Accessibility:** named list; loading/empty text and each call state are visually hidden text,
+  so colour never carries state alone; no live region, no focusable content.
 - **Tokens:** `border-width.default`, `border-width.strong`, `color.accent`, `color.border`,
-  `color.call-latest`, `color.call-latest-surface`, `color.muted`, `color.surface`, `color.text`,
-  `font.emphasis`, `radius.control`, `space.inset-compact`, `space.list-indent`, `space.section`,
-  `space.small`.
+  `color.call-called`, `color.call-called-surface`, `color.call-latest`, `color.call-latest-surface`,
+  `color.call-uncalled`, `color.call-uncalled-surface`, `font.body`, `font.emphasis`,
+  `radius.control`, `space.small`.
+
+### `bingo-prize-display` (public)
+- **Purpose:** the committed Línea and Bingo prizes, always both visible on the public display.
+  **Anatomy:** a `dl` with one `dt`/`dd` row per prize.
+- **Properties:** `prizes` (`{ line, bingo }`, each `{ amount, lot }`, or `null`). **States:**
+  unavailable ("Sin definir"), no prize ("Sin premio"), lot, amount, lot and amount.
+- **Accessibility:** text labels name each prize; no live region, no focusable content.
+- **Tokens:** `color.muted`, `font.body`, `font.emphasis`, `font.size`, `font.size-large`,
+  `font.tight`, `font.tracking`, `space.section`.
+
+### `bingo-call-history` (operator)
+- **Purpose:** ordered list of committed calls: the full list when `limit` is unset, or (with
+  `limit`, in the side rail) a compact strip of only the last calls, as plain chips with the latest
+  one highlighted.
+- **Properties:** `calledNumbers` (array), `limit`. **States:** empty, populated, latest, stale
+  (owner keeps the last committed list).
+- **Accessibility:** named list; no live region, no focusable content.
+- **Tokens:** `border-width.default`, `color.border`, `color.call-latest`,
+  `color.call-latest-surface`, `color.muted`, `color.surface`, `color.text`, `font.emphasis`,
+  `radius.control`.
 
 ### `bingo-side-rail`
 - **Purpose:** a labelled vertical rail beside a workspace's dominant zone (e.g. the Bingo tab's

@@ -239,7 +239,7 @@ body:has(> .operator-app) { padding: 0; overflow: hidden; }
 bingo-shell:has(.public-layout) { max-width: none; }
 bingo-shell:has(.public-layout) h1 {
   margin-bottom: 0;
-  font-size: var(--bingo-font-display);
+  font-size: clamp(2rem, 3.2vw, 4rem);
   line-height: var(--bingo-font-tight);
   text-transform: uppercase;
   letter-spacing: var(--bingo-font-tracking);
@@ -247,15 +247,14 @@ bingo-shell:has(.public-layout) h1 {
 .event-details { margin-top: var(--bingo-space-small); font-weight: var(--bingo-font-emphasis); }
 .event-details[hidden] { display: none; }
 .public-layout {
+  /* Event identity | dominant near-square board sized to the viewport height | latest ball and prizes. */
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  grid-template-columns: minmax(0, 1fr) min(calc((100vh - 8rem) * 10 / 9), 58vw) minmax(0, 1fr);
   gap: var(--bingo-space-section);
-  align-items: stretch;
+  align-items: start;
 }
-.public-layout bingo-panel { min-width: 0; }
-.public-layout bingo-status { margin-top: var(--bingo-space-section); }
-.sample-panel { display: block; margin-top: var(--bingo-space-section); }
-video { max-width: 100%; }
+.public-event, .public-side { display: grid; gap: var(--bingo-space-section); min-width: 0; overflow-wrap: anywhere; }
+.public-layout bingo-panel, .public-layout bingo-status { min-width: 0; }
 @media (max-width: 720px) {
   .public-layout { grid-template-columns: minmax(0, 1fr); }
 }

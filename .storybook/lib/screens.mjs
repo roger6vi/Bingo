@@ -12,6 +12,7 @@ import '../../src/components/bingo-button.mjs';
 import '../../src/components/bingo-number.mjs';
 import '../../src/components/bingo-latest-draw.mjs';
 import '../../src/components/bingo-number-board.mjs';
+import '../../src/components/bingo-prize-display.mjs';
 import '../../src/components/bingo-operator-board.mjs';
 import '../../src/components/bingo-operator-summary.mjs';
 import '../../src/components/bingo-call-history.mjs';
@@ -26,7 +27,6 @@ import '../../src/components/bingo-tongo.mjs';
 import '../../src/components/bingo-tongo-control.mjs';
 import operatorSource from '../../src/operator.html?raw';
 import publicSource from '../../src/public.html?raw';
-import sampleVideoUrl from '../../assets/sample.mp4?url';
 import { validateDraft } from '../../src/configuration-controller.mjs';
 import { DEFAULT_CUE_SETTINGS } from '../../src/cue-player.mjs';
 import { DEFAULT_THEME } from '../../src/theme-controller.mjs';
@@ -225,6 +225,7 @@ export function operatorScreen(options) {
 
 export const publicDefaults = {
   meta: ACTIVE_EVENT, calledNumbers: [], phase: 'drawing', loaded: true, stale: false, error: null, tongo: false,
+  prizes: { line: { amount: 100, lot: '' }, bingo: { amount: 1500, lot: 'Cesta de productos locales' } },
 };
 
 export function publicScreen(options) {
@@ -246,7 +247,7 @@ export function publicScreen(options) {
   status($('event-status'), state.loaded ? (state.stale ? 'Last confirmed history may be stale.' : 'Event ready')
     : (state.error ? '' : 'Waiting for event state'), state.stale ? 'warning' : 'info', Boolean(state.error && !state.loaded));
   status($('event-error'), state.error ?? '', 'error', !state.error);
-  $('sample-video-source').src = sampleVideoUrl;
+  $('prizes').prizes = state.prizes;
   // The transient Tongo overlay, as public-ui.mjs shows it while a signal plays.
   $('tongo').active = state.tongo;
   return container;
