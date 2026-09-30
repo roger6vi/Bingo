@@ -7,7 +7,8 @@
 // current platform (macOS `mac-arm64`/`mac`, Linux `linux-unpacked`) is used when it is omitted, so
 // `npm run test:package` runs unmodified on macOS and Linux while the Windows workflow keeps passing
 // its installed executable path explicitly.
-// Assumes one display (as on CI runners), where the public window opens as a primary-display preview.
+// Display-aware: one display (CI runners) expects a windowed preview; with a second display the public
+// window must be fullscreen on the first non-primary display, as planPublicWindow selects.
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -45,6 +46,40 @@ async function expectSaved(operator) {
   assert.equal(await operator.locator('#event-summary').evaluate((summary) => summary.count), 1);
 }
 
+// Mirrors planPublicWindow: the first non-primary display hosts a fullscreen public window; with only
+// the primary display it is a windowed preview inside that display's work area.
+async function assertPublicPlacement(app) {
+  const read = () => app.evaluate(({ BrowserWindow, screen }) => {
+    const window = BrowserWindow.getAllWindows().find((candidate) => candidate.webContents.getURL().includes('public'));
+    return {
+      displays: screen.getAllDisplays().map(({ id, bounds, workArea }) => ({ id, bounds, workArea })),
+      primaryId: screen.getPrimaryDisplay().id,
+      fullscreen: window.isFullScreen(), bounds: window.getBounds(),
+    };
+  });
+  let state = await read();
+  const secondary = state.displays.find((display) => display.id !== state.primaryId);
+  console.log(`  displays: ${JSON.stringify(state.displays.map(({ id, bounds }) => ({ id, primary: id === state.primaryId, bounds })))}`);
+  if (!secondary) {
+    assert.equal(state.displays.length, 1, 'exactly one display');
+    assert.equal(state.fullscreen, false, 'with one display the public window is a windowed preview');
+    const { workArea } = state.displays[0];
+    assert.ok(state.bounds.x >= workArea.x && state.bounds.y >= workArea.y &&
+      state.bounds.x + state.bounds.width <= workArea.x + workArea.width &&
+      state.bounds.y + state.bounds.height <= workArea.y + workArea.height, 'preview stays in the primary work area');
+    step('primary-only display falls back to a preview window');
+    return;
+  }
+  // Fullscreen transitions are asynchronous; wait for the planned state instead of sampling once.
+  for (let attempt = 0; attempt < 50 && !state.fullscreen; attempt++) { await delay(200); state = await read(); }
+  assert.equal(state.fullscreen, true, 'with a second display the public window is fullscreen');
+  const displayOf = state.displays.find((display) => state.bounds.x >= display.bounds.x && state.bounds.x < display.bounds.x + display.bounds.width &&
+    state.bounds.y >= display.bounds.y && state.bounds.y < display.bounds.y + display.bounds.height);
+  assert.equal(displayOf?.id, secondary.id, 'the fullscreen public window is on the selected secondary display');
+  assert.deepEqual(state.bounds, secondary.bounds, 'public window bounds match the secondary display');
+  step('secondary display hosts the fullscreen public window');
+}
+
 async function seed(profile) {
   let app = await launch(profile);
   let operator = await openOperator(app);
@@ -60,21 +95,20 @@ async function seed(profile) {
   await publicWindow.waitForFunction(() => document.querySelector('#called-count')?.value === '1');
   assert.deepEqual(await publicWindow.evaluate(() => ({
     desktop: 'desktop' in window, require: typeof require,
-    bridges: ['publicEvent', 'publicTheme', 'publicEventMeta'].map((name) => Object.keys(window[name])),
-  })), { desktop: false, require: 'undefined', bridges: [['subscribe'], ['subscribe'], ['subscribe']] });
+    bridges: ['publicEvent', 'publicTheme', 'publicEventMeta', 'publicEventPrizes', 'publicPresentation']
+      .map((name) => Object.keys(window[name])),
+  })), { desktop: false, require: 'undefined', bridges: Array(5).fill(['subscribe']) });
   step('committed draw reaches the sandboxed, receive-only public window');
 
-  const fullscreen = await publicWindow.evaluate(() => outerWidth >= screen.width && outerHeight >= screen.height);
-  assert.equal(fullscreen, false, 'with one display the public window is a windowed preview');
-  step('primary-only display falls back to a preview window');
+  await assertPublicPlacement(app);
 
-  const media = await publicWindow.locator('video').evaluate((video) => new Promise((resolve, reject) => {
-    video.addEventListener('loadedmetadata', () => resolve({ duration: video.duration, width: video.videoWidth }));
-    video.addEventListener('error', () => reject(new Error(`media error ${video.error?.code}`)));
-    video.load();
-  }));
-  assert.ok(media.duration > 0 && media.width > 0, `bundled MP4 decodes: ${JSON.stringify(media)}`);
-  step('bundled offline video decodes from the package');
+  const presentation = await publicWindow.evaluate(() => {
+    const cells = [...document.querySelector('#called-numbers').shadowRoot.querySelectorAll('li')];
+    return [cells.length, cells.find((cell) => cell.dataset.state === 'latest') !== undefined,
+      document.querySelector('#prizes').shadowRoot.querySelectorAll('dt').length, document.querySelectorAll('video').length];
+  });
+  assert.deepEqual(presentation, [90, true, 2, 0], 'public shows 90 cells, the latest call, two prize rows and no video');
+  step('public presentation shows the fixed board, latest call and prizes without video');
 
   await operator.click('#tab-settings');
   const simulator = await (await operator.locator('#public-simulator').elementHandle()).contentFrame();

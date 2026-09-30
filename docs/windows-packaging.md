@@ -9,7 +9,7 @@ keys can move into a common base with `extends` once both exist.
 ## Build locally (on Windows)
 
 After `npm ci`, `npm run package:win` writes `release/windows/Bingo-Setup-<version>-x64.exe`. The
-package holds only `dist/` (main, preloads, Vite-bundled renderers, generated themes, sample MP4) and
+package holds only `dist/` (main, preloads, Vite-bundled renderers, generated themes) and
 `package.json` in `app.asar`. Lit is bundled and SQLite is Electron's built-in `node:sqlite`, so no
 `node_modules` or native rebuild are needed.
 
@@ -24,10 +24,11 @@ Each run installs and drives the real packaged app, always with a temporary `--u
 3. `0.1.0` is installed silently (`/S`); the uninstall registry entry reports that version.
    [`packaged-smoke.mjs`](../verification/packaged-smoke.mjs) `seed` then checks that:
    - the operator page loads from `resources\app.asar` and the database is created in the profile;
-   - a committed digital draw reaches the sandboxed public window, whose only globals are the three
-     receive-only `subscribe` bridges (no `desktop`, no `require`);
+   - a committed digital draw reaches the sandboxed public window, whose only globals are the five
+     receive-only `subscribe` bridges (`publicEvent`, `publicTheme`, `publicEventMeta`,
+     `publicEventPrizes`, `publicPresentation`; no `desktop`, no `require`);
    - with the runner's single display the public window opens as a windowed primary preview;
-   - the bundled MP4 loads metadata and decodes (duration and video width are non-zero);
+   - the public presentation shows 90 board cells, the latest call, two prize rows, and no video;
    - the Configuración simulator loads over the `bingo-public:` protocol from inside the package, and
      saving name, place and the high-contrast theme reaches the public window;
    - after quit and relaunch the event, one-call history and theme are restored.

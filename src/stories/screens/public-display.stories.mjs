@@ -10,6 +10,7 @@ export default {
   argTypes: {
     meta: { control: 'object', description: 'Committed event `{ name, date, place }`, or `null` for the generic heading.' },
     calledNumbers: { control: 'object', description: 'Committed draw order.' },
+    prizes: { control: 'object', description: 'Committed `{ line, bingo }` prizes (`{ amount, lot }` each), or `null` when unavailable.' },
     phase: { control: 'select', options: [null, 'drawing', 'checking_line', 'line_declared', 'checking_bingo', 'bingo_declared', 'finished'] },
     loaded: { control: 'boolean' },
     stale: { control: 'boolean' },
@@ -28,6 +29,13 @@ export const NoDraws = { name: 'Ready · no draws yet' };
 export const CheckingLine = { name: 'Checking line', args: { calledNumbers: draws(17), phase: 'checking_line' } };
 
 export const Finished = { name: 'All 90 called', args: { calledNumbers: draws(90), phase: 'finished' } };
+
+export const PrizeStates = {
+  name: 'Prizes · lot, amount and empty',
+  args: { calledNumbers: draws(1), prizes: { line: { amount: 0, lot: '' }, bingo: { amount: 12500, lot: 'Jamón ibérico' } } },
+};
+
+export const PrizesUnavailable = { name: 'Prizes unavailable', args: { prizes: null } };
 
 export const Stale = {
   name: 'Stale · delivery failed',

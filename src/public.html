@@ -7,31 +7,27 @@
 </head>
 <body>
   <bingo-shell>
-  <main>
-    <h1 id="event-name">Current event</h1>
-    <p id="event-details" class="event-details" hidden></p>
-    <div class="public-layout">
+  <main class="public-layout">
+    <div class="public-event">
+      <h1 id="event-name">Current event</h1>
+      <p id="event-details" class="event-details" hidden></p>
+      <bingo-status id="phase-status"></bingo-status>
+      <bingo-status id="event-status"></bingo-status>
+      <bingo-status id="event-error" hidden></bingo-status>
+      <p>Called: <output id="called-count" aria-live="off">0</output> · Remaining: <output id="remaining-count" aria-live="off">90</output></p>
+    </div>
+    <bingo-number-board id="called-numbers"></bingo-number-board>
+    <div class="public-side">
       <bingo-panel heading="Latest committed draw">
         <bingo-latest-draw id="latest-draw">
           <bingo-number id="latest-number" latest></bingo-number>
         </bingo-latest-draw>
-        <bingo-status id="phase-status"></bingo-status>
-        <bingo-status id="event-status"></bingo-status>
-        <bingo-status id="event-error" hidden></bingo-status>
-        <p>Called: <output id="called-count" aria-live="off">0</output> · Remaining: <output id="remaining-count" aria-live="off">90</output></p>
       </bingo-panel>
-      <bingo-panel heading="Called numbers (draw order)">
-        <bingo-number-board id="called-numbers"></bingo-number-board>
+      <bingo-panel heading="Prizes">
+        <bingo-prize-display id="prizes" lang="es"></bingo-prize-display>
       </bingo-panel>
     </div>
   </main>
-  <bingo-panel class="sample-panel" heading="Sample media preview (not event state)">
-    <video controls width="480" preload="none">
-      <source id="sample-video-source" type="video/mp4">
-      This browser cannot play the local sample video.
-    </video>
-    <p>Use the player controls to start playback; sound will not start automatically.</p>
-  </bingo-panel>
   <bingo-tongo id="tongo" lang="es"></bingo-tongo>
   </bingo-shell>
   <script type="module" src="./public-ui.mjs"></script>
