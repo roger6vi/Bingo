@@ -1,4 +1,4 @@
-// Isolated Electron smoke of the built app (#59, #60, #72, #77, #78): `npm run test:smoke`, or in CI
+// Isolated Electron smoke of the built app (#59, #60, #71, #72, #77, #78): `npm run test:smoke`, or in CI
 // `xvfb-run -a npm run test:smoke`. It rebuilds when dist/ is missing or older than its sources, and on
 // Linux without a display re-runs itself under `xvfb-run -a`. Every launch uses a fresh temporary
 // --user-data-dir that is verified before and after startup; the real profile is never used and the
@@ -17,6 +17,8 @@ const require = createRequire(import.meta.url);
 const appName = require('../package.json').name;
 export const profilePrefix = 'bingo-smoke-';
 const stepTimeout = 15_000;
+// Línea 150 €, Bingo a lot plus 1.500 €, as the prize display's rows read.
+const PRIZE_ROWS = JSON.stringify(['150 €', 'Jamón ibérico 1.500 €']);
 const totalTimeout = 150_000;
 
 const within = (parent, child) => child === parent || child.startsWith(`${parent}${path.sep}`);
@@ -284,11 +286,18 @@ async function smoke() {
       await operator.fill('#settings-name input', 'Verbena de prueba');
       await operator.fill('#settings-place input', 'Plaza Mayor');
       await operator.selectOption('#theme-select select', 'high-contrast');
+      await operator.fill('#settings-line-amount input', '150');
+      await operator.fill('#settings-bingo-amount input', '1500');
+      await operator.fill('#settings-bingo-lot input', 'Jamón ibérico');
+      await simulator.waitForFunction((rows) => JSON.stringify([...document.querySelector('#prizes').shadowRoot.querySelectorAll('dd')]
+        .map((dd) => dd.textContent.trim())) === rows, PRIZE_ROWS, { timeout: stepTimeout });
       await simulator.waitForFunction(() => document.querySelector('#event-name').textContent === 'Verbena de prueba' &&
         document.querySelector('#event-details').textContent.endsWith('· Plaza Mayor') &&
         document.documentElement.dataset.theme === 'high-contrast' && document.querySelector('#called-count').value === '1',
       null, { timeout: stepTimeout });
       assert.equal(await publicWindow.locator('#event-name').textContent(), 'Evento actual');
+      assert.deepEqual(await publicWindow.evaluate(() => [...document.querySelector('#prizes').shadowRoot.querySelectorAll('dd')]
+        .map((dd) => dd.textContent.trim())), ['Sin premio', 'Sin premio'], 'public shows committed prizes only');
       assert.equal(await publicWindow.evaluate(() => document.documentElement.dataset.theme), 'jules');
       assert.equal(await operator.evaluate(() => document.documentElement.dataset.theme), 'jules');
       assert.match(await banner(operator), /^Evento actual — /);
@@ -306,6 +315,10 @@ async function smoke() {
         bridges: ['publicEvent', 'publicTheme', 'publicEventMeta', 'publicEventPrizes', 'publicPresentation']
           .map((name) => Object.keys(window[name])),
       })), { desktop: false, require: 'undefined', bridges: [['subscribe'], ['subscribe'], ['subscribe'], ['subscribe'], ['subscribe']] });
+      // The prize channel validates in the main process too: a malformed write never reaches storage.
+      const rejected = await operator.evaluate(() => window.desktop.getPrizes().then(({ eventId }) =>
+        window.desktop.updatePrizes(eventId, { line: { amount: 1.5, lot: '' }, bingo: { amount: 0, lot: '' } })));
+      assert.equal(rejected.code, 'invalid_request');
     });
 
     await step('Save / Discard / Cancel guard', async () => {
@@ -323,8 +336,10 @@ async function smoke() {
 
     await step('save reaches both windows and banners', async () => {
       // History is untouched by a metadata/theme save.
-      await publicWindow.waitForFunction(() => document.querySelector('#event-name').textContent === 'Verbena de prueba' &&
-        document.documentElement.dataset.theme === 'high-contrast');
+      await publicWindow.waitForFunction((rows) => document.querySelector('#event-name').textContent === 'Verbena de prueba' &&
+        document.documentElement.dataset.theme === 'high-contrast' &&
+        JSON.stringify([...document.querySelector('#prizes').shadowRoot.querySelectorAll('dd')]
+          .map((dd) => dd.textContent.trim())) === rows, PRIZE_ROWS);
       assert.equal(await publicWindow.locator('#called-count').evaluate((output) => output.value), '1');
       assert.equal(await operator.evaluate(() => document.documentElement.dataset.theme), 'high-contrast');
       assert.match(await banner(operator), /^Verbena de prueba — \d{4}-\d{2}-\d{2}, Plaza Mayor$/);
@@ -400,6 +415,9 @@ async function smoke() {
         document.documentElement.dataset.theme === 'high-contrast');
       assert.equal(await operator.inputValue('#settings-place input'), 'Plaza Mayor');
       assert.equal(await operator.inputValue('#theme-select select'), 'high-contrast');
+      await operator.waitForFunction(() => document.querySelector('#settings-bingo-lot')?.value === 'Jamón ibérico');
+      assert.deepEqual(await Promise.all(['line-amount', 'line-lot', 'bingo-amount']
+        .map((id) => operator.inputValue(`#settings-${id} input`))), ['150', '', '1500']);
       assert.equal(await operator.locator('#event-summary').evaluate((summary) => summary.count), 1);
       await operator.waitForFunction(() => document.querySelector('#event-list').events?.length === 2);
       assert.equal((await eventList(operator)).find((event) => event.active)?.name, 'Verbena de prueba');

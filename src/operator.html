@@ -48,7 +48,7 @@
       <bingo-tab-panel id="panel-settings" aria-labelledby="tab-settings" hidden>
         <div class="settings-layout">
           <form id="settings-form" class="settings-controls" novalidate>
-            <div class="settings-scroll">
+            <div class="settings-scroll" tabindex="0">
               <bingo-panel heading="Datos del evento" compact>
                 <div class="event-form">
                   <bingo-text-field id="settings-name" name="name" label="Nombre" required maxlength="120" autocomplete="off" disabled></bingo-text-field>
@@ -63,6 +63,24 @@
                   <option value="high-contrast">Alto contraste</option>
                 </bingo-select-field>
                 <bingo-status id="theme-status" message="Esperando el tema guardado"></bingo-status>
+              </bingo-panel>
+              <bingo-panel heading="Premios" compact>
+                <p class="prizes-hint">Cada premio puede tener dinero, un lote indivisible o ambos. Deja vacío lo que no haya.</p>
+                <fieldset class="prize-fieldset">
+                  <legend>Línea</legend>
+                  <div class="event-form">
+                    <bingo-text-field id="settings-line-amount" name="lineAmount" label="Dinero (euros enteros)" autocomplete="off" disabled></bingo-text-field>
+                    <bingo-text-field id="settings-line-lot" name="lineLot" label="Lote" maxlength="120" autocomplete="off" disabled></bingo-text-field>
+                  </div>
+                </fieldset>
+                <fieldset class="prize-fieldset">
+                  <legend>Bingo</legend>
+                  <div class="event-form">
+                    <bingo-text-field id="settings-bingo-amount" name="bingoAmount" label="Dinero (euros enteros)" autocomplete="off" disabled></bingo-text-field>
+                    <bingo-text-field id="settings-bingo-lot" name="bingoLot" label="Lote" maxlength="120" autocomplete="off" disabled></bingo-text-field>
+                  </div>
+                </fieldset>
+                <bingo-status id="prizes-status" hidden></bingo-status>
               </bingo-panel>
             </div>
             <div class="settings-footer">
