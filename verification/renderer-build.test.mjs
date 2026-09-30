@@ -46,17 +46,17 @@ for (const page of ['operator', 'public']) {
   });
 }
 
-test('built audience shell bundles five Lit tags under the existing offline CSP', () => {
+test('built audience shell bundles six Lit tags under the existing offline CSP', () => {
   const html = text('dist/renderer/public.html');
   const js = readdirSync(path.join(renderer, 'assets'))
     .filter((file) => file.endsWith('.js')).map((file) => text(`dist/renderer/assets/${file}`)).join('\n');
-  for (const name of ['panel', 'number', 'latest-draw', 'status', 'number-board']) {
+  for (const name of ['panel', 'number', 'latest-draw', 'status', 'number-board', 'prize-display']) {
     assert.match(html, new RegExp(`<bingo-${name}\\b`));
     assert.ok(js.includes(`bingo-${name}`), `bundled ${name} registration`);
   }
   assert.match(html, /<bingo-number-board id="called-numbers"><\/bingo-number-board>/);
-  assert.doesNotMatch(html, /<ol id="called-numbers"/);
-  assert.match(html, /Sample media preview \(not event state\)/);
+  assert.match(html, /<bingo-prize-display id="prizes" lang="es"><\/bingo-prize-display>/);
+  assert.doesNotMatch(html, /<ol id="called-numbers"|<video\b|Sample media preview/);
   assert.doesNotMatch(html, /\b(?:autoplay|unsafe-inline|unsafe-eval)\b/i);
 });
 
@@ -83,17 +83,12 @@ test('built operator shell bundles shared presentation under the offline CSP', (
   assert.equal((html.match(/<input\b/g) ?? []).length, 3, 'only the cue mute, volume, and test controls remain native inputs');
 });
 
-test('public sample is bundled under renderer and remains opt-in', () => {
+test('the public page bundles no sample media and never autoplays', () => {
   const html = text('dist/renderer/public.html');
-  assert.match(html, /<video\b[^>]*\bcontrols\b[^>]*preload="none"/i);
-  assert.match(html, /<source\b[^>]*id="sample-video-source"[^>]*type="video\/mp4"/i);
-  const js = readdirSync(path.join(renderer, 'assets'))
-    .filter((file) => file.endsWith('.js')).map((file) => text(`dist/renderer/assets/${file}`)).join('\n');
-  const media = readdirSync(path.join(renderer, 'assets')).filter((file) => file.endsWith('.mp4'));
-  assert.equal(media.length, 1, 'one bundled MP4');
-  assert.ok(statSync(path.join(renderer, 'assets', media[0])).size > 0);
-  assert.ok(js.includes(media[0]), 'public entry references bundled MP4');
-  assert.doesNotMatch(html, /\bautoplay\b/i);
+  assert.doesNotMatch(html, /<video\b|<source\b|\bautoplay\b/i);
+  const assets = readdirSync(path.join(renderer, 'assets'));
+  assert.deepEqual(assets.filter((file) => file.endsWith('.mp4')), [], 'the sample clip is not shipped');
+  assert.ok(!assets.filter((file) => file.endsWith('.js')).some((file) => text(`dist/renderer/assets/${file}`).includes('sample.mp4')));
 });
 
 test('both pages bundle the three generated themes and semantic contracts', () => {

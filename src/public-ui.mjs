@@ -4,21 +4,18 @@ import './components/bingo-number.mjs';
 import './components/bingo-latest-draw.mjs';
 import './components/bingo-status.mjs';
 import './components/bingo-number-board.mjs';
+import './components/bingo-prize-display.mjs';
 import './components/bingo-tongo.mjs';
 import './screen.css';
-import sampleVideoUrl from '../assets/sample.mp4?url';
 import { createPublicController } from './public-controller.mjs';
 import { applyTheme, revealAfter } from './theme-controller.mjs';
 import { publicBridges, validEventMeta } from './public-bridge.mjs';
+import { validPrizes } from './prize-format.mjs';
 import { createTongoPlayback } from './tongo.mjs';
 
 const bridges = publicBridges(window);
 const unsubscribeTheme = bridges.theme.subscribe((theme) => applyTheme(document.documentElement, theme));
 const revealTimer = revealAfter(document.documentElement, 2000);
-
-const sampleSource = document.getElementById('sample-video-source');
-if (!(sampleSource instanceof HTMLSourceElement)) throw new Error('Missing sample video source');
-sampleSource.src = sampleVideoUrl;
 
 function required(id, type) {
   const element = document.getElementById(id);
@@ -40,6 +37,7 @@ const phaseLabels = {
 const eventError = required('event-error', HTMLElement);
 const eventName = required('event-name', HTMLHeadingElement);
 const eventDetails = required('event-details', HTMLParagraphElement);
+const prizes = required('prizes', HTMLElement);
 
 // An unreadable or invalid event description falls back to the generic heading, never a stale one.
 const unsubscribeMeta = bridges.meta.subscribe((meta) => {
@@ -48,6 +46,9 @@ const unsubscribeMeta = bridges.meta.subscribe((meta) => {
   eventDetails.textContent = valid ? `${meta.date} · ${meta.place}` : '';
   eventDetails.hidden = !valid;
 });
+
+// Only the committed prizes the main process sends; an unreadable payload shows them as undefined.
+const unsubscribePrizes = bridges.prizes.subscribe((value) => { prizes.prizes = validPrizes(value) ? value : null; });
 
 const controller = createPublicController(bridges.event, {
   render: (state) => {
@@ -82,5 +83,6 @@ window.addEventListener('pagehide', () => {
   tongoPlayback.cleanup();
   unsubscribeTheme();
   unsubscribeMeta();
+  unsubscribePrizes();
   clearTimeout(revealTimer);
 }, { once: true });

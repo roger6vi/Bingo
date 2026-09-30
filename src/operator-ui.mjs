@@ -25,6 +25,7 @@ import { operatorMessage, PHASE_LABELS_ES, THEME_NAMES_ES } from './operator-cop
 import { bindSettings } from './settings-ui.mjs';
 import { bindCueControls } from './cue-ui.mjs';
 import { createTongoController, tongoPlayable } from './tongo.mjs';
+import { validPrizes } from './prize-format.mjs';
 
 function required(id, type) {
   const element = document.getElementById(id);
@@ -56,7 +57,9 @@ let committedTheme = null;
 const settings = bindSettings({
   form: required('settings-form', HTMLFormElement),
   inputs: { name: required('settings-name', BingoTextField), place: required('settings-place', BingoTextField),
-    date: required('settings-date', BingoDateField) },
+    date: required('settings-date', BingoDateField),
+    lineAmount: required('settings-line-amount', BingoTextField), lineLot: required('settings-line-lot', BingoTextField),
+    bingoAmount: required('settings-bingo-amount', BingoTextField), bingoLot: required('settings-bingo-lot', BingoTextField) },
   theme: themeSelect,
   state: required('settings-state', HTMLElement),
   error: required('settings-error', HTMLElement),
@@ -72,7 +75,30 @@ const settings = bindSettings({
     await themes.select(theme);
     return committedTheme === theme;
   },
+  // Only an acknowledgement for the same event counts as committed.
+  savePrizes: async (id, prizes) => {
+    const result = await window.desktop.updatePrizes(id, prizes);
+    return result?.ok === true && result.eventId === id && validPrizes(result.prizes);
+  },
 });
+
+// The active event's committed prizes. The reply names its event, so one that races a selection is
+// only applied once that event is the committed one. Until a read succeeds the prize inputs stay locked.
+const prizesStatus = required('prizes-status', HTMLElement);
+async function loadPrizes() {
+  const asked = settings.config.activeEventId();
+  let result = null;
+  try { result = await window.desktop.getPrizes(); } catch { /* Reported below. */ }
+  const ok = result?.ok === true && typeof result.eventId === 'string' && validPrizes(result.prizes);
+  if (ok) settings.config.setCommittedPrizes(result.eventId, result.prizes);
+  // A failed read leaves the prizes unknown, never the older values, for the event it was asked under.
+  else if (asked !== null) settings.config.invalidatePrizes(asked);
+  prizesStatus.message = ok || result?.code === 'event_unavailable' ? ''
+    : 'No se pudieron leer los premios guardados. Pulsa «Recargar eventos» en Eventos para reintentarlo.';
+  prizesStatus.tone = 'error';
+  prizesStatus.hidden = prizesStatus.message === '';
+}
+void loadPrizes();
 
 // From the select request until the dependent panels have re-read the new event,
 // writes could land on the newly active event unnoticed.
@@ -237,7 +263,7 @@ const events = createEventsController(desktop, {
       : loaded ? 'Ningún evento seleccionado. Elige uno en Eventos.' : 'Cargando evento';
     banner.tone = active && !stale ? 'info' : 'warning';
   },
-}, () => Promise.all([controller.resync(), themes.start()]));
+}, () => Promise.all([controller.resync(), themes.start(), loadPrizes()]));
 // events.select resolves only after resync() and the theme re-read settle.
 eventList.addEventListener('event-select', async (event) => {
   if (activating || tongoBusy) return;
@@ -252,7 +278,7 @@ eventList.addEventListener('event-select', async (event) => {
     applyLocks();
   }
 });
-reloadEvents.addEventListener('click', () => { void events.start(); });
+reloadEvents.addEventListener('click', () => { void events.start(); void loadPrizes(); });
 createForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   const meta = { name: createForm.elements.name.value, place: createForm.elements.place.value, date: eventDate.value };
