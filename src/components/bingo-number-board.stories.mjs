@@ -11,7 +11,7 @@ export default {
     calledNumbers: numberList,
     loaded: { control: 'boolean', description: 'Distinguishes "Waiting for draw" from "No draws yet".' },
   },
-  render: ({ calledNumbers, loaded }) => html`<bingo-number-board .calledNumbers=${calledNumbers}
+  render: ({ calledNumbers, loaded }) => html`<bingo-number-board style="max-width: 32rem" .calledNumbers=${calledNumbers}
     .loaded=${loaded}></bingo-number-board>`,
 };
 
@@ -22,6 +22,8 @@ export const Waiting = { name: 'Waiting for state', args: { calledNumbers: [], l
 export const Empty = { name: 'Empty · no draws yet', args: { calledNumbers: [] } };
 
 export const FirstDraw = { name: 'First draw', args: { calledNumbers: draws(1) } };
+
+export const NonSequential = { name: 'Non-sequential calls', args: { calledNumbers: [90, 3, 47, 1, 62] } };
 
 export const Full = { name: 'All 90 called', args: { calledNumbers: draws(90) } };
 

@@ -7,7 +7,7 @@ import { draws } from '../../.storybook/lib/fixtures.mjs';
 // In the app the overlay is position: fixed over the whole public window. A transformed stage becomes its
 // containing block here, so each story (and each side-by-side theme) shows it over its own board.
 const stage = ({ active }) => html`<div style="position: relative; transform: translateZ(0); overflow: hidden; min-height: 18rem">
-  <bingo-number-board .calledNumbers=${draws(21)} .loaded=${true}></bingo-number-board>
+  <bingo-number-board style="max-width: 32rem" .calledNumbers=${draws(21)} .loaded=${true}></bingo-number-board>
   <bingo-tongo lang="es" .active=${active}></bingo-tongo>
 </div>`;
 

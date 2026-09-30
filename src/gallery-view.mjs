@@ -4,6 +4,7 @@ import './components/bingo-button.mjs';
 import './components/bingo-status.mjs';
 import './components/bingo-number.mjs';
 import './components/bingo-number-board.mjs';
+import './components/bingo-prize-display.mjs';
 import './components/bingo-operator-summary.mjs';
 import './components/bingo-draw-controls.mjs';
 import './components/bingo-event-list.mjs';
@@ -33,6 +34,7 @@ styles.replaceSync(`
   }
   /* The board sizes itself from its container, as it does in the Bingo tab's dominant zone. */
   .gallery-board { height: 22rem; }
+  .gallery-public-board { width: min(100%, 32rem); }
   .gallery-celebration {
     margin: 0; padding: var(--bingo-space-layout); text-align: center;
     color: var(--bingo-color-on-celebration); background: var(--bingo-color-celebration);
@@ -68,8 +70,9 @@ const themeSection = (theme, reduced) => html`
         ${specimen('normal', 'Empty', html`<bingo-number></bingo-number>`)}
         ${specimen('normal', 'Called, compact', html`<bingo-number .value=${42} compact></bingo-number>`)}
         ${specimen('normal', 'Latest, display size', html`<bingo-number .value=${13} latest></bingo-number>`)}
-        ${specimen('normal', 'Board in draw order', html`<bingo-number-board loaded .calledNumbers=${[7, 42, 90, 13]}></bingo-number-board>`)}
-        ${specimen('pending', 'Board waiting for state', html`<bingo-number-board></bingo-number-board>`)}
+        ${specimen('normal', 'Public board, fixed 1–90 grid', html`<bingo-number-board class="gallery-public-board" loaded .calledNumbers=${[7, 42, 90, 13]}></bingo-number-board>`)}
+        ${specimen('pending', 'Board waiting for state', html`<bingo-number-board class="gallery-public-board"></bingo-number-board>`)}
+        ${specimen('normal', 'Prizes: lot and amount, empty', html`<bingo-prize-display .prizes=${{ line: { amount: 0, lot: '' }, bingo: { amount: 1500, lot: 'Cesta' } }}></bingo-prize-display>`)}
       </bingo-panel>
       <bingo-panel heading=${`Operator (${theme})`}>
         ${specimen('normal', 'Summary', html`<bingo-operator-summary .latest=${13} .count=${4} .remaining=${86}></bingo-operator-summary>`)}
