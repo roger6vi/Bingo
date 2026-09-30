@@ -104,6 +104,14 @@ body:has(> .operator-app) { padding: 0; overflow: hidden; }
 
 .panel-status { display: grid; gap: 0.25rem; margin-bottom: 0.75rem; color: var(--bingo-color-muted); }
 .operator-app .event-form { display: grid; gap: 0.375rem; justify-items: stretch; max-width: 28rem; }
+.prizes-hint { margin: 0 0 0.5rem; color: var(--bingo-color-muted); font-size: 0.8125rem; }
+.prize-fieldset {
+  margin: 0 0 0.5rem; padding: 0.5rem 0.75rem;
+  border: var(--bingo-border-width-default) solid var(--bingo-color-border);
+  border-radius: var(--bingo-radius-surface);
+}
+.prize-fieldset legend { padding: 0 0.25rem; font-weight: var(--bingo-font-emphasis); }
+.prize-fieldset:last-of-type { margin-bottom: 0; }
 
 /* Eventos: event list and creation form side by side; the list scrolls inside its panel. */
 .events-workspace {
