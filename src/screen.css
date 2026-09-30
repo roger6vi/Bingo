@@ -255,7 +255,7 @@ bingo-shell:has(.public-layout) h1 {
 }
 .public-event, .public-side { display: grid; gap: var(--bingo-space-section); min-width: 0; overflow-wrap: anywhere; }
 .public-layout bingo-panel, .public-layout bingo-status { min-width: 0; }
-@media (max-width: 720px) {
+@media (max-width: 900px) {
   .public-layout { grid-template-columns: minmax(0, 1fr); }
 }
 

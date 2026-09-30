@@ -5,8 +5,7 @@ the default config used for macOS and Linux. Windows packaging (#41) keeps its o
 [`electron-builder.win.yml`](../electron-builder.win.yml); see
 [docs/windows-packaging.md](windows-packaging.md). The package contains only `package.json` and the
 built `dist/` tree inside `app.asar`: the CommonJS main process, both preloads, the two Vite renderer
-pages with their bundled Lit code, the Style Dictionary theme CSS generated during `npm run build`, and
-the bundled sample video. The jules theme's Roboto Mono Variable font is bundled from
+pages with their bundled Lit code, and the Style Dictionary theme CSS generated during `npm run build`. The jules theme's Roboto Mono Variable font is bundled from
 `@fontsource-variable/roboto-mono` (OFL-1.1) as local `.woff2` files inside `dist/renderer/`; the light
 and high-contrast themes use system font stacks and ship no font files. SQLite is Electron's built-in
 `node:sqlite`, so there is no native module to rebuild or unpack (`npmRebuild: false`). Source files,
@@ -49,9 +48,11 @@ it creates its own temporary profile and runs both phases back to back. It verif
 - the renderer loads from `app.asar` with an isolated profile and `current-event.sqlite` is created in
   the temporary profile on first run;
 - a committed digital draw reaching the sandboxed, receive-only public window, whose only globals are
-  the three `subscribe` bridges (no `desktop`, no `require`);
-- with a single display the public window opens as a windowed primary preview;
-- the bundled MP4 loads metadata and decodes;
+  the five receive-only `subscribe` bridges (`publicEvent`, `publicTheme`, `publicEventMeta`,
+  `publicEventPrizes`, `publicPresentation`; no `desktop`, no `require`);
+- with a single display the public window opens as a windowed primary preview; with a second display
+  it asserts the public window is fullscreen with bounds equal to the first non-primary display;
+- the public presentation shows 90 board cells, the latest call, two prize rows, and no video;
 - the Configuración simulator loads over the `bingo-public:` protocol from inside the asar, and saving
   name, place and the high-contrast theme reaches the public window;
 - after quit and relaunch, the event, its history and the theme are restored;
@@ -75,7 +76,7 @@ open -n /Applications/Bingo.app --args --user-data-dir="$profile"
 2. Draw numbers, open the public window, and confirm it goes fullscreen on the second display.
    Disconnect and reconnect that display and confirm the pause warning and **Move public window to
    secondary display**.
-3. Play the sample video with sound. Switch themes, turn on **Reduce motion** and VoiceOver, and check
+3. Switch themes, turn on **Reduce motion** and VoiceOver, and check
    both windows.
 4. Quit with ⌘Q, reopen with the same profile, and confirm the active event, archived events, and theme
    are restored.

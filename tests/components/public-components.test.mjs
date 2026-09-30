@@ -323,3 +323,32 @@ it('at 1920×1080 a dominant near-square board sits between the event identity a
     await setViewport({ width: 800, height: 600 });
   }
 });
+
+it('at 800×600 the public layout stacks in one column without horizontal scroll', async () => {
+  await setViewport({ width: 800, height: 600 });
+  const style = document.createElement('style');
+  style.textContent = (await (await fetch(new URL('../../src/screen.css', import.meta.url))).text()).replace(/@import [^;]+;/g, '');
+  const theme = document.createElement('link');
+  theme.rel = 'stylesheet';
+  theme.href = new URL('../../src/generated/jules.css', import.meta.url).href;
+  await new Promise((resolve, reject) => { theme.onload = resolve; theme.onerror = reject; document.head.append(theme); });
+  document.head.append(style);
+  const page = new DOMParser().parseFromString(await (await fetch(new URL('../../src/public.html', import.meta.url))).text(), 'text/html');
+  const shell = document.importNode(page.querySelector('bingo-shell'), true);
+  document.body.append(shell);
+  try {
+    shell.querySelector('#called-numbers').loaded = true;
+    await Promise.all([...shell.querySelectorAll('*')].map((element) => element.updateComplete));
+    expect(getComputedStyle(shell.querySelector('.public-layout')).gridTemplateColumns.split(' ')).to.have.length(1);
+    for (const selector of ['#called-numbers', '#latest-draw', '#prizes']) {
+      const { left, right } = shell.querySelector(selector).getBoundingClientRect();
+      expect(left, selector).to.be.at.least(0);
+      expect(right, selector).to.be.at.most(innerWidth);
+    }
+    expect(document.documentElement.scrollWidth).to.be.at.most(innerWidth);
+  } finally {
+    shell.remove();
+    style.remove();
+    theme.remove();
+  }
+});
