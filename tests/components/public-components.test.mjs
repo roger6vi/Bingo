@@ -107,6 +107,7 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
     receiveMeta = callback;
     return () => { unsubscribed++; };
   } };
+  window.publicEventPrizes = { subscribe: () => () => {} };
   let receivePresentation;
   window.publicPresentation = { subscribe: (callback) => {
     receivePresentation = callback;
@@ -179,6 +180,7 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
     delete window.publicEvent;
     delete window.publicTheme;
     delete window.publicEventMeta;
+    delete window.publicEventPrizes;
     delete window.publicPresentation;
     delete document.documentElement.dataset.theme;
   }

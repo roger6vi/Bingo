@@ -2,7 +2,7 @@
 // subscriptions. Framed as the operator's simulator (no preload), the same page instead receives
 // display-only messages from its parent frame; it never gains a way to send or write anything.
 export const SIMULATOR_MESSAGE = 'bingo-public-simulator';
-const CHANNELS = ['event', 'theme', 'meta'];
+const CHANNELS = ['event', 'theme', 'meta', 'prizes'];
 
 function frameBridges(win) {
   const listeners = Object.fromEntries(CHANNELS.map((channel) => [channel, new Set()]));
@@ -18,12 +18,13 @@ function frameBridges(win) {
   } });
   // Tongo plays only on the public window; the simulator's presentation input never fires.
   const inert = Object.freeze({ subscribe: () => () => {} });
-  return { event: channel('event'), theme: channel('theme'), meta: channel('meta'), presentation: inert };
+  return { event: channel('event'), theme: channel('theme'), meta: channel('meta'), prizes: channel('prizes'), presentation: inert };
 }
 
 export function publicBridges(win = window) {
-  if (win.publicEvent && win.publicTheme && win.publicEventMeta && win.publicPresentation) {
-    return { event: win.publicEvent, theme: win.publicTheme, meta: win.publicEventMeta, presentation: win.publicPresentation };
+  if (win.publicEvent && win.publicTheme && win.publicEventMeta && win.publicEventPrizes && win.publicPresentation) {
+    return { event: win.publicEvent, theme: win.publicTheme, meta: win.publicEventMeta, prizes: win.publicEventPrizes,
+      presentation: win.publicPresentation };
   }
   if (win.parent !== win) return frameBridges(win);
   throw new Error('Missing public display bridge');
@@ -38,19 +39,20 @@ export function validEventMeta(meta) {
 
 // Operator side: mirrors the latest display state into the simulator frame after every (re)load.
 export function createSimulatorFeed(frame) {
-  const latest = { theme: undefined, meta: undefined, event: undefined };
+  const latest = { theme: undefined, meta: undefined, prizes: undefined, event: undefined };
   const post = (channel) => {
     if (latest[channel] === undefined) return;
     // The frame is the bundled public page from file://, whose origin is opaque, so no narrower target
     // origin exists; the payload is display-only state that the public screen shows anyway.
     frame.contentWindow?.postMessage({ type: SIMULATOR_MESSAGE, channel, payload: latest[channel] }, '*');
   };
-  // Theme first, then metadata, then state: the same reveal order as the public window.
-  const flush = () => { for (const channel of ['theme', 'meta', 'event']) post(channel); };
+  // Theme first, then metadata and prizes, then state: the same reveal order as the public window.
+  const order = ['theme', 'meta', 'prizes', 'event'];
+  const flush = () => { for (const channel of order) post(channel); };
   frame.addEventListener('load', flush);
   return {
     update(next) {
-      for (const channel of ['theme', 'meta', 'event']) {
+      for (const channel of order) {
         if (!(channel in next)) continue;
         latest[channel] = structuredClone(next[channel]);
         post(channel);
