@@ -2127,3 +2127,175 @@ test('selectEvent refuses a target whose line award is corrupt and keeps the sel
     assert.throws(() => store.update((e) => drawManual(e, 1)), /draw|presentation|line/i);
   } finally { store.close(); }
 });
+
+test('declareLineDirectly commits phase, direct audit and a pending cash award atomically', (t) => {
+  const { path, store, event } = openDrawing(t);
+  try {
+    store.update((e) => drawManual(drawManual(e, 7), 42));
+    const baseline = store.loadLineDeclarationBaseline();
+    assert.deepEqual(baseline, { eventId: event.id, calledNumbers: [7, 42], phase: 'drawing', lastTransitionAt: null,
+      auditSequence: 0, linePrize: { amount: 10, lot: '' } });
+    assert.ok(Object.isFrozen(baseline) && Object.isFrozen(baseline.calledNumbers) && Object.isFrozen(baseline.linePrize));
+    const stored = store.declareLineDirectly(baseline, 3, T1);
+    assert.match(stored.presentation.id, /^[0-9a-f-]{36}$/);
+    assert.deepEqual(stored, { eventId: event.id,
+      award: { winnerCount: 3, totalCents: 1000, shareCents: 333, remainderCents: 1, lot: '', lotResolution: 'not_required' },
+      presentation: { id: stored.presentation.id, status: 'pending', startedAt: null, deadlineAt: null } });
+    assert.ok(Object.isFrozen(stored) && Object.isFrozen(stored.award) && Object.isFrozen(stored.presentation));
+    assert.deepEqual(store.loadLineAward(), stored);
+    assert.deepEqual(store.load(), { calledNumbers: [7, 42], phase: 'line_declared', lastTransitionAt: T1 });
+    assert.deepEqual(store.readAudit(), [{ sequence: 1, transitionAt: T1, kind: 'declare_line_directly',
+      from_phase: 'drawing', to_phase: 'line_declared' }]);
+  } finally { store.close(); }
+  const reopened = createEventStore(path);
+  try {
+    assert.equal(reopened.loadLineAward()?.award.winnerCount, 3);
+    assert.equal(reopened.load()?.phase, 'line_declared');
+  } finally { reopened.close(); }
+});
+
+test('declareLineDirectly freezes a lot as pending only for a tie of two or more winners', (t) => {
+  for (const [winners, resolution] of [[3, 'pending'], [2, 'pending'], [1, 'not_required']] as const) {
+    const { store } = openDrawing(t, { amount: 10, lot: ' Jamón ' });
+    try {
+      const stored = store.declareLineDirectly(store.loadLineDeclarationBaseline(), winners, T1);
+      assert.deepEqual([stored.award.lot, stored.award.lotResolution], ['Jamón', resolution]);
+    } finally { store.close(); }
+  }
+});
+
+test('declareLineDirectly accepts positive safe winner counts up to MAX_SAFE_INTEGER and rejects every other value', (t) => {
+  const { path, store } = openDrawing(t);
+  try {
+    const baseline = store.loadLineDeclarationBaseline();
+    const before = dump(path);
+    for (const bad of [0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, '3', null, undefined, {}, 3n]) {
+      assert.throws(() => store.declareLineDirectly(baseline, bad as never, T1), /winner/i, String(bad));
+    }
+    assert.deepEqual(dump(path), before);
+    const stored = store.declareLineDirectly(baseline, Number.MAX_SAFE_INTEGER, T1);
+    assert.deepEqual([stored.award.winnerCount, stored.award.shareCents, stored.award.remainderCents],
+      [Number.MAX_SAFE_INTEGER, 0, 1000]);
+  } finally { store.close(); }
+});
+
+test('declareLineDirectly rejects a stale or different baseline without writing', (t) => {
+  const { path, store, event } = openDrawing(t);
+  try {
+    const baseline = store.loadLineDeclarationBaseline();
+    const stale: Array<[string, () => void]> = [
+      ['draw', () => store.update((e) => drawManual(e, 5))],
+      ['prize edit', () => store.updateEventPrizes(event.id, { line: { amount: 11, lot: '' }, bingo: { amount: 0, lot: '' } })],
+      ['lot edit', () => store.updateEventPrizes(event.id, { line: { amount: 10, lot: 'Jamón' }, bingo: { amount: 0, lot: '' } })],
+      ['phase head', () => { store.transitionPhase('begin_line_check', T1); store.transitionPhase('reject_line_claim', T2); }],
+    ];
+    for (const [name, change] of stale) {
+      change();
+      const before = dump(path);
+      assert.throws(() => store.declareLineDirectly(baseline, 1, T3), /stale|baseline|mismatch/i, name);
+      assert.deepEqual(dump(path), before, name);
+    }
+    // A second writer connection (another process) changes the history; the first caller's baseline is stale.
+    const second = createEventStore(path);
+    try { second.update((e) => drawManual(e, 6)); } finally { second.close(); }
+    const independent = dump(path);
+    assert.throws(() => store.declareLineDirectly(baseline, 1, T3), /stale|baseline|mismatch/i, 'second connection');
+    assert.deepEqual(dump(path), independent, 'second connection');
+    // Another active event never accepts this event's baseline.
+    const other = store.createEvent({ name: 'B', date: '2025-01-02', place: 'Y' });
+    store.selectEvent(other.id);
+    const before = dump(path);
+    assert.throws(() => store.declareLineDirectly(baseline, 1, '2025-01-01T00:00:09.000Z'), /stale|baseline|mismatch/i);
+    assert.deepEqual(dump(path), before);
+  } finally { store.close(); }
+});
+
+test('declareLineDirectly rejects forged baselines, malformed input and bad timestamps without writing', (t) => {
+  const { path, store } = openDrawing(t);
+  try {
+    store.update((e) => drawManual(drawManual(e, 7), 42));
+    store.transitionPhase('begin_line_check', T1);
+    store.transitionPhase('reject_line_claim', T2);
+    const base = store.loadLineDeclarationBaseline();
+    const before = dump(path);
+    // Holes read as undefined, so a sparse array of the right length must never pass for the real history.
+    const hole = (index: number) => { const sparse = [7, 42]; delete sparse[index]; return sparse; };
+    const forged: Record<string, unknown> = {
+      'sparse history': { ...base, calledNumbers: Array(2) },
+      'hole at the tail': { ...base, calledNumbers: hole(1) },
+      'hole at the head': { ...base, calledNumbers: hole(0) },
+      'history ball type': { ...base, calledNumbers: [7, '42'] },
+      'history ball range': { ...base, calledNumbers: [7, 91] },
+      'history duplicate': { ...base, calledNumbers: [7, 7] },
+      'missing field': { ...base, auditSequence: undefined },
+      'extra field': { ...base, extra: 1 },
+      'history order': { ...base, calledNumbers: [42, 7] },
+      'history prefix': { ...base, calledNumbers: [7] },
+      'history type': { ...base, calledNumbers: '7,42' },
+      'prize amount': { ...base, linePrize: { amount: 99, lot: '' } },
+      'prize lot': { ...base, linePrize: { amount: 10, lot: 'x' } },
+      'prize shape': { ...base, linePrize: 10 },
+      'phase': { ...base, phase: 'line_declared' },
+      'timestamp': { ...base, lastTransitionAt: T1 },
+      'sequence': { ...base, auditSequence: 1 },
+      'sequence type': { ...base, auditSequence: '2' },
+      'event': { ...base, eventId: 'other' },
+      null: null, string: 'baseline', array: [], empty: {},
+    };
+    for (const [name, value] of Object.entries(forged)) {
+      assert.throws(() => store.declareLineDirectly(value as never, 1, T3), /baseline|stale|mismatch/i, name);
+    }
+    for (const at of [T2, T1, '2025-01-01', 'garbage', '2025-01-01T01:00:03.000+01:00', 5, null, undefined]) {
+      assert.throws(() => store.declareLineDirectly(base, 1, at as never), /timestamp|time/i, String(at));
+    }
+    assert.deepEqual(dump(path), before);
+    assert.equal(store.declareLineDirectly(base, 1, T3).award.winnerCount, 1);
+  } finally { store.close(); }
+});
+
+test('a committed award refuses a second declaration and never replays', (t) => {
+  const { path, store } = openDrawing(t);
+  try {
+    const baseline = store.loadLineDeclarationBaseline();
+    const stored = store.declareLineDirectly(baseline, 3, T1);
+    const before = dump(path);
+    assert.throws(() => store.declareLineDirectly(baseline, 3, T2), /stale|baseline|mismatch|not eligible/i);
+    assert.throws(() => store.loadLineDeclarationBaseline(), /not eligible/i);
+    assert.deepEqual(dump(path), before);
+    assert.deepEqual(store.loadLineAward(), stored);
+  } finally { store.close(); }
+});
+
+test('a later prize edit leaves the frozen award unchanged', (t) => {
+  const { store, event } = openDrawing(t, { amount: 10, lot: 'Jamón' });
+  try {
+    const stored = store.declareLineDirectly(store.loadLineDeclarationBaseline(), 3, T1);
+    store.updateEventPrizes(event.id, { line: { amount: 99, lot: 'Otro' }, bingo: { amount: 0, lot: '' } });
+    assert.deepEqual(store.loadLineAward(), stored);
+  } finally { store.close(); }
+});
+
+test('an injected failure after the audit row or during award readback rolls everything back', (t) => {
+  const triggers: Array<[string, string]> = [
+    ['before the award insert', `CREATE TRIGGER fail_award BEFORE INSERT ON line_awards
+      BEGIN SELECT RAISE(ABORT, 'injected award failure'); END`],
+    ['during award readback', `CREATE TRIGGER corrupt_award AFTER INSERT ON line_awards
+      BEGIN UPDATE line_awards SET total_cents = 1050, share_cents = 350, remainder_cents = 0
+        WHERE event_id = NEW.event_id; END`],
+  ];
+  for (const [name, sql] of triggers) {
+    const { path, store } = openDrawing(t);
+    try {
+      store.update((e) => drawManual(e, 9));
+      const baseline = store.loadLineDeclarationBaseline();
+      const before = dump(path);
+      withDb(path, (db) => db.exec(sql));
+      assert.throws(() => store.declareLineDirectly(baseline, 3, T1), /injected|invalid stored line award/i, name);
+      assert.deepEqual(dump(path), before, name);
+      assert.equal(store.load()?.phase, 'drawing');
+      withDb(path, (db) => db.exec('DROP TRIGGER IF EXISTS fail_award; DROP TRIGGER IF EXISTS corrupt_award'));
+      assert.deepEqual(store.loadLineDeclarationBaseline(), baseline, name);
+      assert.equal(store.declareLineDirectly(baseline, 3, T1).award.winnerCount, 3, name);
+    } finally { store.close(); }
+  }
+});

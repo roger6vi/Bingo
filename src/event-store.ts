@@ -661,6 +661,44 @@ function readLineDeclarationBaseline(db: DatabaseSync): LineDeclarationBaseline 
   });
 }
 
+// Untrusted input (the future IPC reads JSON): exact shape and types only, never coerced.
+function parseBaseline(value: unknown): LineDeclarationBaseline {
+  const invalid = () => new Error('Invalid line declaration baseline');
+  const plain = (v: unknown): v is Record<string, unknown> =>
+    typeof v === 'object' && v !== null && !Array.isArray(v);
+  const exact = (v: Record<string, unknown>, keys: string[]) =>
+    Object.keys(v).length === keys.length && keys.every((key) => Object.hasOwn(v, key));
+  if (!plain(value) || !exact(value, ['eventId', 'calledNumbers', 'phase', 'lastTransitionAt', 'auditSequence', 'linePrize'])) {
+    throw invalid();
+  }
+  const prize = value.linePrize;
+  if (typeof value.eventId !== 'string' || !Array.isArray(value.calledNumbers) || value.phase !== 'drawing' ||
+      !(value.lastTransitionAt === null || canonicalTime(value.lastTransitionAt)) ||
+      !Number.isSafeInteger(value.auditSequence) || (value.auditSequence as number) < 0 ||
+      !plain(prize) || !exact(prize, ['amount', 'lot']) || typeof prize.lot !== 'string' || !validAmount(prize.amount)) {
+    throw invalid();
+  }
+  // Dense, ordered, valid and unique balls (the history decode rules); a hole or junk value never passes. The result
+  // is a private copy, so the caller cannot change the input between this check and the comparison.
+  const called: number[] = [];
+  const seen = new Set<number>();
+  for (let index = 0; index < value.calledNumbers.length; index += 1) {
+    const ball: unknown = Object.hasOwn(value.calledNumbers, index) ? value.calledNumbers[index] : undefined;
+    if (typeof ball !== 'number' || !Number.isInteger(ball) || ball < 1 || ball > 90 || seen.has(ball)) throw invalid();
+    seen.add(ball);
+    called.push(ball);
+  }
+  return { eventId: value.eventId, calledNumbers: called, phase: 'drawing', lastTransitionAt: value.lastTransitionAt,
+    auditSequence: value.auditSequence as number, linePrize: { amount: prize.amount, lot: prize.lot } };
+}
+
+function sameBaseline(a: LineDeclarationBaseline, b: LineDeclarationBaseline): boolean {
+  return a.eventId === b.eventId && a.phase === b.phase && a.lastTransitionAt === b.lastTransitionAt &&
+    a.auditSequence === b.auditSequence && a.linePrize.amount === b.linePrize.amount &&
+    a.linePrize.lot === b.linePrize.lot && a.calledNumbers.length === b.calledNumbers.length &&
+    b.calledNumbers.every((number, index) => a.calledNumbers[index] === number);
+}
+
 export function createEventStore(path: string) {
   if (!existed(path)) {
     // Initialize off-path: the target must never expose SQLite's transient version-0 file.
@@ -948,6 +986,39 @@ export function createEventStore(path: string) {
     // Frozen store-authoritative baseline the operator confirms before declaring the first line.
     loadLineDeclarationBaseline(): LineDeclarationBaseline {
       return readSnapshot(() => readLineDeclarationBaseline(db));
+    },
+    // Declares the first line atomically: phase, direct audit row and the frozen award commit together or not at
+    // all. Rechecks the baseline under the writer lock; a stale or repeated declaration is refused, never replayed.
+    declareLineDirectly(expected: unknown, winnerCount: unknown, transitionAt: unknown): StoredLineAward {
+      const baseline = parseBaseline(expected);
+      if (typeof winnerCount !== 'number' || !Number.isSafeInteger(winnerCount) || winnerCount < 1) {
+        throw new Error('Winner count must be a positive safe integer');
+      }
+      if (!canonicalTime(transitionAt)) throw new Error('Invalid phase transition timestamp');
+      return transaction(() => {
+        const current = readLineDeclarationBaseline(db);
+        if (!sameBaseline(baseline, current)) throw new Error('Stale line declaration baseline');
+        if (current.lastTransitionAt !== null && transitionAt <= current.lastTransitionAt) {
+          throw new Error('Invalid phase transition timestamp');
+        }
+        const award = createLineAward({ winnerCount, prizeEuros: current.linePrize.amount, lot: current.linePrize.lot });
+        const sequence = current.auditSequence + 1;
+        db.prepare('UPDATE events SET phase = ?, lastTransitionAt = ? WHERE id = ?')
+          .run('line_declared', transitionAt, current.eventId);
+        db.prepare(`INSERT INTO phase_audit (event_id, sequence, transitionAt, kind, from_phase, to_phase)
+          VALUES (?, ?, ?, 'declare_line_directly', 'drawing', 'line_declared')`)
+          .run(current.eventId, sequence, transitionAt);
+        db.prepare(`INSERT INTO line_awards (event_id, audit_sequence, winner_count, total_cents, share_cents,
+          remainder_cents, lot, lot_resolution, presentation_id, presentation_status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`)
+          .run(current.eventId, sequence, award.winnerCount, award.totalCents, award.shareCents,
+            award.remainderCents, award.lot, award.lotResolution, randomUUID());
+        // Validate the committed state, including the new award, before COMMIT.
+        readEvent(db);
+        const stored = readLineAward(db, current.eventId, replayAudit(db, current.eventId));
+        if (stored === null) throw new Error('Invalid stored line award: missing after write');
+        return stored;
+      });
     },
     // Replaces only the active event's prizes; like updateEventMeta, a stale id never reaches another event.
     // Returns the values read back inside the committing transaction.
