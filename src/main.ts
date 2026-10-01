@@ -70,7 +70,8 @@ if (!app.requestSingleInstanceLock()) {
     return active === undefined ? null : { name: active.name, date: active.date, place: active.place };
   };
   const activePrizes = () => store.loadPrizes()?.prizes ?? null;
-  const publicDelivery = createPublicEventDelivery(store, () => theme.current(), activeMeta, activePrizes);
+  const publicDelivery = createPublicEventDelivery(store, () => theme.current(), activeMeta, activePrizes,
+    () => store.loadLineAward());
   const operatorOnly = createOperatorGuard(operator.webContents, operatorFrame, operatorUrl);
   const theme = registerThemeIpc(ipcMain, { load: store.loadTheme, save: store.saveTheme },
     operatorOnly, publicDelivery.publishTheme);

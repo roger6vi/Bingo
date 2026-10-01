@@ -17,16 +17,26 @@ test('the public window uses its preload subscriptions and never listens to fram
   const { win, listeners } = fakeWindow();
   Object.assign(win, { publicEvent: { subscribe: () => () => {} }, publicTheme: { subscribe: () => () => {} },
     publicEventMeta: { subscribe: () => () => {} }, publicEventPrizes: { subscribe: () => () => {} },
-    publicPresentation: { subscribe: () => () => {} } });
+    publicPresentation: { subscribe: () => () => {} }, publicLineAward: { subscribe: () => () => {} } });
   const bridges = publicBridges(win);
-  assert.deepEqual([bridges.event, bridges.theme, bridges.meta, bridges.prizes, bridges.presentation],
-    [win.publicEvent, win.publicTheme, win.publicEventMeta, win.publicEventPrizes, win.publicPresentation]);
+  assert.deepEqual([bridges.event, bridges.theme, bridges.meta, bridges.prizes, bridges.lineAward, bridges.presentation],
+    [win.publicEvent, win.publicTheme, win.publicEventMeta, win.publicEventPrizes, win.publicLineAward, win.publicPresentation]);
   assert.equal(listeners.length, 0);
   assert.throws(() => publicBridges(fakeWindow().win), /Missing public display bridge/);
   // A top-level page missing any one preload bridge is not the public window.
   const partial = fakeWindow().win;
   Object.assign(partial, { publicEvent: win.publicEvent, publicTheme: win.publicTheme, publicEventMeta: win.publicEventMeta });
   assert.throws(() => publicBridges(partial), /Missing public display bridge/);
+});
+
+test('the public window fails closed without the committed line-award bridge', () => {
+  const { win } = fakeWindow();
+  const bridge = () => ({ subscribe: () => () => {} });
+  Object.assign(win, { publicEvent: bridge(), publicTheme: bridge(), publicEventMeta: bridge(),
+    publicEventPrizes: bridge(), publicPresentation: bridge() });
+  assert.throws(() => publicBridges(win), /Missing public display bridge/);
+  win.publicLineAward = bridge();
+  assert.equal(publicBridges(win).lineAward, win.publicLineAward);
 });
 
 test('framed as the simulator, the page accepts only well-formed messages from its parent frame', () => {
