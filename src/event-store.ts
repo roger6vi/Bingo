@@ -4,6 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import type { EventSnapshot } from './event-core';
 import { transitionPhase, type GamePhase, type PhaseTransitionIntent } from './game-phase.ts';
 import { DEFAULT_THEME, isThemeId, THEME_IDS, type ThemeId } from './theme.ts';
+import { createLineAward, type LineAward, type LinePresentationStatus } from './line-award.ts';
 import { MAX_PRIZE_AMOUNT, MAX_PRIZE_LOT, NO_PRIZES, normalizePrizes, validAmount, validLot,
   type EventPrizes } from './event-prizes.ts';
 
@@ -562,6 +563,75 @@ function readPrizes(db: DatabaseSync, eventId: string): EventPrizes {
     bingo: { amount: row.bingoAmount, lot: row.bingoLot } }) as EventPrizes;
 }
 
+export type StoredLineAward = {
+  readonly eventId: string;
+  readonly award: LineAward;
+  readonly presentation: {
+    readonly id: string;
+    readonly status: LinePresentationStatus;
+    readonly startedAt: number | null;
+    readonly deadlineAt: number | null;
+  };
+};
+
+const PRESENTATION_STATUSES: readonly string[] = ['pending', 'failed', 'started', 'completed'];
+const LOT_RESOLUTIONS: readonly string[] = ['not_required', 'pending', 'resolved'];
+
+// Reads the active event's award, or null only when no row exists. A populated row is re-derived with the
+// pure rules and linked to its direct audit intent; anything else fails closed. Never repairs or writes.
+function readLineAward(db: DatabaseSync, eventId: string, audit: PhaseAuditEntry[]): StoredLineAward | null {
+  const invalid = (reason: string, cause?: unknown): never => {
+    throw new Error(`Invalid stored line award: ${reason}`, cause === undefined ? undefined : { cause });
+  };
+  let row;
+  try {
+    row = db.prepare(`SELECT event_id, audit_sequence, winner_count, total_cents, share_cents, remainder_cents,
+      lot, lot_resolution, presentation_id, presentation_status, presentation_started_at, presentation_deadline
+      FROM line_awards WHERE event_id = ?`).get(eventId);
+  } catch (error) { return invalid('unreadable row', error); }
+  if (row === undefined) return null;
+  const safe = (value: unknown, low: number): value is number =>
+    Number.isSafeInteger(value) && (value as number) >= low;
+  if (row.event_id !== eventId) invalid('event');
+  const link = safe(row.audit_sequence, 1) ? audit[row.audit_sequence - 1] : undefined;
+  if (link?.kind !== 'declare_line_directly' || link.from_phase !== 'drawing' || link.to_phase !== 'line_declared') {
+    invalid('audit link');
+  }
+  if (!safe(row.winner_count, 1) || !safe(row.total_cents, 0) || row.total_cents > 10_000_000 ||
+      row.total_cents % 100 !== 0 || typeof row.lot !== 'string' || row.lot !== row.lot.trim()) {
+    invalid('amounts');
+  }
+  let derived: LineAward;
+  try {
+    derived = createLineAward({ winnerCount: row.winner_count as number,
+      prizeEuros: (row.total_cents as number) / 100, lot: row.lot as string });
+  } catch (error) { return invalid('award rules', error); }
+  const resolution = row.lot_resolution;
+  if (row.share_cents !== derived.shareCents || row.remainder_cents !== derived.remainderCents ||
+      typeof resolution !== 'string' || !LOT_RESOLUTIONS.includes(resolution) ||
+      (resolution !== derived.lotResolution && !(derived.lotResolution === 'pending' && resolution === 'resolved'))) {
+    invalid('share, remainder or lot');
+  }
+  const status = row.presentation_status;
+  const startedAt = row.presentation_started_at;
+  const deadlineAt = row.presentation_deadline;
+  if (typeof row.presentation_id !== 'string' || row.presentation_id.trim() === '' ||
+      typeof status !== 'string' || !PRESENTATION_STATUSES.includes(status)) {
+    invalid('presentation');
+  }
+  const timed = status === 'started' || status === 'completed';
+  if (timed ? !(safe(startedAt, 0) && safe(deadlineAt, 0) && deadlineAt > startedAt)
+    : startedAt !== null || deadlineAt !== null) {
+    invalid('presentation times');
+  }
+  return Object.freeze({
+    eventId,
+    award: Object.freeze({ ...derived, lotResolution: resolution as LineAward['lotResolution'] }),
+    presentation: Object.freeze({ id: row.presentation_id as string, status: status as LinePresentationStatus,
+      startedAt: startedAt as number | null, deadlineAt: deadlineAt as number | null }),
+  });
+}
+
 export function createEventStore(path: string) {
   if (!existed(path)) {
     // Initialize off-path: the target must never expose SQLite's transient version-0 file.
@@ -816,6 +886,15 @@ export function createEventStore(path: string) {
       return readSnapshot(() => {
         const id = readActiveEventId(db);
         return id === null ? null : { eventId: id, prizes: readPrizes(db, id) };
+      });
+    },
+    // The active event's validated first-line award, or null when it has none (including legacy declared games).
+    loadLineAward(): StoredLineAward | null {
+      return readSnapshot(() => {
+        const id = readActiveEventId(db);
+        if (id === null) return null;
+        readEvent(db);
+        return readLineAward(db, id, replayAudit(db, id));
       });
     },
     // Replaces only the active event's prizes; like updateEventMeta, a stale id never reaches another event.

@@ -1666,3 +1666,205 @@ test('the line_awards table enforces its row constraints on directly written row
     assert.throws(() => insert({ ...base, event_id: 'e2' }), /constraint|UNIQUE/i, 'reused presentation id');
   });
 });
+
+// ---- loadLineAward: validated read of the active event's first-line award ----
+const awardRow = { audit_sequence: 1, winner_count: 3, total_cents: 1000, share_cents: 333, remainder_cents: 1,
+  lot: '', lot_resolution: 'not_required', presentation_id: 'p-1', presentation_status: 'pending',
+  presentation_started_at: null, presentation_deadline: null };
+
+function insertAward(path: string, eventId: string, change: Record<string, unknown> = {}, bypass = false) {
+  withDb(path, (db) => {
+    if (bypass) db.exec('PRAGMA ignore_check_constraints = 1; PRAGMA foreign_keys = OFF');
+    db.prepare(`INSERT INTO line_awards (event_id, audit_sequence, winner_count, total_cents, share_cents,
+      remainder_cents, lot, lot_resolution, presentation_id, presentation_status, presentation_started_at,
+      presentation_deadline) VALUES (:event_id, :audit_sequence, :winner_count, :total_cents, :share_cents,
+      :remainder_cents, :lot, :lot_resolution, :presentation_id, :presentation_status,
+      :presentation_started_at, :presentation_deadline)`).run({ ...awardRow, ...change, event_id: eventId } as never);
+  });
+}
+
+// An event whose only audit row is the direct drawing -> line_declared intent, written by the existing API.
+function directEvent(path: string, name = 'A') {
+  const store = createEventStore(path);
+  const event = store.createEvent({ name, date: '2025-01-01', place: 'X' });
+  store.transitionPhase('declare_line_directly', '2025-01-01T00:00:01.000Z');
+  return { store, event };
+}
+
+test('loadLineAward is null without an active event, for a fresh drawing event and for legacy declared audits', (t) => {
+  const path = fixture(t);
+  const store = createEventStore(path);
+  try {
+    assert.equal(store.loadLineAward(), null);
+    store.createEvent({ name: 'A', date: '2025-01-01', place: 'X' });
+    assert.equal(store.loadLineAward(), null);
+    for (const [intent, at] of [['begin_line_check', 2], ['declare_line', 3], ['begin_bingo_check', 4],
+      ['declare_bingo', 5], ['finish', 6]] as const) {
+      store.transitionPhase(intent, `2025-01-01T00:00:0${at}.000Z`);
+      assert.equal(store.loadLineAward(), null, intent);
+    }
+  } finally { store.close(); }
+  const migrated = fixture(t);
+  v6(migrated);
+  const reopened = createEventStore(migrated);
+  try { assert.equal(reopened.loadLineAward(), null); } finally { reopened.close(); }
+});
+
+test('loadLineAward returns the validated award, frozen and independent of prize edits', (t) => {
+  const path = fixture(t);
+  const { store, event } = directEvent(path);
+  try {
+    store.updateEventPrizes(event.id, { line: { amount: 10, lot: '' }, bingo: { amount: 0, lot: '' } });
+    insertAward(path, event.id);
+    const loaded = store.loadLineAward();
+    assert.deepEqual(loaded, { eventId: event.id,
+      award: { winnerCount: 3, totalCents: 1000, shareCents: 333, remainderCents: 1, lot: '', lotResolution: 'not_required' },
+      presentation: { id: 'p-1', status: 'pending', startedAt: null, deadlineAt: null } });
+    assert.ok(loaded && Object.isFrozen(loaded) && Object.isFrozen(loaded.award) && Object.isFrozen(loaded.presentation));
+    store.updateEventPrizes(event.id, { line: { amount: 99, lot: 'Otro' }, bingo: { amount: 0, lot: '' } });
+    assert.equal(store.loadLineAward()?.award.totalCents, 1000);
+    assert.notEqual(store.loadLineAward(), loaded);
+  } finally { store.close(); }
+});
+
+test('loadLineAward accepts every valid presentation and lot shape without changing status over time', (t) => {
+  const path = fixture(t);
+  const { store, event } = directEvent(path);
+  const MAX = Number.MAX_SAFE_INTEGER;
+  const started = { presentation_status: 'started', presentation_started_at: 1000, presentation_deadline: 5000 };
+  const lot = { lot: 'Jamón', lot_resolution: 'pending' };
+  const cases: Array<[string, Record<string, unknown>, (value: NonNullable<ReturnType<typeof store.loadLineAward>>) => void]> = [
+    ['failed', { presentation_status: 'failed' }, (v) => assert.equal(v.presentation.status, 'failed')],
+    ['started past its deadline stays started', { ...started, presentation_deadline: 2000 },
+      (v) => assert.deepEqual(v.presentation, { id: 'p-1', status: 'started', startedAt: 1000, deadlineAt: 2000 })],
+    ['completed keeps its deadline', { ...started, presentation_status: 'completed' },
+      (v) => assert.deepEqual(v.presentation, { id: 'p-1', status: 'completed', startedAt: 1000, deadlineAt: 5000 })],
+    ['pending tied lot', lot, (v) => assert.deepEqual([v.award.lot, v.award.lotResolution], ['Jamón', 'pending'])],
+    ['resolved tied lot', { ...lot, lot_resolution: 'resolved' }, (v) => assert.equal(v.award.lotResolution, 'resolved')],
+    ['lone winner lot', { ...lot, lot_resolution: 'not_required', winner_count: 1, share_cents: 1000, remainder_cents: 0 },
+      (v) => assert.deepEqual([v.award.lot, v.award.lotResolution, v.award.remainderCents], ['Jamón', 'not_required', 0])],
+    ['even split', { winner_count: 4, share_cents: 250, remainder_cents: 0 },
+      (v) => assert.deepEqual([v.award.shareCents, v.award.remainderCents, v.award.lotResolution], [250, 0, 'not_required'])],
+    ['maximum winners', { winner_count: MAX, share_cents: 0, remainder_cents: 1000 },
+      (v) => assert.deepEqual([v.award.winnerCount, v.award.shareCents, v.award.remainderCents], [MAX, 0, 1000])],
+  ];
+  try {
+    for (const [name, change, check] of cases) {
+      withDb(path, (db) => db.exec('DELETE FROM line_awards'));
+      insertAward(path, event.id, change);
+      const loaded = store.loadLineAward();
+      assert.ok(loaded, name);
+      check(loaded);
+    }
+  } finally { store.close(); }
+});
+
+test('loadLineAward reads only the active event and never mixes events', (t) => {
+  const path = fixture(t);
+  const { store, event } = directEvent(path, 'A');
+  try {
+    const other = store.createEvent({ name: 'B', date: '2025-01-02', place: 'Y' });
+    insertAward(path, event.id);
+    assert.equal(store.loadLineAward()?.eventId, event.id);
+    store.selectEvent(other.id);
+    assert.equal(store.loadLineAward(), null);
+    store.selectEvent(event.id);
+    assert.equal(store.loadLineAward()?.eventId, event.id);
+  } finally { store.close(); }
+});
+
+test('loadLineAward fails closed on corrupted rows instead of returning null or coercing', (t) => {
+  const MAX = Number.MAX_SAFE_INTEGER;
+  const started = { presentation_status: 'started', presentation_started_at: 1000, presentation_deadline: 5000 };
+  const lot = { lot: 'Jamón', lot_resolution: 'pending' };
+  const corrupt: Record<string, Record<string, unknown>> = {
+    'wrong share': { share_cents: 334 },
+    'assigned remainder': { share_cents: 334, remainder_cents: 0 },
+    'wrong remainder': { remainder_cents: 2 },
+    'zero winners': { winner_count: 0, share_cents: 1000, remainder_cents: 0 },
+    'fractional winners': { winner_count: 2.5 },
+    'text winners': { winner_count: 'three' },
+    'winners beyond safe integer': { winner_count: MAX + 2 },
+    'negative total': { total_cents: -1, share_cents: 0, remainder_cents: 0 },
+    'total above maximum': { total_cents: 10_000_100, share_cents: 3_333_366, remainder_cents: 2 },
+    'not whole euros': { total_cents: 1050, share_cents: 350, remainder_cents: 0 },
+    'untrimmed lot': { lot: ' Jamón ', lot_resolution: 'pending' },
+    'lot with JS-only whitespace': { lot: '\u00a0Jamón', lot_resolution: 'pending' },
+    'overlong lot': { lot: 'l'.repeat(121), lot_resolution: 'pending' },
+    'unknown resolution': { lot_resolution: 'maybe' },
+    'lot without tie': { lot: 'Jamón' },
+    'pending without lot': { lot_resolution: 'pending' },
+    'pending lone winner': { ...lot, winner_count: 1, share_cents: 1000, remainder_cents: 0 },
+    'resolved without lot': { lot_resolution: 'resolved' },
+    'resolved lone winner': { ...lot, lot_resolution: 'resolved', winner_count: 1, share_cents: 1000, remainder_cents: 0 },
+    'empty presentation id': { presentation_id: '' },
+    'blank presentation id': { presentation_id: ' \u00a0 ' },
+    'unknown status': { presentation_status: 'running' },
+    'pending with times': { presentation_started_at: 1000, presentation_deadline: 5000 },
+    'failed with times': { presentation_status: 'failed', presentation_started_at: 1000, presentation_deadline: 5000 },
+    'started without times': { presentation_status: 'started' },
+    'started with one time': { ...started, presentation_deadline: null },
+    'completed without deadline': { ...started, presentation_status: 'completed', presentation_deadline: null },
+    'deadline not after start': { ...started, presentation_deadline: 1000 },
+    'negative start': { ...started, presentation_started_at: -1 },
+    'fractional time': { ...started, presentation_started_at: 1000.5 },
+    'time beyond safe integer': { ...started, presentation_deadline: MAX + 2 },
+    'audit row missing': { audit_sequence: 5 },
+  };
+  for (const [name, change] of Object.entries(corrupt)) {
+    const path = fixture(t);
+    const { store, event } = directEvent(path);
+    try {
+      insertAward(path, event.id, change, true);
+      assert.throws(() => store.loadLineAward(), /invalid stored line award/i, name);
+    } finally { store.close(); }
+  }
+});
+
+test('loadLineAward requires the exact direct intent in the linked audit row', (t) => {
+  const path = fixture(t);
+  const store = createEventStore(path);
+  try {
+    const event = store.createEvent({ name: 'A', date: '2025-01-01', place: 'X' });
+    store.transitionPhase('begin_line_check', '2025-01-01T00:00:01.000Z');
+    store.transitionPhase('declare_line', '2025-01-01T00:00:02.000Z');
+    insertAward(path, event.id, { audit_sequence: 1 });
+    assert.throws(() => store.loadLineAward(), /invalid stored line award/i, 'checking intent');
+    withDb(path, (db) => db.exec('DELETE FROM line_awards'));
+    insertAward(path, event.id, { audit_sequence: 2 });
+    assert.throws(() => store.loadLineAward(), /invalid stored line award/i, 'legacy declare_line');
+    withDb(path, (db) => db.exec('DELETE FROM line_awards'));
+    assert.equal(store.loadLineAward(), null);
+  } finally { store.close(); }
+});
+
+test('loadLineAward accepts an award after normal progression and rejects a tampered audit', (t) => {
+  const path = fixture(t);
+  const { store, event } = directEvent(path);
+  try {
+    insertAward(path, event.id);
+    store.transitionPhase('begin_bingo_check', '2025-01-01T00:00:02.000Z');
+    assert.equal(store.loadLineAward()?.award.winnerCount, 3);
+    withDb(path, (db) => {
+      db.exec('DROP TRIGGER phase_audit_no_update');
+      db.exec("UPDATE phase_audit SET to_phase = 'finished' WHERE sequence = 1");
+    });
+    assert.throws(() => store.loadLineAward(), /invalid/i);
+  } finally { store.close(); }
+});
+
+test('loadLineAward never writes and leaves ordinary reads unchanged', (t) => {
+  const path = fixture(t);
+  const { store, event } = directEvent(path);
+  try {
+    insertAward(path, event.id);
+    let before: unknown;
+    withDb(path, (db) => { before = [db.prepare('SELECT * FROM line_awards').all(), db.prepare('SELECT * FROM phase_audit').all()]; });
+    store.loadLineAward();
+    withDb(path, (db) => assert.deepEqual([db.prepare('SELECT * FROM line_awards').all(),
+      db.prepare('SELECT * FROM phase_audit').all()], before));
+    assert.equal(store.load()?.phase, 'line_declared');
+    assert.equal(store.readAudit().length, 1);
+    assert.equal(store.loadPrizes()?.eventId, event.id);
+  } finally { store.close(); }
+});
