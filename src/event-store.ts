@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import type { EventSnapshot } from './event-core';
 import { transitionPhase, type GamePhase, type PhaseTransitionIntent } from './game-phase.ts';
 import { DEFAULT_THEME, isThemeId, THEME_IDS, type ThemeId } from './theme.ts';
-import { createLineAward, type LineAward, type LinePresentationStatus } from './line-award.ts';
+import { createLineAward, isLineDeliveryResolved, type LineAward, type LinePresentationStatus } from './line-award.ts';
 import { MAX_PRIZE_AMOUNT, MAX_PRIZE_LOT, NO_PRIZES, normalizePrizes, validAmount, validLot,
   type EventPrizes } from './event-prizes.ts';
 
@@ -813,6 +813,10 @@ export function createEventStore(path: string) {
       });
     },
     transitionPhase(intent: PhaseTransitionIntent, transitionAt: string): StoredEvent {
+      // Direct declarations need the atomic award path; old ones still replay from the audit.
+      if (intent === 'declare_line_directly') {
+        throw new Error('Direct line declaration requires the atomic award path');
+      }
       return transaction(() => {
         const id = readActiveEventId(db);
         if (id === null) throw new Error('Current event does not exist');
@@ -823,7 +827,16 @@ export function createEventStore(path: string) {
             (current.lastTransitionAt !== null && transitionAt <= current.lastTransitionAt)) {
           throw new Error('Invalid phase transition timestamp');
         }
-        const sequence = replayAudit(db, id).length + 1;
+        const audit = replayAudit(db, id);
+        const award = intent === 'begin_bingo_check' || intent === 'correct_line_declaration'
+          ? readLineAward(db, id, audit) : null;
+        if (award !== null && intent === 'correct_line_declaration') {
+          throw new Error('Line correction with an attached award is not supported');
+        }
+        if (award !== null && !isLineDeliveryResolved(award.award, { status: award.presentation.status })) {
+          throw new Error('Line delivery must be completed and its lot settled before the bingo check');
+        }
+        const sequence = audit.length + 1;
         db.prepare('UPDATE events SET phase = ?, lastTransitionAt = ? WHERE id = ?')
           .run(phase, transitionAt, id);
         db.prepare(`INSERT INTO phase_audit (event_id, sequence, transitionAt, kind, from_phase, to_phase)
@@ -851,6 +864,11 @@ export function createEventStore(path: string) {
         const baseline = [...current.calledNumbers];
         const phase = current.phase;
         const lastTransitionAt = current.lastTransitionAt;
+        // Authoritative draw lock: an award blocks draws until its presentation completes (a pending lot does not).
+        const award = readLineAward(db, id, replayAudit(db, id));
+        if (award !== null && award.presentation.status !== 'completed') {
+          throw new Error('Draw not allowed until the line presentation is completed');
+        }
         const proposed = transition(current);
         if (current.phase !== phase || current.lastTransitionAt !== lastTransitionAt ||
             ('phase' in proposed && proposed.phase !== phase) ||
@@ -906,6 +924,7 @@ export function createEventStore(path: string) {
           readEvent(db);
           readTheme(db);
           readPrizes(db, id);
+          readLineAward(db, id, replayAudit(db, id));
         }
         return toSummary(row, id);
       });

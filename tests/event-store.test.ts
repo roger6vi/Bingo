@@ -1683,11 +1683,20 @@ function insertAward(path: string, eventId: string, change: Record<string, unkno
   });
 }
 
-// An event whose only audit row is the direct drawing -> line_declared intent, written by the existing API.
+// Raw setup of a direct-declared state (audit row + event phase), independent of the atomic writer.
+function rawDirect(path: string, eventId: string, at = '2025-01-01T00:00:01.000Z') {
+  withDb(path, (db) => {
+    db.prepare(`INSERT INTO phase_audit (event_id, sequence, transitionAt, kind, from_phase, to_phase)
+      VALUES (?, 1, ?, 'declare_line_directly', 'drawing', 'line_declared')`).run(eventId, at);
+    db.prepare("UPDATE events SET phase = 'line_declared', lastTransitionAt = ? WHERE id = ?").run(at, eventId);
+  });
+}
+
+// An event whose only audit row is the direct drawing -> line_declared intent, written raw.
 function directEvent(path: string, name = 'A') {
   const store = createEventStore(path);
   const event = store.createEvent({ name, date: '2025-01-01', place: 'X' });
-  store.transitionPhase('declare_line_directly', '2025-01-01T00:00:01.000Z');
+  rawDirect(path, event.id);
   return { store, event };
 }
 
@@ -1842,7 +1851,8 @@ test('loadLineAward accepts an award after normal progression and rejects a tamp
   const path = fixture(t);
   const { store, event } = directEvent(path);
   try {
-    insertAward(path, event.id);
+    insertAward(path, event.id, { presentation_status: 'completed', presentation_started_at: 1000,
+      presentation_deadline: 5000 });
     store.transitionPhase('begin_bingo_check', '2025-01-01T00:00:02.000Z');
     assert.equal(store.loadLineAward()?.award.winnerCount, 3);
     withDb(path, (db) => {
@@ -1949,7 +1959,7 @@ test('the baseline is ineligible without an event, outside drawing, or with an a
   } finally { store.close(); }
   const awarded = openDrawing(t);
   try {
-    awarded.store.transitionPhase('declare_line_directly', T1);
+    rawDirect(awarded.path, awarded.event.id, T1);
     insertAward(awarded.path, awarded.event.id);
     assert.throws(() => awarded.store.loadLineDeclarationBaseline(), /not eligible/i);
   } finally { awarded.store.close(); }
@@ -1969,9 +1979,9 @@ test('a legacy declaration corrected back to drawing without an award stays elig
 });
 
 test('a prior direct declaration audit is ineligible even when corrected back to drawing without an award', (t) => {
-  const { store } = openDrawing(t);
+  const { path, store, event } = openDrawing(t);
   try {
-    store.transitionPhase('declare_line_directly', T1);
+    rawDirect(path, event.id, T1);
     assert.equal(store.transitionPhase('correct_line_declaration', T2).phase, 'drawing');
     assert.throws(() => store.loadLineDeclarationBaseline(), /not eligible/i);
   } finally { store.close(); }
@@ -1988,4 +1998,132 @@ test('the baseline snapshot read does not leave a write transaction blocked', (t
   assert.throws(() => { store.transitionPhase('begin_line_check', T1); store.loadLineDeclarationBaseline(); }, /not eligible/i);
   store.transitionPhase('reject_line_claim', T2);
   assert.equal(store.loadLineDeclarationBaseline().auditSequence, 2);
+});
+
+const setAward = (path: string, set: string) => withDb(path, (db) => db.exec(`UPDATE line_awards SET ${set}`));
+const STARTED = "presentation_status = 'started', presentation_started_at = 1000, presentation_deadline = 5000";
+const LOT = { lot: 'Jamón', lot_resolution: 'pending' };
+
+test('the generic transition can no longer write a direct declaration, but old direct audits still replay', (t) => {
+  const { path, store, event } = openDrawing(t);
+  try {
+    const before = dump(path);
+    assert.throws(() => store.transitionPhase('declare_line_directly', T1), /atomic|award|direct/i);
+    assert.deepEqual(dump(path), before);
+    rawDirect(path, event.id);
+    assert.equal(store.readAudit()[0].kind, 'declare_line_directly');
+    assert.equal(store.load()?.phase, 'line_declared');
+  } finally { store.close(); }
+});
+
+test('legacy line correction without an award stays legal; with an attached award it fails closed', (t) => {
+  const legacy = fixture(t);
+  const old = createEventStore(legacy);
+  try {
+    old.create();
+    old.transitionPhase('begin_line_check', T1);
+    old.transitionPhase('declare_line', T2);
+    assert.equal(old.transitionPhase('correct_line_declaration', T3).phase, 'drawing');
+  } finally { old.close(); }
+  const { path, store, event } = openDrawing(t);
+  try {
+    rawDirect(path, event.id, T1);
+    insertAward(path, event.id, { winner_count: 2, share_cents: 500, remainder_cents: 0 });
+    const stored = store.loadLineAward();
+    const before = dump(path);
+    assert.throws(() => store.transitionPhase('correct_line_declaration', T2), /award|correction/i);
+    assert.deepEqual(dump(path), before);
+    assert.deepEqual(store.loadLineAward(), stored);
+  } finally { store.close(); }
+});
+
+test('begin_bingo_check requires a completed presentation and a settled lot for an award; legacy is unchanged', (t) => {
+  const legacy = fixture(t);
+  const old = createEventStore(legacy);
+  try {
+    old.create();
+    old.transitionPhase('begin_line_check', T1);
+    old.transitionPhase('declare_line', T2);
+    assert.equal(old.transitionPhase('begin_bingo_check', T3).phase, 'checking_bingo');
+  } finally { old.close(); }
+  const { path, store, event } = openDrawing(t, { amount: 10, lot: 'Jamón' });
+  try {
+    rawDirect(path, event.id, T1);
+    insertAward(path, event.id, LOT);
+    const before = dump(path);
+    const blocked: Array<[string, string]> = [
+      ['pending presentation', 'presentation_status = presentation_status'],
+      ['failed', "presentation_status = 'failed'"],
+      ['started', STARTED],
+      ['completed with a pending lot', STARTED.replace('started', 'completed')],
+    ];
+    for (const [name, set] of blocked) {
+      setAward(path, set);
+      assert.throws(() => store.transitionPhase('begin_bingo_check', T2), /line|delivery|presentation|lot/i, name);
+    }
+    assert.equal(store.load()?.phase, 'line_declared');
+    assert.equal(store.readAudit().length, 1);
+    setAward(path, "lot_resolution = 'resolved'");
+    assert.equal(store.transitionPhase('begin_bingo_check', T2).phase, 'checking_bingo');
+    assert.notDeepEqual(dump(path), before);
+  } finally { store.close(); }
+  const cash = openDrawing(t);
+  try {
+    rawDirect(cash.path, cash.event.id, T1);
+    insertAward(cash.path, cash.event.id);
+    assert.throws(() => cash.store.transitionPhase('begin_bingo_check', T2), /line|delivery|presentation/i);
+    setAward(cash.path, STARTED.replace('started', 'completed'));
+    assert.equal(cash.store.transitionPhase('begin_bingo_check', T2).phase, 'checking_bingo');
+  } finally { cash.store.close(); }
+});
+
+test('draws are rejected before the callback while the presentation is pending, failed or started, even after restart', (t) => {
+  const { path, store, event } = openDrawing(t, { amount: 10, lot: 'Jamón' });
+  rawDirect(path, event.id, T1);
+  insertAward(path, event.id, LOT);
+  store.close();
+  let calls = 0;
+  const attempt = (s: ReturnType<typeof createEventStore>) => s.update((e) => { calls += 1; return drawManual(e, 12); });
+  for (const set of ['presentation_status = presentation_status', "presentation_status = 'failed'", STARTED]) {
+    setAward(path, set);
+    const reopened = createEventStore(path);
+    try {
+      const before = dump(path);
+      assert.throws(() => attempt(reopened), /draw|presentation|line/i, set);
+      assert.equal(calls, 0, set);
+      assert.deepEqual(dump(path), before, set);
+    } finally { reopened.close(); }
+  }
+  setAward(path, STARTED.replace('started', 'completed'));
+  const reopened = createEventStore(path);
+  try {
+    assert.equal(reopened.loadLineAward()?.award.lotResolution, 'pending');
+    assert.deepEqual(attempt(reopened).calledNumbers, [12]);
+    assert.equal(calls, 1);
+    assert.equal(reopened.load()?.phase, 'line_declared');
+  } finally { reopened.close(); }
+});
+
+test('selectEvent refuses a target whose line award is corrupt and keeps the selection; a valid locked event stays locked', (t) => {
+  const path = fixture(t);
+  const store = createEventStore(path);
+  try {
+    const a = store.createEvent({ name: 'A', date: '2025-01-01', place: 'X' });
+    const bad = store.createEvent({ name: 'B', date: '2025-01-02', place: 'Y' });
+    const good = store.createEvent({ name: 'C', date: '2025-01-03', place: 'Z' });
+    rawDirect(path, bad.id);
+    insertAward(path, bad.id, { share_cents: 334 }, true);
+    const before = dump(path);
+    assert.throws(() => store.selectEvent(bad.id), /invalid stored line award/i);
+    assert.deepEqual(dump(path), before);
+    assert.equal(store.listEvents().find((e) => e.id === a.id)?.active, true);
+    rawDirect(path, good.id);
+    insertAward(path, good.id, { presentation_id: 'p-good' });
+    assert.equal(store.selectEvent(good.id).active, true);
+    assert.equal(store.loadLineAward()?.presentation.status, 'pending');
+    assert.throws(() => store.update((e) => drawManual(e, 1)), /draw|presentation|line/i);
+    store.selectEvent(a.id);
+    store.selectEvent(good.id);
+    assert.throws(() => store.update((e) => drawManual(e, 1)), /draw|presentation|line/i);
+  } finally { store.close(); }
 });
