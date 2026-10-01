@@ -128,13 +128,14 @@
             <section class="rail-section" aria-labelledby="rail-claims-heading">
               <h2 id="rail-claims-heading" class="rail-heading">Reclamaciones</h2>
               <div class="claim-buttons">
-                <bingo-button id="claim-line" disabled>Línea</bingo-button>
+                <bingo-button id="claim-line">Línea</bingo-button>
                 <bingo-button id="claim-bingo" disabled>Bingo</bingo-button>
                 <bingo-tongo-control id="tongo-control"></bingo-tongo-control>
                 <bingo-button id="claim-tiebreak" class="claim-wide" disabled>Sorteo de empate</bingo-button>
               </div>
               <p id="claims-note" class="visually-hidden">Se activan cuando la partida lo permita.</p>
               <bingo-status id="tongo-error" hidden></bingo-status>
+              <bingo-status id="line-status" hidden></bingo-status>
             </section>
             <section slot="footer" class="rail-section" aria-labelledby="rail-public-heading">
               <h2 id="rail-public-heading" class="rail-heading">Pantalla pública</h2>
@@ -151,6 +152,11 @@
             </section>
           </bingo-side-rail>
         </div>
+        <bingo-dialog id="line-dialog" label="Declarar la línea">
+          <p>Comprueba la línea con el cartón físico, fuera de esta aplicación. Aquí no se guardan nombres ni cartones.</p>
+          <p id="line-prize" class="dialog-note"></p>
+          <bingo-text-field id="line-winners" label="Número de ganadores" value="1" hint="Un número entero de 1 o más." autocomplete="off"></bingo-text-field>
+        </bingo-dialog>
       </bingo-tab-panel>
     </main>
 

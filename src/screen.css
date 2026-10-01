@@ -270,3 +270,4 @@ bingo-shell:has(.public-layout) h1 {
 @media (prefers-reduced-motion: reduce) {
   button:not(:disabled) { transition: none; }
 }
+.dialog-note { margin: 0.5rem 0; color: var(--bingo-color-muted); }

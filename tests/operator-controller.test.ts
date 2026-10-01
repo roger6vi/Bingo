@@ -236,3 +236,162 @@ test('resync after an event switch replaces the old history instead of flagging 
   assert.deepEqual(f.calls, ['get', 'digital', 'get']);
   assert.deepEqual([f.last().calledNumbers, f.last().stale, f.last().error], [[7], false, null]);
 });
+
+// First-line declaration: the controller drives the main-owned setup session and never invents state.
+import { createLineController } from '../src/operator-controller.mjs';
+
+const lineSession = { sessionId: 's1', eventId: 'e1', calledNumbers: [4, 9], linePrize: { amount: 10, lot: '' } };
+const lineAward = { eventId: 'e1', award: { winnerCount: 3, totalCents: 1000, shareCents: 333, remainderCents: 1, lot: '',
+  lotResolution: 'not_required' }, presentation: { id: 'p1', status: 'pending', startedAt: null, deadlineAt: null } };
+const lineFailure = (code: string, message: string) => ({ ok: false, code, message });
+
+type LineState = { mode: string; pending: boolean; error: string | null; countError: string | null; dialogOpen: boolean;
+  session: typeof lineSession | null; award: typeof lineAward | null };
+function lineFixture() {
+  const calls: string[] = [];
+  const renders: LineState[] = [];
+  let refreshed = 0;
+  const replies: Record<string, () => Promise<unknown>> = {
+    read: async () => ({ ok: true, state: 'none' }),
+    begin: async () => ({ ok: true, session: lineSession }),
+    cancel: async () => ({ ok: true }),
+    confirm: async () => ({ ok: true, award: lineAward }),
+  };
+  const controller = createLineController({
+    readLineSetup: () => { calls.push('read'); return replies.read(); },
+    beginLineSetup: () => { calls.push('begin'); return replies.begin(); },
+    cancelLineSetup: (id: string, event: string) => { calls.push(`cancel:${id}:${event}`); return replies.cancel(); },
+    confirmLine: (id: string, event: string, count: number) => { calls.push(`confirm:${id}:${event}:${count}`); return replies.confirm(); },
+  }, { render: (state: LineState) => { renders.push(structuredClone(state)); } }, { committed: () => { refreshed++; } });
+  return { controller, calls, replies, refreshed: () => refreshed, last: () => renders.at(-1) as LineState };
+}
+
+test('line recovery reads on start and never begins, cancels or confirms', async () => {
+  const f = lineFixture();
+  f.replies.read = async () => ({ ok: true, state: 'setup', session: lineSession });
+  await f.controller.start();
+  assert.deepEqual(f.calls, ['read']);
+  assert.deepEqual([f.last().mode, f.last().dialogOpen, f.last().session?.sessionId], ['setup', false, 's1']);
+});
+
+test('line recovery of a committed award shows it without refreshing as a new commit', async () => {
+  const f = lineFixture();
+  f.replies.read = async () => ({ ok: true, state: 'declared', award: lineAward });
+  await f.controller.start();
+  assert.deepEqual([f.last().mode, f.last().award?.award.winnerCount, f.refreshed()], ['declared', 3, 0]);
+});
+
+test('opening begins one setup and opens the dialog; confirming sends the explicit count once', async () => {
+  const f = lineFixture();
+  await f.controller.start();
+  await f.controller.open();
+  assert.deepEqual([f.calls.join(), f.last().mode, f.last().dialogOpen], ['read,begin', 'setup', true]);
+  await f.controller.confirm(' 3 ');
+  assert.deepEqual(f.calls, ['read', 'begin', 'confirm:s1:e1:3']);
+  assert.deepEqual([f.last().mode, f.last().dialogOpen, f.last().award?.award.shareCents, f.refreshed()], ['declared', false, 333, 1]);
+});
+
+test('cancelling writes through cancel only and returns to idle; a failed cancel asks to check', async () => {
+  const f = lineFixture();
+  await f.controller.start();
+  await f.controller.open();
+  await f.controller.cancel();
+  assert.deepEqual([f.calls.at(-1), f.last().mode, f.last().dialogOpen], ['cancel:s1:e1', 'idle', false]);
+  await f.controller.open();
+  f.replies.cancel = async () => lineFailure('stale_session', 'This setup is no longer current. Reopen it.');
+  await f.controller.cancel();
+  assert.deepEqual([f.last().mode, f.last().error], ['uncertain', 'This setup is no longer current. Reopen it.']);
+});
+
+test('invalid winner counts never reach main and keep the dialog open with an inline error', async () => {
+  const f = lineFixture();
+  await f.controller.start();
+  await f.controller.open();
+  for (const bad of ['', '0', '-1', '1.5', 'abc', '1e3', '9007199254740993']) {
+    await f.controller.confirm(bad);
+    assert.equal(f.last().countError, 'Enter a whole number of winners, 1 or more.', bad);
+    assert.deepEqual([f.last().mode, f.last().dialogOpen], ['setup', true]);
+  }
+  assert.deepEqual(f.calls, ['read', 'begin']);
+  await f.controller.confirm('9007199254740991');
+  assert.equal(f.calls.at(-1), 'confirm:s1:e1:9007199254740991');
+});
+
+test('an existing setup is adopted through read when begin reports it open', async () => {
+  const f = lineFixture();
+  await f.controller.start();
+  f.replies.begin = async () => lineFailure('setup_active', 'A first-line setup is already open. Reopen it to continue.');
+  f.replies.read = async () => ({ ok: true, state: 'setup', session: lineSession });
+  await f.controller.open();
+  assert.deepEqual([f.calls.join(), f.last().mode, f.last().dialogOpen, f.last().error], ['read,begin,read', 'setup', true, null]);
+});
+
+test('a refused begin reports the main message and stays idle', async () => {
+  const f = lineFixture();
+  await f.controller.start();
+  f.replies.begin = async () => lineFailure('not_available', 'The first line cannot be declared now.');
+  await f.controller.open();
+  assert.deepEqual([f.last().mode, f.last().dialogOpen, f.last().error], ['idle', false, 'The first line cannot be declared now.']);
+});
+
+test('a failed confirm becomes uncertain, never retries, and the next action only reads', async () => {
+  const f = lineFixture();
+  await f.controller.start();
+  await f.controller.open();
+  f.replies.confirm = async () => lineFailure('storage_failure', 'Could not declare the line. Reopen the setup and check the state before trying again.');
+  await f.controller.confirm('2');
+  assert.deepEqual([f.last().mode, f.last().dialogOpen, f.last().award, f.refreshed()], ['uncertain', false, null, 0]);
+  assert.equal(f.calls.filter((call) => call.startsWith('confirm')).length, 1);
+  f.replies.read = async () => ({ ok: true, state: 'setup', session: lineSession });
+  await f.controller.open();
+  assert.deepEqual([f.calls.slice(-1)[0], f.last().mode, f.last().dialogOpen], ['read', 'setup', true]);
+  assert.equal(f.calls.filter((call) => call.startsWith('confirm')).length, 1, 'reading does not confirm again');
+});
+
+test('a thrown confirm or an unreadable acknowledgement is uncertain and recovered as committed by read', async () => {
+  const f = lineFixture();
+  await f.controller.start();
+  await f.controller.open();
+  f.replies.confirm = async () => { throw new Error('ipc'); };
+  await f.controller.confirm('1');
+  assert.deepEqual([f.last().mode, f.last().error], ['uncertain', 'Could not connect to the first-line setup. Check the state and try again.']);
+  f.replies.read = async () => ({ ok: true, state: 'declared', award: lineAward });
+  await f.controller.open();
+  assert.deepEqual([f.last().mode, f.refreshed(), f.calls.filter((call) => call === 'begin').length], ['declared', 1, 1]);
+});
+
+test('malformed main replies fail closed without exposing state', async () => {
+  const f = lineFixture();
+  f.replies.read = async () => ({ ok: true, state: 'declared', award: { eventId: 'e1', award: { winnerCount: 0 } } });
+  await f.controller.start();
+  assert.deepEqual([f.last().mode, f.last().award, f.last().error], ['uncertain', null,
+    'Invalid first-line update. Check the state and try again.']);
+});
+
+test('only one line operation runs at a time', async () => {
+  const f = lineFixture();
+  await f.controller.start();
+  let release!: (value: unknown) => void;
+  f.replies.begin = () => new Promise((resolve) => { release = resolve; });
+  const first = f.controller.open();
+  const second = f.controller.open();
+  assert.equal(f.last().pending, true);
+  release({ ok: true, session: lineSession });
+  await Promise.all([first, second]);
+  assert.equal(f.calls.filter((call) => call === 'begin').length, 1);
+});
+
+test('the dialog is already closed in every render while a confirm or cancel is in flight', async () => {
+  const f = lineFixture();
+  await f.controller.start();
+  await f.controller.open();
+  const seen: boolean[] = [];
+  const confirming = f.controller.confirm('2');
+  seen.push(f.last().pending && f.last().dialogOpen);
+  await confirming;
+  await f.controller.open();
+  const cancelling = f.controller.cancel();
+  seen.push(f.last().pending && f.last().dialogOpen);
+  await cancelling;
+  assert.deepEqual(seen, [false, false]);
+});
