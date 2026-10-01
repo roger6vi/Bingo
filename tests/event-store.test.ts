@@ -1868,3 +1868,124 @@ test('loadLineAward never writes and leaves ordinary reads unchanged', (t) => {
     assert.equal(store.loadPrizes()?.eventId, event.id);
   } finally { store.close(); }
 });
+
+// ---- loadLineDeclarationBaseline: frozen read-only baseline for a future direct first-line declaration (FL-03a1) ----
+const T1 = '2025-01-01T00:00:01.000Z';
+const T2 = '2025-01-01T00:00:02.000Z';
+const T3 = '2025-01-01T00:00:03.000Z';
+
+function openDrawing(t: unknown, line = { amount: 10, lot: '' }) {
+  const path = fixture(t);
+  const store = createEventStore(path);
+  const event = store.createEvent({ name: 'A', date: '2025-01-01', place: 'X' });
+  store.updateEventPrizes(event.id, { line, bingo: { amount: 0, lot: '' } });
+  return { path, store, event };
+}
+
+const dump = (path: string) => {
+  let state: unknown;
+  withDb(path, (db) => {
+    state = ['events', 'phase_audit', 'line_awards', 'event_prizes', 'active_event']
+      .map((table) => db.prepare(`SELECT * FROM ${table}`).all());
+  });
+  return state;
+};
+
+test('loadLineDeclarationBaseline returns one frozen snapshot of the full ordered draw, phase head and line prize', (t) => {
+  const { path, store, event } = openDrawing(t, { amount: 10, lot: 'Jamón' });
+  try {
+    store.update((e) => drawManual(drawManual(e, 7), 42));
+    const baseline = store.loadLineDeclarationBaseline();
+    assert.deepEqual(baseline, { eventId: event.id, calledNumbers: [7, 42], phase: 'drawing', lastTransitionAt: null,
+      auditSequence: 0, linePrize: { amount: 10, lot: 'Jamón' } });
+    assert.ok(Object.isFrozen(baseline) && Object.isFrozen(baseline.calledNumbers) && Object.isFrozen(baseline.linePrize));
+    assert.throws(() => (baseline.calledNumbers as number[]).push(1), TypeError);
+    assert.notEqual(store.loadLineDeclarationBaseline(), baseline);
+    const before = dump(path);
+    store.loadLineDeclarationBaseline();
+    assert.deepEqual(dump(path), before);
+  } finally { store.close(); }
+});
+
+test('the baseline follows every draw, prize edit and phase head, and records the audit length', (t) => {
+  const { store, event } = openDrawing(t);
+  try {
+    const first = store.loadLineDeclarationBaseline();
+    store.update((e) => drawManual(e, 5));
+    assert.deepEqual(store.loadLineDeclarationBaseline().calledNumbers, [5]);
+    store.updateEventPrizes(event.id, { line: { amount: 11, lot: 'Cesta' }, bingo: { amount: 0, lot: '' } });
+    assert.deepEqual(store.loadLineDeclarationBaseline().linePrize, { amount: 11, lot: 'Cesta' });
+    store.transitionPhase('begin_line_check', T1);
+    store.transitionPhase('reject_line_claim', T2);
+    const head = store.loadLineDeclarationBaseline();
+    assert.deepEqual([head.lastTransitionAt, head.auditSequence], [T2, 2]);
+    assert.deepEqual(first.calledNumbers, []);
+  } finally { store.close(); }
+});
+
+test('the baseline reads the active event only', (t) => {
+  const { store, event } = openDrawing(t);
+  try {
+    const other = store.createEvent({ name: 'B', date: '2025-01-02', place: 'Y' });
+    store.update((e) => drawManual(e, 3));
+    assert.deepEqual(store.loadLineDeclarationBaseline().calledNumbers, [3]);
+    store.selectEvent(other.id);
+    const baseline = store.loadLineDeclarationBaseline();
+    assert.deepEqual([baseline.eventId, baseline.calledNumbers], [other.id, []]);
+  } finally { store.close(); }
+});
+
+test('the baseline is ineligible without an event, outside drawing, or with an attached award', (t) => {
+  const path = fixture(t);
+  const store = createEventStore(path);
+  try {
+    assert.throws(() => store.loadLineDeclarationBaseline(), /not eligible|no current event|does not exist/i);
+    store.create();
+    assert.deepEqual(store.loadLineDeclarationBaseline().linePrize, { amount: 0, lot: '' });
+    store.transitionPhase('begin_line_check', T1);
+    assert.throws(() => store.loadLineDeclarationBaseline(), /not eligible/i);
+    store.transitionPhase('declare_line', T2);
+    assert.throws(() => store.loadLineDeclarationBaseline(), /not eligible/i);
+  } finally { store.close(); }
+  const awarded = openDrawing(t);
+  try {
+    awarded.store.transitionPhase('declare_line_directly', T1);
+    insertAward(awarded.path, awarded.event.id);
+    assert.throws(() => awarded.store.loadLineDeclarationBaseline(), /not eligible/i);
+  } finally { awarded.store.close(); }
+});
+
+test('a legacy declaration corrected back to drawing without an award stays eligible', (t) => {
+  const path = fixture(t);
+  const store = createEventStore(path);
+  try {
+    store.create();
+    store.transitionPhase('begin_line_check', T1);
+    store.transitionPhase('declare_line', T2);
+    assert.equal(store.transitionPhase('correct_line_declaration', T3).phase, 'drawing');
+    const baseline = store.loadLineDeclarationBaseline();
+    assert.deepEqual([baseline.phase, baseline.lastTransitionAt, baseline.auditSequence], ['drawing', T3, 3]);
+  } finally { store.close(); }
+});
+
+test('a prior direct declaration audit is ineligible even when corrected back to drawing without an award', (t) => {
+  const { store } = openDrawing(t);
+  try {
+    store.transitionPhase('declare_line_directly', T1);
+    assert.equal(store.transitionPhase('correct_line_declaration', T2).phase, 'drawing');
+    assert.throws(() => store.loadLineDeclarationBaseline(), /not eligible/i);
+  } finally { store.close(); }
+});
+
+test('the baseline snapshot read does not leave a write transaction blocked', (t) => {
+  const { path, store } = openDrawing(t);
+  t.after(() => store.close());
+  store.loadLineDeclarationBaseline();
+  withDb(path, (db) => {
+    db.exec('BEGIN IMMEDIATE');
+    db.exec('ROLLBACK');
+  });
+  assert.throws(() => { store.transitionPhase('begin_line_check', T1); store.loadLineDeclarationBaseline(); }, /not eligible/i);
+  store.transitionPhase('reject_line_claim', T2);
+  assert.equal(store.loadLineDeclarationBaseline().auditSequence, 2);
+});

@@ -632,6 +632,35 @@ function readLineAward(db: DatabaseSync, eventId: string, audit: PhaseAuditEntry
   });
 }
 
+export type LineDeclarationBaseline = {
+  readonly eventId: string;
+  readonly calledNumbers: readonly number[];
+  readonly phase: 'drawing';
+  readonly lastTransitionAt: string | null;
+  readonly auditSequence: number;
+  readonly linePrize: { readonly amount: number; readonly lot: string };
+};
+
+// The store-authoritative core of a future direct first-line declaration, read from one consistent snapshot. Only
+// a drawing event without an award qualifies. A legacy declaration later corrected back to drawing left no durable
+// award, so it stays eligible; any prior direct declaration audit, even corrected, refuses.
+function readLineDeclarationBaseline(db: DatabaseSync): LineDeclarationBaseline {
+  const id = readActiveEventId(db);
+  const event = id === null ? null : readEvent(db);
+  if (id === null || event === null) throw new Error('Line declaration not eligible: no current event');
+  const audit = replayAudit(db, id);
+  if (event.phase !== 'drawing' || readLineAward(db, id, audit) !== null ||
+      audit.some((entry) => entry.kind === 'declare_line_directly')) {
+    throw new Error('Line declaration not eligible: the line is already declared');
+  }
+  const { line } = readPrizes(db, id);
+  return Object.freeze({
+    eventId: id, calledNumbers: Object.freeze([...event.calledNumbers]), phase: 'drawing' as const,
+    lastTransitionAt: event.lastTransitionAt, auditSequence: audit.length,
+    linePrize: Object.freeze({ amount: line.amount, lot: line.lot }),
+  });
+}
+
 export function createEventStore(path: string) {
   if (!existed(path)) {
     // Initialize off-path: the target must never expose SQLite's transient version-0 file.
@@ -896,6 +925,10 @@ export function createEventStore(path: string) {
         readEvent(db);
         return readLineAward(db, id, replayAudit(db, id));
       });
+    },
+    // Frozen store-authoritative baseline the operator confirms before declaring the first line.
+    loadLineDeclarationBaseline(): LineDeclarationBaseline {
+      return readSnapshot(() => readLineDeclarationBaseline(db));
     },
     // Replaces only the active event's prizes; like updateEventMeta, a stale id never reaches another event.
     // Returns the values read back inside the committing transaction.
