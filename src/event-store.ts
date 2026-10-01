@@ -7,10 +7,10 @@ import { DEFAULT_THEME, isThemeId, THEME_IDS, type ThemeId } from './theme.ts';
 import { MAX_PRIZE_AMOUNT, MAX_PRIZE_LOT, NO_PRIZES, normalizePrizes, validAmount, validLot,
   type EventPrizes } from './event-prizes.ts';
 
-// Event prizes (#71) are the only v6 change and live in their own table, so the v6 step is one
-// self-contained migration chained after the v5 theme allow-list step. If another change claims this
-// version first, renumber VERSION and chain migratePrizes after that change's step.
-const VERSION = 6;
+// Event prizes (#71) are the only v6 change and the first-line award table (#26/#28) is the only v7
+// change. Each lives in its own table, so each step is one self-contained migration chained after the
+// v5 theme allow-list step. If another change claims a version first, renumber and re-chain.
+const VERSION = 7;
 export const EVENT_SCHEMA_VERSION = VERSION;
 const phases = ['drawing', 'checking_line', 'line_declared', 'checking_bingo', 'bingo_declared', 'finished'];
 const phaseCheck = `CHECK (phase IN (${phases.map((phase) => `'${phase}'`).join(', ')}))`;
@@ -76,6 +76,38 @@ const prizesTable = `CREATE TABLE event_prizes (
   event_id TEXT PRIMARY KEY REFERENCES events(id),
   ${prizeColumns('line')},
   ${prizeColumns('bingo')}
+)`;
+const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
+const MAX_AWARD_CENTS = 10_000_000;
+const integerRange = (name: string, low: number, high: number) =>
+  `typeof(${name}) = 'integer' AND ${name} BETWEEN ${low} AND ${high}`;
+const integerColumn = (name: string, low: number, high: number) => `CHECK (${integerRange(name, low, high)})`;
+// Optional first-line award, at most one per event, written later together with its audit row. Shares
+// use integer division so the arithmetic cannot overflow for any safe winner count; the remainder is
+// never assigned. Only a nonempty lot shared by 2+ winners needs a tie; presentation times are epoch ms.
+const lineAwardsTable = `CREATE TABLE line_awards (
+  event_id TEXT NOT NULL PRIMARY KEY REFERENCES events(id),
+  audit_sequence INTEGER NOT NULL ${integerColumn('audit_sequence', 1, MAX_SAFE_INTEGER)},
+  winner_count INTEGER NOT NULL ${integerColumn('winner_count', 1, MAX_SAFE_INTEGER)},
+  total_cents INTEGER NOT NULL ${integerColumn('total_cents', 0, MAX_AWARD_CENTS)},
+  share_cents INTEGER NOT NULL ${integerColumn('share_cents', 0, MAX_AWARD_CENTS)},
+  remainder_cents INTEGER NOT NULL ${integerColumn('remainder_cents', 0, MAX_AWARD_CENTS)},
+  lot TEXT NOT NULL CHECK (typeof(lot) = 'text' AND lot = trim(lot) AND length(lot) <= 120),
+  lot_resolution TEXT NOT NULL CHECK (lot_resolution IN ('not_required', 'pending', 'resolved')),
+  presentation_id TEXT NOT NULL UNIQUE CHECK (typeof(presentation_id) = 'text' AND length(trim(presentation_id)) > 0),
+  presentation_status TEXT NOT NULL CHECK (presentation_status IN ('pending', 'failed', 'started', 'completed')),
+  presentation_started_at INTEGER CHECK (presentation_started_at IS NULL OR
+    ${integerRange('presentation_started_at', 0, MAX_SAFE_INTEGER)}),
+  presentation_deadline INTEGER CHECK (presentation_deadline IS NULL OR
+    ${integerRange('presentation_deadline', 0, MAX_SAFE_INTEGER)}),
+  CHECK (share_cents = total_cents / winner_count AND remainder_cents = total_cents % winner_count),
+  CHECK (CASE WHEN lot = '' OR winner_count < 2 THEN lot_resolution = 'not_required'
+    ELSE lot_resolution IN ('pending', 'resolved') END),
+  CHECK (CASE WHEN presentation_status IN ('pending', 'failed')
+    THEN presentation_started_at IS NULL AND presentation_deadline IS NULL
+    ELSE presentation_started_at IS NOT NULL AND presentation_deadline IS NOT NULL AND
+      presentation_deadline > presentation_started_at END),
+  FOREIGN KEY (event_id, audit_sequence) REFERENCES phase_audit(event_id, sequence)
 )`;
 const PLACEHOLDER_NAME = 'Evento actual';
 const PLACEHOLDER_PLACE = 'Sin especificar';
@@ -503,6 +535,19 @@ function validatePrizesSchema(db: DatabaseSync): void {
   }
 }
 
+// v6 → v7: add the empty line_awards table. Older games, including declared ones, keep no award.
+function migrateLineAwards(db: DatabaseSync): void {
+  db.exec(lineAwardsTable);
+}
+
+function validateLineAwardsSchema(db: DatabaseSync): void {
+  const normalize = (sql: string) => sql.replace(/[\s"`\[\]]/g, '').toUpperCase();
+  const sql = db.prepare("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'line_awards'").get()?.sql;
+  if (typeof sql !== 'string' || normalize(sql) !== normalize(lineAwardsTable)) {
+    throw new Error('Invalid event schema: line_awards table missing or malformed');
+  }
+}
+
 // Fails closed on values that bypassed the CHECKs, like the theme; startup never reads prizes.
 function readPrizes(db: DatabaseSync, eventId: string): EventPrizes {
   const rows = db.prepare(`SELECT lineAmount, lineLot, bingoAmount, bingoLot FROM event_prizes
@@ -532,6 +577,7 @@ export function createEventStore(path: string) {
           candidate.exec(auditTableV4);
           candidate.exec(auditGuards.join(';'));
           candidate.exec(prizesTable);
+          candidate.exec(lineAwardsTable);
           candidate.exec(`PRAGMA user_version = ${VERSION}; COMMIT`);
         } catch (error) {
           try { candidate.exec('ROLLBACK'); } catch { /* Preserve the original error. */ }
@@ -554,12 +600,13 @@ export function createEventStore(path: string) {
     db.exec('BEGIN');
     try {
       const observed = db.prepare('PRAGMA user_version').get()?.user_version;
-      if (observed !== 1 && observed !== 2 && observed !== 3 && observed !== 4 && observed !== 5 && observed !== VERSION) {
+      if (observed !== 1 && observed !== 2 && observed !== 3 && observed !== 4 && observed !== 5 && observed !== 6 && observed !== VERSION) {
         throw new Error(`Unsupported event schema version: ${String(observed)}`);
       }
       if (observed === VERSION) {
         validateV4(db);
         validatePrizesSchema(db);
+        validateLineAwardsSchema(db);
         readEvent(db);
         db.exec('COMMIT');
       } else {
@@ -592,19 +639,24 @@ export function createEventStore(path: string) {
           validateV3(db);
           migrateV3ToV4(db);
           db.exec('PRAGMA user_version = 4');
-        } else if (version !== 4 && version !== 5 && version !== VERSION) {
+        } else if (version !== 4 && version !== 5 && version !== 6 && version !== VERSION) {
           throw new Error(`Unsupported event schema version: ${String(version)}`);
         }
         if (version === 1 || version === 2 || version === 3 || version === 4) {
           migrateThemeAllowList(db);
           db.exec('PRAGMA user_version = 5');
         }
-        if (version !== VERSION) {
+        if (version === 1 || version === 2 || version === 3 || version === 4 || version === 5) {
           migratePrizes(db);
+          db.exec('PRAGMA user_version = 6');
+        }
+        if (version !== VERSION) {
+          migrateLineAwards(db);
           db.exec(`PRAGMA user_version = ${VERSION}`);
         }
         validateV4(db);
         validatePrizesSchema(db);
+        validateLineAwardsSchema(db);
         readEvent(db);
         db.exec('COMMIT');
       }

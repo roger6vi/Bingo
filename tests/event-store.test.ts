@@ -1306,17 +1306,17 @@ const prizes = (lineAmount: number, lineLot: string, bingoAmount: number, bingoL
   ({ line: { amount: lineAmount, lot: lineLot }, bingo: { amount: bingoAmount, lot: bingoLot } });
 const NONE = prizes(0, '', 0, '');
 
-// Rebuilds a v5 database from a fresh one: the prize table is the only v6 addition.
+// Rebuilds a v5 database from a fresh one: the prize and line award tables are the only later additions.
 function v5(path: string) {
   const store = createEventStore(path);
   try {
     store.createEvent({ name: 'A', date: '2025-01-01', place: 'X' });
     store.update((event) => drawManual(event, 7));
   } finally { store.close(); }
-  withDb(path, (db) => db.exec('DROP TABLE event_prizes; PRAGMA user_version = 5'));
+  withDb(path, (db) => db.exec('DROP TABLE line_awards; DROP TABLE event_prizes; PRAGMA user_version = 5'));
 }
 
-test('v5 migrates to v6 once, adding an empty event_prizes table and keeping every event unchanged', (t) => {
+test('v5 migrates through v6 to v7 once, adding empty event_prizes and line_awards tables and keeping every event unchanged', (t) => {
   const path = fixture(t);
   v5(path);
   let before: unknown;
@@ -1330,12 +1330,13 @@ test('v5 migrates to v6 once, adding an empty event_prizes table and keeping eve
     assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, EVENT_SCHEMA_VERSION);
     assert.deepEqual(db.prepare('SELECT * FROM events').all(), before);
     assert.equal(db.prepare('SELECT count(*) AS count FROM event_prizes').get()?.count, 0);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM line_awards').get()?.count, 0);
   });
   createEventStore(path).close();
   withDb(path, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, EVENT_SCHEMA_VERSION));
 });
 
-test('a failed v5 to v6 migration leaves the v5 database unchanged', (t) => {
+test('a failed v5 prize migration leaves the v5 database unchanged', (t) => {
   const path = fixture(t);
   v5(path);
   // An object already named event_prizes makes the CREATE TABLE fail inside the migration transaction.
@@ -1348,7 +1349,7 @@ test('a failed v5 to v6 migration leaves the v5 database unchanged', (t) => {
   });
 });
 
-test('a v1/v2/v3 database migrates in one transaction all the way to v6 with an empty event_prizes table', (t) => {
+test('a v1/v2/v3 database migrates in one transaction all the way to the current schema with empty event_prizes', (t) => {
   const path = fixture(t);
   v3(path);
   const store = createEventStore(path);
@@ -1359,7 +1360,7 @@ test('a v1/v2/v3 database migrates in one transaction all the way to v6 with an 
   });
 });
 
-test('v6 rejects a missing or malformed event_prizes table without writing', (t) => {
+test('the current schema rejects a missing or malformed event_prizes table without writing', (t) => {
   const path = fixture(t);
   const directory = fs.realpathSync(join(path, '..'));
   for (const [name, sql] of [
@@ -1489,4 +1490,179 @@ test('updateEventPrizes fails atomically under a concurrent writer lock', (t) =>
     finally { db.exec('ROLLBACK'); }
   });
   assert.deepEqual(store.loadPrizes()?.prizes, NONE);
+});
+
+// A v6 database exactly as v6 wrote it: the current schema without the line award table.
+function v6(path: string) {
+  const store = createEventStore(path);
+  try {
+    const event = store.createEvent({ name: 'A', date: '2025-01-01', place: 'X' });
+    store.createEvent({ name: 'B', date: '2025-01-02', place: 'Y' });
+    store.update((e) => drawManual(e, 7));
+    store.transitionPhase('begin_line_check', '2025-01-01T00:00:01.000Z');
+    store.updateEventPrizes(event.id, prizes(150, 'Jamón', 20, ''));
+  } finally { store.close(); }
+  withDb(path, (db) => db.exec('DROP TABLE line_awards; PRAGMA user_version = 6'));
+}
+
+const lineAwards = (db: DatabaseSync) => db.prepare('SELECT count(*) AS count FROM line_awards').get()?.count;
+
+test('a fresh database is schema v7 with an empty line_awards table', (t) => {
+  const path = fixture(t);
+  createEventStore(path).close();
+  assert.equal(EVENT_SCHEMA_VERSION, 7);
+  withDb(path, (db) => {
+    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 7);
+    assert.equal(lineAwards(db), 0);
+  });
+});
+
+test('v6 migrates to v7 once, keeping prizes, audit, history and the active drawing event; no awards appear', (t) => {
+  const path = fixture(t);
+  v6(path);
+  let before: unknown;
+  withDb(path, (db) => {
+    before = [db.prepare('SELECT * FROM events').all(), db.prepare('SELECT * FROM event_prizes').all(),
+      db.prepare('SELECT * FROM phase_audit').all(), db.prepare('SELECT * FROM active_event').all()];
+  });
+  const store = createEventStore(path);
+  try {
+    assert.deepEqual(store.load()?.calledNumbers, [7]);
+    assert.equal(store.load()?.phase, 'checking_line');
+    assert.equal(store.readAudit().length, 1);
+    assert.deepEqual(store.loadPrizes()?.prizes, prizes(150, 'Jamón', 20, ''));
+  } finally { store.close(); }
+  withDb(path, (db) => {
+    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 7);
+    assert.deepEqual([db.prepare('SELECT * FROM events').all(), db.prepare('SELECT * FROM event_prizes').all(),
+      db.prepare('SELECT * FROM phase_audit').all(), db.prepare('SELECT * FROM active_event').all()], before);
+    assert.equal(lineAwards(db), 0);
+  });
+  createEventStore(path).close();
+  withDb(path, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 7));
+});
+
+test('every older schema reaches exactly the fresh v7 schema', (t) => {
+  const fresh = fixture(t);
+  createEventStore(fresh).close();
+  let expected: unknown;
+  withDb(fresh, (db) => { expected = schemaOf(db); });
+  const sources: Record<string, (path: string) => void> = {
+    v1: (path) => v1(path), v2: (path) => v2(path), v3: (path) => v3(path),
+    v4: (path) => { v4(path, { active: 'pixel-classic', other: 'high-contrast' }); }, v5, v6,
+  };
+  for (const [name, build] of Object.entries(sources)) {
+    const path = fixture(t);
+    build(path);
+    createEventStore(path).close();
+    withDb(path, (db) => {
+      assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 7, name);
+      assert.deepEqual(schemaOf(db), expected, name);
+    });
+  }
+});
+
+test('a failed v6 to v7 migration leaves the v6 database unchanged', (t) => {
+  const path = fixture(t);
+  v6(path);
+  // An object already named line_awards makes the CREATE TABLE fail inside the migration transaction.
+  withDb(path, (db) => db.exec('CREATE VIEW line_awards AS SELECT 1'));
+  assert.throws(() => createEventStore(path), /line_awards|already exists/i);
+  withDb(path, (db) => {
+    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 6);
+    assert.equal(db.prepare("SELECT type FROM sqlite_schema WHERE name = 'line_awards'").get()?.type, 'view');
+    assert.equal(db.prepare('SELECT count(*) AS count FROM event_prizes').get()?.count, 1);
+  });
+});
+
+test('v7 rejects a missing or unconstrained line_awards table without writing', (t) => {
+  const directory = fs.realpathSync(join(fixture(t), '..'));
+  for (const [name, sql] of [
+    ['missing', null],
+    ['unconstrained', 'CREATE TABLE line_awards (event_id TEXT PRIMARY KEY, audit_sequence INTEGER, winner_count INTEGER)'],
+  ] as const) {
+    const file = join(directory, `awards-${name}.sqlite`);
+    createEventStore(file).close();
+    withDb(file, (db) => {
+      db.exec('DROP TABLE line_awards');
+      if (sql !== null) db.exec(sql);
+    });
+    assert.throws(() => createEventStore(file), /invalid event schema: line_awards/i, name);
+    withDb(file, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 7));
+  }
+});
+
+test('the line_awards table enforces its row constraints on directly written rows', (t) => {
+  const path = fixture(t);
+  const store = createEventStore(path);
+  const event = store.createEvent({ name: 'A', date: '2025-01-01', place: 'X' });
+  store.transitionPhase('begin_line_check', '2025-01-01T00:00:01.000Z');
+  store.close();
+  const base = { event_id: event.id, audit_sequence: 1, winner_count: 3, total_cents: 1000, share_cents: 333,
+    remainder_cents: 1, lot: '', lot_resolution: 'not_required', presentation_id: 'p-1',
+    presentation_status: 'pending', presentation_started_at: null, presentation_deadline: null };
+  const MAX = Number.MAX_SAFE_INTEGER;
+  const started = { presentation_status: 'started', presentation_started_at: 1000, presentation_deadline: 5000 };
+  const lot = { lot: 'Jamón', lot_resolution: 'pending' };
+  const invalid: Record<string, Record<string, unknown>> = {
+    'zero winners': { winner_count: 0, share_cents: 1000, remainder_cents: 0 },
+    'fractional winners': { winner_count: 2.5 },
+    'text winners': { winner_count: 'three' },
+    'total above maximum': { total_cents: 10_000_001 },
+    'negative total': { total_cents: -1, share_cents: 0, remainder_cents: 0 },
+    'wrong share': { share_cents: 334 },
+    'wrong remainder': { remainder_cents: 2 },
+    'assigned remainder': { share_cents: 334, remainder_cents: 0 },
+    'untrimmed lot': { lot: ' Jamón ', lot_resolution: 'pending' },
+    'overlong lot': { lot: 'l'.repeat(121), lot_resolution: 'pending' },
+    'unknown resolution': { lot_resolution: 'maybe' },
+    'lot without pending tie': { lot: 'Jamón' },
+    'pending without lot': { lot_resolution: 'pending' },
+    'pending lone winner': { ...lot, winner_count: 1, total_cents: 1000, share_cents: 1000, remainder_cents: 0 },
+    'blank presentation id': { presentation_id: '   ' },
+    'unknown status': { presentation_status: 'running' },
+    'pending with times': { presentation_started_at: 1000, presentation_deadline: 5000 },
+    'started without times': { presentation_status: 'started' },
+    'started with one time': { ...started, presentation_deadline: null },
+    'deadline not after start': { ...started, presentation_deadline: 1000 },
+    'negative start': { ...started, presentation_started_at: -1 },
+    'unsafe deadline': { ...started, presentation_deadline: MAX + 2 },
+    'fractional time': { ...started, presentation_started_at: 1000.5 },
+    'failed with times': { presentation_status: 'failed', presentation_started_at: 1000, presentation_deadline: 5000 },
+    'missing audit row': { audit_sequence: 2 },
+    'unknown event': { event_id: 'missing' },
+    // A NULL key would bypass both foreign keys, so even an otherwise valid row must be rejected.
+    'null event': { event_id: null },
+    'null event with unknown audit row': { event_id: null, audit_sequence: 99 },
+  };
+  withDb(path, (db) => {
+    db.exec('PRAGMA foreign_keys = ON');
+    const insert = (row: Record<string, unknown>) => db.prepare(`INSERT INTO line_awards
+      (event_id, audit_sequence, winner_count, total_cents, share_cents, remainder_cents, lot, lot_resolution,
+       presentation_id, presentation_status, presentation_started_at, presentation_deadline)
+      VALUES (:event_id, :audit_sequence, :winner_count, :total_cents, :share_cents, :remainder_cents, :lot,
+       :lot_resolution, :presentation_id, :presentation_status, :presentation_started_at, :presentation_deadline)`)
+      .run(row as never);
+    for (const [name, change] of Object.entries(invalid)) {
+      assert.throws(() => insert({ ...base, ...change }), /constraint|CHECK|FOREIGN/i, name);
+    }
+    assert.equal(lineAwards(db), 0);
+    // Boundary values and every status/lot shape the later writer may need are accepted, one row per event.
+    for (const [name, change] of Object.entries({
+      'maximum winners': { winner_count: MAX, share_cents: 0, remainder_cents: 1000 },
+      'pending tie': lot,
+      'resolved tie': { ...lot, lot_resolution: 'resolved' },
+      'failed': { presentation_status: 'failed' },
+      'completed': { ...started, presentation_status: 'completed' },
+    })) {
+      insert({ ...base, ...change });
+      db.prepare('DELETE FROM line_awards').run();
+      assert.equal(lineAwards(db), 0, name);
+    }
+    insert(base);
+    assert.throws(() => insert({ ...base, presentation_id: 'p-2' }), /constraint|UNIQUE|PRIMARY/i, 'second award');
+    db.prepare("INSERT INTO events (id, name, date, place, history, createdAt) VALUES ('e2', 'B', '2025-01-02', 'Y', '[]', '2025')").run();
+    db.prepare("INSERT INTO phase_audit (event_id, sequence, transitionAt, kind, from_phase, to_phase) VALUES ('e2', 1, '2025', 'begin_line_check', 'drawing', 'checking_line')").run();
+    assert.throws(() => insert({ ...base, event_id: 'e2' }), /constraint|UNIQUE/i, 'reused presentation id');
+  });
 });
