@@ -2299,3 +2299,211 @@ test('an injected failure after the audit row or during award readback rolls eve
     } finally { store.close(); }
   }
 });
+
+// ---- durable line presentation lifecycle (FL-03b): explicit start/fail/retry/complete, no timers or replay ----
+function declared(t: unknown, winners = 3, line = { amount: 10, lot: '' }) {
+  const opened = openDrawing(t, line);
+  const award = opened.store.declareLineDirectly(opened.store.loadLineDeclarationBaseline(), winners, T1);
+  return { ...opened, award, id: award.presentation.id };
+}
+const presentationRow = (path: string) => {
+  let row: unknown;
+  withDb(path, (db) => { row = db.prepare(`SELECT presentation_id, presentation_status, presentation_started_at,
+    presentation_deadline FROM line_awards`).get(); });
+  return { ...(row as object) };
+};
+// Everything the presentation must never touch: all tables except line_awards, plus the frozen award columns.
+const frozenState = (path: string) => {
+  let award: unknown;
+  withDb(path, (db) => { award = db.prepare(`SELECT event_id, audit_sequence, winner_count, total_cents, share_cents,
+    remainder_cents, lot, lot_resolution FROM line_awards`).get(); });
+  return JSON.stringify([(dump(path) as unknown[]).filter((_, index) => index !== 2), award]);
+};
+const presentationStatus = (path: string) => (presentationRow(path) as { presentation_status: string }).presentation_status;
+
+test('the presentation runs pending -> failed -> manual retry (new id) -> started -> completed, one explicit step each', (t) => {
+  const { path, store, event, award, id } = declared(t);
+  try {
+    const frozen = frozenState(path);
+    const failed = store.failLinePresentation(id);
+    assert.deepEqual(failed, { ...award, presentation: { id, status: 'failed', startedAt: null, deadlineAt: null } });
+    assert.ok(Object.isFrozen(failed) && Object.isFrozen(failed.award) && Object.isFrozen(failed.presentation));
+    const retried = store.retryLinePresentation(id);
+    assert.equal(retried.presentation.status, 'pending');
+    assert.match(retried.presentation.id, /^[0-9a-f-]{36}$/);
+    assert.notEqual(retried.presentation.id, id);
+    assert.deepEqual([retried.presentation.startedAt, retried.presentation.deadlineAt], [null, null]);
+    assert.throws(() => store.startLinePresentation(id, 1000), /current|presentation/i, 'old id is stale');
+    const started = store.startLinePresentation(retried.presentation.id, 1000);
+    assert.deepEqual(started.presentation, { id: retried.presentation.id, status: 'started', startedAt: 1000, deadlineAt: 5000 });
+    assert.throws(() => store.update((e) => drawManual(e, 1)), /presentation/i);
+    const done = store.completeLinePresentation(retried.presentation.id, 5000);
+    assert.deepEqual(done, { eventId: event.id, award: award.award,
+      presentation: { id: retried.presentation.id, status: 'completed', startedAt: 1000, deadlineAt: 5000 } });
+    assert.ok(Object.isFrozen(done) && Object.isFrozen(done.presentation));
+    assert.deepEqual(store.loadLineAward(), done);
+    assert.equal(frozenState(path), frozen);
+    store.update((e) => drawManual(e, 1));
+  } finally { store.close(); }
+});
+
+test('start accepts zero and the largest safe start whose deadline is safe, rejecting every other time', (t) => {
+  const MAX = Number.MAX_SAFE_INTEGER;
+  for (const [at, deadline] of [[0, 4000], [MAX - 4000, MAX]]) {
+    const { store, id } = declared(t);
+    try { assert.deepEqual([store.startLinePresentation(id, at).presentation.deadlineAt], [deadline]); }
+    finally { store.close(); }
+  }
+  const { path, store, id } = declared(t);
+  try {
+    const before = JSON.stringify(dump(path));
+    for (const bad of [-1, MAX - 3999, MAX, MAX + 1, 1.5, NaN, Infinity, '1000', 1000n, null, undefined, {}]) {
+      assert.throws(() => store.startLinePresentation(id, bad as never), /start|time|safe/i, String(bad));
+    }
+    assert.equal(JSON.stringify(dump(path)), before);
+    assert.equal(store.startLinePresentation(id, 7).presentation.deadlineAt, 4007);
+  } finally { store.close(); }
+});
+
+test('complete needs a started presentation and a safe now at or after the persisted deadline', (t) => {
+  const { path, store, id } = declared(t);
+  try {
+    store.startLinePresentation(id, 1000);
+    const before = JSON.stringify(dump(path));
+    for (const bad of [4999, 0, -1, 5000.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, '5000', 5000n, null, undefined]) {
+      assert.throws(() => store.completeLinePresentation(id, bad as never), /now|time|deadline|safe/i, String(bad));
+    }
+    assert.equal(JSON.stringify(dump(path)), before);
+    assert.equal(store.completeLinePresentation(id, 5000).presentation.status, 'completed');
+  } finally { store.close(); }
+});
+
+test('a started presentation past its deadline stays started after reopening and is never completed by reads', (t) => {
+  const { path, store, id } = declared(t);
+  store.startLinePresentation(id, 1000);
+  store.close();
+  const reopened = createEventStore(path);
+  try {
+    const before = JSON.stringify(dump(path));
+    assert.equal(reopened.loadLineAward()?.presentation.status, 'started');
+    assert.throws(() => reopened.update((e) => drawManual(e, 1)), /presentation/i);
+    assert.equal(JSON.stringify(dump(path)), before);
+    assert.equal(reopened.completeLinePresentation(id, Date.now()).presentation.status, 'completed');
+  } finally { reopened.close(); }
+});
+
+test('each command accepts exactly its source status and refuses every other status, id and replay unchanged', (t) => {
+  const run: Record<string, (store: ReturnType<typeof createEventStore>, id: string) => unknown> = {
+    start: (store, id) => store.startLinePresentation(id, 1000),
+    fail: (store, id) => store.failLinePresentation(id),
+    retry: (store, id) => store.retryLinePresentation(id),
+    complete: (store, id) => store.completeLinePresentation(id, 5000),
+  };
+  const reach: Record<string, string[]> = { pending: [], failed: ['fail'], started: ['start'], completed: ['start', 'complete'] };
+  const legal: Record<string, string> = { pending: 'start', failed: 'retry', started: 'complete', completed: '' };
+  for (const [status, steps] of Object.entries(reach)) {
+    const { path, store, id: first } = declared(t);
+    try {
+      let id = first;
+      for (const step of steps) run[step](store, id);
+      assert.equal(presentationStatus(path), status);
+      const before = JSON.stringify(dump(path));
+      for (const command of Object.keys(run).filter((name) => name !== legal[status] && !(status === 'pending' && name === 'fail'))) {
+        assert.throws(() => run[command](store, id), /transition|presentation/i, `${command} on ${status}`);
+        assert.equal(JSON.stringify(dump(path)), before, `${command} on ${status}`);
+      }
+      if (status === 'pending') assert.equal(run.fail(store, id) !== undefined, true);
+    } finally { store.close(); }
+  }
+});
+
+test('commands need the exact id of the active event\'s award and never coerce it', (t) => {
+  const { path, store, event, id } = declared(t);
+  try {
+    for (const bad of [undefined, null, 7, '', ' ', `${id} `, id.toUpperCase(), 'unknown', { toString: () => id }, [id]]) {
+      for (const call of [() => store.startLinePresentation(bad as never, 1000), () => store.failLinePresentation(bad as never),
+        () => store.retryLinePresentation(bad as never), () => store.completeLinePresentation(bad as never, 5000)]) {
+        assert.throws(call, /presentation|id/i, String(bad));
+      }
+    }
+    // Another active event never accepts this event's id; an event without an award (or a legacy one) has nothing to update.
+    const other = store.createEvent({ name: 'B', date: '2025-01-02', place: 'Y' });
+    store.selectEvent(other.id);
+    assert.throws(() => store.startLinePresentation(id, 1000), /presentation|award/i, 'no award');
+    rawDirect(path, other.id);
+    const legacy = JSON.stringify(dump(path));
+    assert.throws(() => store.failLinePresentation(id), /presentation|award/i, 'legacy declared');
+    assert.equal(JSON.stringify(dump(path)), legacy);
+    store.selectEvent(event.id);
+    assert.equal(store.failLinePresentation(id).presentation.status, 'failed');
+  } finally { store.close(); }
+});
+
+test('a corrupt stored award fails every command closed and changes nothing', (t) => {
+  const { path, store, id } = declared(t);
+  try {
+    store.startLinePresentation(id, 1000);
+    withDb(path, (db) => db.exec('PRAGMA ignore_check_constraints = 1; UPDATE line_awards SET share_cents = 1'));
+    const before = JSON.stringify(dump(path));
+    assert.throws(() => store.completeLinePresentation(id, 5000), /invalid stored line award/i);
+    assert.equal(JSON.stringify(dump(path)), before);
+  } finally { store.close(); }
+});
+
+test('an injected update or readback failure rolls the row back exactly and a valid retry then succeeds', (t) => {
+  const triggers: Array<[string, string]> = [
+    ['update failure', `CREATE TRIGGER fail_presentation BEFORE UPDATE ON line_awards
+      BEGIN SELECT RAISE(ABORT, 'injected presentation failure'); END`],
+    ['readback corruption', `CREATE TRIGGER corrupt_presentation AFTER UPDATE ON line_awards
+      BEGIN UPDATE line_awards SET presentation_id = 'tampered' WHERE event_id = NEW.event_id; END`],
+  ];
+  for (const [name, sql] of triggers) {
+    const { path, store, id } = declared(t);
+    try {
+      const before = JSON.stringify(dump(path));
+      withDb(path, (db) => db.exec(sql));
+      assert.throws(() => store.startLinePresentation(id, 1000), /injected|presentation|invalid/i, name);
+      assert.equal(JSON.stringify(dump(path)), before, name);
+      withDb(path, (db) => db.exec('DROP TRIGGER IF EXISTS fail_presentation; DROP TRIGGER IF EXISTS corrupt_presentation'));
+      assert.equal(store.startLinePresentation(id, 1000).presentation.status, 'started', name);
+      assert.equal(store.completeLinePresentation(id, 5000).presentation.status, 'completed', name);
+    } finally { store.close(); }
+  }
+});
+
+test('another connection that changed the presentation makes this connection\'s old id and status stale', (t) => {
+  const { path, store, id } = declared(t);
+  const second = createEventStore(path);
+  try {
+    second.failLinePresentation(id);
+    const fresh = second.retryLinePresentation(id).presentation.id;
+    const before = JSON.stringify(dump(path));
+    assert.throws(() => store.startLinePresentation(id, 1000), /presentation|current/i, 'stale id');
+    assert.throws(() => store.failLinePresentation(id), /presentation|current/i, 'stale id');
+    assert.equal(JSON.stringify(dump(path)), before);
+    assert.equal(store.startLinePresentation(fresh, 1000).presentation.status, 'started');
+    assert.throws(() => second.failLinePresentation(fresh), /transition|presentation/i, 'started cannot fail');
+  } finally { second.close(); store.close(); }
+});
+
+test('a completed presentation unlocks draws while a tied lot still blocks bingo until resolved; cash remainder never does', (t) => {
+  const tie = declared(t, 3, { amount: 10, lot: 'Jamón' });
+  try {
+    tie.store.startLinePresentation(tie.id, 1000);
+    tie.store.completeLinePresentation(tie.id, 5000);
+    assert.equal(tie.store.loadLineAward()?.award.lotResolution, 'pending');
+    tie.store.update((e) => drawManual(e, 3));
+    const before = JSON.stringify(dump(tie.path));
+    assert.throws(() => tie.store.transitionPhase('begin_bingo_check', T2), /delivery|lot|bingo/i);
+    assert.equal(JSON.stringify(dump(tie.path)), before);
+    setAward(tie.path, "lot_resolution = 'resolved'"); // Raw stand-in: no lot-resolution API exists yet (#61).
+    assert.equal(tie.store.transitionPhase('begin_bingo_check', T2).phase, 'checking_bingo');
+  } finally { tie.store.close(); }
+  const cash = declared(t, 3);
+  try {
+    assert.equal(cash.award.award.remainderCents, 1);
+    cash.store.startLinePresentation(cash.id, 1000);
+    cash.store.completeLinePresentation(cash.id, 5000);
+    assert.equal(cash.store.transitionPhase('begin_bingo_check', T2).phase, 'checking_bingo');
+  } finally { cash.store.close(); }
+});

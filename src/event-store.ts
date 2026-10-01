@@ -4,7 +4,8 @@ import { DatabaseSync } from 'node:sqlite';
 import type { EventSnapshot } from './event-core';
 import { transitionPhase, type GamePhase, type PhaseTransitionIntent } from './game-phase.ts';
 import { DEFAULT_THEME, isThemeId, THEME_IDS, type ThemeId } from './theme.ts';
-import { createLineAward, isLineDeliveryResolved, type LineAward, type LinePresentationStatus } from './line-award.ts';
+import { createLineAward, isLineDeliveryResolved, transitionLinePresentation, type LineAward,
+  type LinePresentationIntent, type LinePresentationStatus } from './line-award.ts';
 import { MAX_PRIZE_AMOUNT, MAX_PRIZE_LOT, NO_PRIZES, normalizePrizes, validAmount, validLot,
   type EventPrizes } from './event-prizes.ts';
 
@@ -80,6 +81,7 @@ const prizesTable = `CREATE TABLE event_prizes (
 )`;
 const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
 const MAX_AWARD_CENTS = 10_000_000;
+const LINE_PRESENTATION_MS = 4000;
 const integerRange = (name: string, low: number, high: number) =>
   `typeof(${name}) = 'integer' AND ${name} BETWEEN ${low} AND ${high}`;
 const integerColumn = (name: string, low: number, high: number) => `CHECK (${integerRange(name, low, high)})`;
@@ -818,6 +820,38 @@ export function createEventStore(path: string) {
     }
   }
 
+  // One explicit presentation step on the active event's award. Everything is checked under the writer lock: the id
+  // must be the current one and the pure graph must allow the step. The compare-and-set names the id and source
+  // status, must change exactly one row, and the readback must equal the intended state before COMMIT.
+  function stepPresentation(id: unknown, intent: LinePresentationIntent,
+      plan: (current: StoredLineAward['presentation']) => { startedAt: number | null; deadlineAt: number | null }) {
+    if (typeof id !== 'string' || id.trim() === '') throw new Error('Invalid line presentation id');
+    return transaction(() => {
+      const eventId = readActiveEventId(db);
+      if (eventId === null) throw new Error('Current event does not exist');
+      readEvent(db);
+      const current = readLineAward(db, eventId, replayAudit(db, eventId));
+      if (current === null || current.presentation.id !== id) throw new Error('Line presentation is not the current one');
+      const status = transitionLinePresentation({ status: current.presentation.status }, intent).status;
+      const times = plan(current.presentation);
+      const nextId = intent === 'retry' ? randomUUID() : id;
+      const result = db.prepare(`UPDATE line_awards SET presentation_id = ?, presentation_status = ?,
+        presentation_started_at = ?, presentation_deadline = ?
+        WHERE event_id = ? AND presentation_id = ? AND presentation_status = ?`)
+        .run(nextId, status, times.startedAt, times.deadlineAt, eventId, id, current.presentation.status);
+      if (result.changes !== 1) throw new Error('Line presentation changed concurrently');
+      readEvent(db);
+      const stored = readLineAward(db, eventId, replayAudit(db, eventId));
+      const p = stored?.presentation;
+      if (p === undefined || p.id !== nextId || p.status !== status || p.startedAt !== times.startedAt ||
+          p.deadlineAt !== times.deadlineAt) {
+        throw new Error('Invalid stored line award: presentation mismatch after write');
+      }
+      return stored as StoredLineAward;
+    });
+  }
+  const noTimes = () => ({ startedAt: null, deadlineAt: null });
+
   function readSnapshot<T>(action: () => T): T {
     db.exec('BEGIN');
     try {
@@ -1018,6 +1052,26 @@ export function createEventStore(path: string) {
         const stored = readLineAward(db, current.eventId, replayAudit(db, current.eventId));
         if (stored === null) throw new Error('Invalid stored line award: missing after write');
         return stored;
+      });
+    },
+    // Explicit presentation steps; the main process calls them, nothing here uses a clock, timer or replay. Each
+    // returns the frozen award read back inside the committing transaction and refuses stale ids and repeats.
+    startLinePresentation(id: unknown, startedAt: unknown): StoredLineAward {
+      if (typeof startedAt !== 'number' || !Number.isSafeInteger(startedAt) || startedAt < 0 ||
+          startedAt + LINE_PRESENTATION_MS > MAX_SAFE_INTEGER) {
+        throw new Error('Line presentation start must be a safe epoch millisecond whose deadline is safe');
+      }
+      return stepPresentation(id, 'start', () => ({ startedAt, deadlineAt: startedAt + LINE_PRESENTATION_MS }));
+    },
+    failLinePresentation(id: unknown): StoredLineAward { return stepPresentation(id, 'fail', noTimes); },
+    retryLinePresentation(id: unknown): StoredLineAward { return stepPresentation(id, 'retry', noTimes); },
+    completeLinePresentation(id: unknown, now: unknown): StoredLineAward {
+      if (typeof now !== 'number' || !Number.isSafeInteger(now) || now < 0) {
+        throw new Error('Line presentation completion time must be a safe epoch millisecond');
+      }
+      return stepPresentation(id, 'complete', (current) => {
+        if (current.deadlineAt === null || now < current.deadlineAt) throw new Error('Line presentation deadline not reached');
+        return { startedAt: current.startedAt, deadlineAt: current.deadlineAt };
       });
     },
     // Replaces only the active event's prizes; like updateEventMeta, a stale id never reaches another event.
