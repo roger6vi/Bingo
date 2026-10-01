@@ -9,7 +9,7 @@ export const CATALOG_CHANNELS = Object.freeze({
 
 export type CatalogResult =
   | { ok: true; events: EventSummary[] }
-  | { ok: false; code: 'invalid_request' | 'storage_failure'; message: string;
+  | { ok: false; code: 'invalid_request' | 'storage_failure' | 'line_setup_active'; message: string;
     selected?: true; created?: true; updated?: true };
 
 type CatalogRequest = { sender: unknown; senderFrame: unknown };
@@ -48,7 +48,11 @@ const validId = (value: unknown): value is string =>
 export function registerEventCatalogIpc(
   registrar: Registrar, store: CatalogStore, authorize: (event: CatalogRequest) => void,
   notifySelected?: () => void, notifyUpdated?: () => void,
+  setupActive?: () => boolean,
 ): void {
+  // Creating or selecting an event can change the active event under an open first-line setup.
+  const setupOpen = (): CatalogResult =>
+    ({ ok: false, code: 'line_setup_active', message: 'Finish or cancel the first-line setup first.' });
   const list = (failure: string): CatalogResult => {
     try { return { ok: true, events: store.listEvents().map((event) => ({ ...event })) }; }
     catch { return { ok: false, code: 'storage_failure', message: failure }; }
@@ -62,6 +66,7 @@ export function registerEventCatalogIpc(
   registrar.handle(CATALOG_CHANNELS.create, (event, ...args) => {
     authorize(event);
     if (args.length !== 1 || !validMeta(args[0])) return invalidRequest();
+    if (setupActive?.()) return setupOpen();
     const { name, date, place } = args[0];
     try { store.createEvent({ name, date, place }); }
     catch { return { ok: false, code: 'storage_failure', message: 'Could not create the event. Try again.' }; }
@@ -72,6 +77,7 @@ export function registerEventCatalogIpc(
   registrar.handle(CATALOG_CHANNELS.select, (event, ...args) => {
     authorize(event);
     if (args.length !== 1 || !validId(args[0])) return invalidRequest();
+    if (setupActive?.()) return setupOpen();
     try { store.selectEvent(args[0]); }
     catch { return { ok: false, code: 'storage_failure', message: 'Could not select the event. Reload the events and try again.' }; }
     // The pointer has committed; delivery to either window cannot undo the selection.

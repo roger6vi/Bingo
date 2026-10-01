@@ -9,6 +9,7 @@ import { registerEventCatalogIpc } from './event-catalog-ipc';
 import { registerThemeIpc } from './theme-ipc';
 import { registerTongoIpc } from './tongo-ipc';
 import { registerPrizeIpc } from './prize-ipc';
+import { registerLineIpc } from './line-ipc';
 import { createPublicEventDelivery } from './public-event-delivery';
 import { createWindowLifecycle } from './window-lifecycle';
 import { planOperatorWindow, planPublicWindow } from './window-plan';
@@ -73,12 +74,14 @@ if (!app.requestSingleInstanceLock()) {
   const operatorOnly = createOperatorGuard(operator.webContents, operatorFrame, operatorUrl);
   const theme = registerThemeIpc(ipcMain, { load: store.loadTheme, save: store.saveTheme },
     operatorOnly, publicDelivery.publishTheme);
+  const line = registerLineIpc(ipcMain, store, { authorize: operatorOnly, now: () => new Date(),
+    publish: publicDelivery.publishCommitted });
   registerEventCatalogIpc(ipcMain, store, operatorOnly, () => publicDelivery.publishActive(theme.reload()),
-    publicDelivery.publishMeta);
+    publicDelivery.publishMeta, line.active);
   const tongo = registerTongoIpc(ipcMain, store, { authorize: operatorOnly, publish: publicDelivery.publishPresentation });
-  registerPrizeIpc(ipcMain, store, operatorOnly, publicDelivery.publishPrizes);
+  registerPrizeIpc(ipcMain, store, operatorOnly, publicDelivery.publishPrizes, line.active);
   registerEventIpc(ipcMain, store, { drawManual, drawDigital }, Math.random,
-    operator.webContents, operatorFrame, operatorUrl, publicDelivery.publishCommitted, tongo.playing);
+    operator.webContents, operatorFrame, operatorUrl, publicDelivery.publishCommitted, tongo.playing, line.active);
   void operator.loadFile(operatorPath);
 
   const lifecycle = createWindowLifecycle<BrowserWindow>({

@@ -16,7 +16,7 @@ export const EVENT_CHANNELS = Object.freeze({
 export type EventResult =
   | { ok: true; snapshot: PhaseSnapshot }
   | { ok: false; code: 'invalid_request' | 'event_unavailable' | 'duplicate' | 'exhausted' | 'invalid_draw' | 'storage_failure'
-    | 'presentation_active'; message: string };
+    | 'presentation_active' | 'line_setup_active'; message: string };
 
 type EventRequest = { sender: unknown; senderFrame: unknown };
 type EventStore = {
@@ -51,10 +51,15 @@ export function registerEventIpc(
   registrar: Registrar, store: EventStore, rules: DrawRules, random: () => number,
   sender: object, getMainFrame: () => { url: string } | null, expectedUrl: string,
   notifyCommitted?: (snapshot: PhaseSnapshot) => void, presenting?: () => boolean,
+  setupActive?: () => boolean,
 ): void {
   const authorized = createOperatorGuard(sender, getMainFrame, expectedUrl);
   const busy = (): EventResult =>
     ({ ok: false, code: 'presentation_active', message: 'Wait for Tongo to finish, then draw again.' });
+
+  // An open first-line setup holds a baseline of the called numbers, so no draw may change them underneath it.
+  const setupOpen = (): EventResult =>
+    ({ ok: false, code: 'line_setup_active', message: 'Finish or cancel the first-line setup, then draw again.' });
 
   function draw(transition: (current: EventSnapshot) => EventSnapshot, manualNumber?: number): EventResult {
     const domain: { thrown: boolean; error?: unknown; code: 'duplicate' | 'exhausted' | 'invalid_draw' } =
@@ -101,12 +106,14 @@ export function registerEventIpc(
     if (args.length !== 1 || typeof args[0] !== 'number' ||
         !Number.isInteger(args[0]) || args[0] < 1 || args[0] > 90) return invalidRequest();
     const number = args[0];
+    if (setupActive?.()) return setupOpen();
     if (presenting?.()) return busy();
     return draw((current) => rules.drawManual(current, number), number);
   });
   registrar.handle(EVENT_CHANNELS.digital, (event, ...args) => {
     authorized(event);
     if (args.length !== 0) return invalidRequest();
+    if (setupActive?.()) return setupOpen();
     if (presenting?.()) return busy();
     return draw((current) => rules.drawDigital(current, random));
   });

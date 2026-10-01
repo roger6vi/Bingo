@@ -5,7 +5,7 @@ export const PRIZE_CHANNELS = Object.freeze({ get: 'prizes:get', update: 'prizes
 // eventId names the event the prizes belong to, so a reply that races a selection is recognizable.
 export type PrizeResult =
   | { ok: true; eventId: string; prizes: EventPrizes }
-  | { ok: false; code: 'invalid_request' | 'event_unavailable' | 'storage_failure'; message: string };
+  | { ok: false; code: 'invalid_request' | 'event_unavailable' | 'storage_failure' | 'line_setup_active'; message: string };
 
 type PrizeRequest = { sender: unknown; senderFrame: unknown };
 type PrizeStore = {
@@ -23,7 +23,7 @@ const copy = (prizes: EventPrizes): EventPrizes => ({ line: { ...prizes.line }, 
 
 export function registerPrizeIpc(
   registrar: Registrar, store: PrizeStore, authorize: (event: PrizeRequest) => void,
-  notifyCommitted?: () => void,
+  notifyCommitted?: () => void, setupActive?: () => boolean,
 ): void {
   registrar.handle(PRIZE_CHANNELS.get, (event, ...args) => {
     authorize(event);
@@ -39,6 +39,8 @@ export function registerPrizeIpc(
     authorize(event);
     const prizes = args.length === 2 && validId(args[0]) ? normalizePrizes(args[1]) : null;
     if (prizes === null) return invalidRequest();
+    // The frozen line prize is part of the open setup's baseline, so it cannot change underneath it.
+    if (setupActive?.()) return { ok: false, code: 'line_setup_active', message: 'Finish or cancel the first-line setup first.' };
     const id = args[0] as string;
     let saved: EventPrizes;
     try { saved = store.updateEventPrizes(id, prizes); }
