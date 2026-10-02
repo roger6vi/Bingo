@@ -1506,6 +1506,25 @@ it('reloading events and the draw reload re-read the line state, and a create th
   } finally { op.cleanup(); }
 });
 
+it('an interrupted celebration shows a specific Spanish warning with the award, no completion claim and no action', async () => {
+  const interrupted = { ...declaredA, award: { ...declaredA.award, award: { ...declaredA.award.award, winnerCount: 3, shareCents: 333, remainderCents: 1 },
+    presentation: { id: 'old', status: 'interrupted', startedAt: 1000, deadlineAt: 5000 } } };
+  const op = await loadOperator({ line: { read: async () => interrupted } });
+  try {
+    const claim = op.main.querySelector('#claim-line');
+    const status = op.main.querySelector('#line-status');
+    expect([status.hidden, status.tone]).to.deep.equal([false, 'warning']);
+    expect(status.message).to.include('Línea declarada con 3 ganadores.');
+    expect(status.message).to.include('interrumpida');
+    expect(status.message).to.include('bloqueados');
+    expect(status.message).to.include('manualmente');
+    expect(status.message).to.not.match(/completada|entregad|todavía no muestra/);
+    expect([claim.disabled, claim.textContent]).to.deep.equal([true, 'Línea declarada']);
+    expect(op.requests.filter((request) => request.startsWith('line:'))).to.deep.equal([]);
+    expect(op.main.textContent).to.not.match(/Reiniciar celebración|Reintentar celebración/);
+  } finally { op.cleanup(); }
+});
+
 it('a line state that names another event than the active one is never shown as usable', async () => {
   const op = await loadOperator({ line: { read: async () => ({ ...declaredA, award: { ...declaredA.award, eventId: 'zzz' } }) } });
   try {

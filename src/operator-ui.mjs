@@ -21,7 +21,7 @@ import { createOperatorController, createLineController } from './operator-contr
 import { createManualDrawHandler } from './manual-draw.mjs';
 import { createEventsController, today } from './events-controller.mjs';
 import { applyTheme, createThemeController, DEFAULT_THEME, revealAfter } from './theme-controller.mjs';
-import { operatorMessage, lineAwardSummary, linePrizeSummary, PHASE_LABELS_ES, THEME_NAMES_ES } from './operator-copy.mjs';
+import { operatorMessage, lineAwardSummary, isLineInterrupted, linePrizeSummary, PHASE_LABELS_ES, THEME_NAMES_ES } from './operator-copy.mjs';
 import { bindSettings } from './settings-ui.mjs';
 import { bindCueControls } from './cue-ui.mjs';
 import { createTongoController, tongoPlayable } from './tongo.mjs';
@@ -226,7 +226,8 @@ function paintLineStatus() {
   lineStatus.message = state.pending ? 'Comprobando la línea' : operatorMessage(state.error)
     ?? (lineMismatch() ? LINE_MISMATCH : state.mode === 'declared' && state.award ? lineAwardSummary(state.award)
       : state.mode === 'setup' && !state.dialogOpen ? 'Hay una declaración de línea abierta. Pulsa «Reanudar línea» para continuar o cancelarla.' : '');
-  lineStatus.tone = state.error ? 'error' : lineMismatch() ? 'warning' : state.mode === 'declared' ? 'success' : 'info';
+  lineStatus.tone = state.error ? 'error' : lineMismatch() || (state.mode === 'declared' && isLineInterrupted(state.award)) ? 'warning'
+    : state.mode === 'declared' ? 'success' : 'info';
   lineStatus.hidden = lineStatus.message === '';
   // Like Tongo's refusal, a new line message must not stay clipped at the bottom of the rail.
   if (lineStatus.hidden === false && shown) void lineStatus.updateComplete.then(() => lineStatus.scrollIntoView({ block: 'nearest' }));

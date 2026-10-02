@@ -281,6 +281,17 @@ test('line recovery of a committed award shows it without refreshing as a new co
   assert.deepEqual([f.last().mode, f.last().award?.award.winnerCount, f.refreshed()], ['declared', 3, 0]);
 });
 
+test('recovering an interrupted award keeps its old id and times, refreshes nothing and offers no action', async () => {
+  const f = lineFixture();
+  const interrupted = { ...lineAward, presentation: { id: 'old', status: 'interrupted', startedAt: 1000, deadlineAt: 5000 } };
+  f.replies.read = async () => ({ ok: true, state: 'declared', award: interrupted });
+  await f.controller.start();
+  assert.deepEqual(f.last().award?.presentation, interrupted.presentation);
+  assert.deepEqual([f.last().mode, f.last().dialogOpen, f.refreshed(), f.calls], ['declared', false, 0, ['read']]);
+  await f.controller.open();
+  assert.deepEqual(f.calls, ['read', 'read'], 'a declared award only rereads; it never begins or confirms');
+});
+
 test('opening begins one setup and opens the dialog; confirming sends the explicit count once', async () => {
   const f = lineFixture();
   await f.controller.start();

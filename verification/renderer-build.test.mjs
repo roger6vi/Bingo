@@ -232,6 +232,18 @@ test('committed line awards reach the public page through a main provider and on
   assert.doesNotMatch(publicPreload, /public:presentation[^;]*line-award|line-award[^;]*public:presentation/);
 });
 
+test('main interrupts previously started line presentations once, before any window, delivery or IPC exists', () => {
+  const main = text('dist/main.js');
+  const calls = main.match(/interruptStartedLinePresentations\(/g) ?? [];
+  assert.equal(calls.length, 1, 'one explicit startup reconciliation');
+  const at = main.indexOf('store.interruptStartedLinePresentations()');
+  assert.ok(at > main.indexOf('initializeCurrentEvent)('), 'after the store opens');
+  for (const later of ['new electron_1.BrowserWindow', 'createPublicEventDelivery)(', 'registerLineIpc)(', 'registerEventIpc)(', 'ipcMain.on(']) {
+    assert.ok(main.indexOf(later) > at, `${later} comes after the reconciliation`);
+  }
+  assert.doesNotMatch(main, /completeLinePresentation|startLinePresentation|retryLinePresentation/, 'no startup replay or completion');
+});
+
 test('the bundled public page ships the Tongo overlay but never the trigger', () => {
   assert.match(text('dist/renderer/public.html'), /<bingo-tongo id="tongo" lang="es"><\/bingo-tongo>/);
   const assets = readdirSync(path.join(renderer, 'assets')).filter((file) => file.endsWith('.js'));

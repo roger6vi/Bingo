@@ -71,6 +71,7 @@ const legal: readonly [LinePresentationStatus, LinePresentationIntent, LinePrese
   ['pending', 'fail', 'failed'],
   ['failed', 'retry', 'pending'],
   ['started', 'complete', 'completed'],
+  ['started', 'interrupt', 'interrupted'],
 ];
 
 test('presentation transitions follow the approved graph and stay immutable', () => {
@@ -86,8 +87,8 @@ test('presentation transitions follow the approved graph and stay immutable', ()
 });
 
 test('all other presentation combinations reject, including failure after start', () => {
-  const statuses: LinePresentationStatus[] = ['pending', 'started', 'failed', 'completed'];
-  const intents: LinePresentationIntent[] = ['start', 'fail', 'retry', 'complete'];
+  const statuses: LinePresentationStatus[] = ['pending', 'started', 'failed', 'completed', 'interrupted'];
+  const intents: LinePresentationIntent[] = ['start', 'fail', 'retry', 'complete', 'interrupt'];
   for (const status of statuses) for (const intent of intents) {
     if (legal.some(([f, i]) => f === status && i === intent)) continue;
     assert.throws(() => transitionLinePresentation({ status }, intent), /invalid presentation/i);
@@ -97,13 +98,26 @@ test('all other presentation combinations reject, including failure after start'
 test('drawing resumes once presentation completes even with a pending lot', () => {
   const award = createLineAward({ ...base, winnerCount: 2, lot: 'L' });
   assert.equal(award.lotResolution, 'pending');
-  for (const status of ['pending', 'started', 'failed'] as const) {
+  for (const status of ['pending', 'started', 'failed', 'interrupted'] as const) {
     assert.equal(canResumeDrawing({ status }), false);
   }
   assert.equal(canResumeDrawing({ status: 'completed' }), true);
   assert.equal(isLineDeliveryResolved(award, { status: 'completed' }), false);
   assert.equal(isLineDeliveryResolved({ ...award, lotResolution: 'resolved' }, { status: 'completed' }), true);
   assert.equal(isLineDeliveryResolved({ ...award, lotResolution: 'resolved' }, { status: 'started' }), false);
+  // An interrupted run is neither complete nor resolved, whatever the lot says.
+  assert.equal(isLineDeliveryResolved({ ...award, lotResolution: 'resolved' }, { status: 'interrupted' }), false);
+  assert.equal(isLineDeliveryResolved({ lotResolution: 'not_required' }, { status: 'interrupted' }), false);
+});
+
+test('an interrupted presentation is terminal in this graph: it cannot complete, restart or fail', () => {
+  assert.deepEqual(transitionLinePresentation({ status: 'started' }, 'interrupt'), { status: 'interrupted' });
+  for (const intent of ['start', 'fail', 'retry', 'complete', 'interrupt'] as const) {
+    assert.throws(() => transitionLinePresentation({ status: 'interrupted' }, intent), /invalid presentation/i, intent);
+  }
+  for (const status of ['pending', 'failed', 'completed'] as const) {
+    assert.throws(() => transitionLinePresentation({ status }, 'interrupt'), /invalid presentation/i, status);
+  }
 });
 
 test('delivery is unresolved for missing or unknown lot resolution values', () => {

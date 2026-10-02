@@ -48,6 +48,9 @@ if (!app.requestSingleInstanceLock()) {
     const databasePath = path.join(app.getPath('userData'), 'current-event.sqlite');
     ({ store } = initializeCurrentEvent(createEventStore(databasePath)));
     app.once('before-quit', () => store.close());
+    // A presentation still persisted as started belongs to a previous run: mark it interrupted exactly once, before
+    // any window, delivery or IPC exists. Nothing completes or replays it; draws stay blocked for the operator.
+    store.interruptStartedLinePresentations();
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     dialog.showErrorBox('Could not open current event',

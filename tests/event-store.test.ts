@@ -1507,17 +1507,17 @@ function v6(path: string) {
 
 const lineAwards = (db: DatabaseSync) => db.prepare('SELECT count(*) AS count FROM line_awards').get()?.count;
 
-test('a fresh database is schema v7 with an empty line_awards table', (t) => {
+test('a fresh database is schema v8 with an empty line_awards table', (t) => {
   const path = fixture(t);
   createEventStore(path).close();
-  assert.equal(EVENT_SCHEMA_VERSION, 7);
+  assert.equal(EVENT_SCHEMA_VERSION, 8);
   withDb(path, (db) => {
-    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 7);
+    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 8);
     assert.equal(lineAwards(db), 0);
   });
 });
 
-test('v6 migrates to v7 once, keeping prizes, audit, history and the active drawing event; no awards appear', (t) => {
+test('v6 migrates through v7 to v8 once, keeping prizes, audit, history and the active drawing event; no awards appear', (t) => {
   const path = fixture(t);
   v6(path);
   let before: unknown;
@@ -1533,16 +1533,16 @@ test('v6 migrates to v7 once, keeping prizes, audit, history and the active draw
     assert.deepEqual(store.loadPrizes()?.prizes, prizes(150, 'Jamón', 20, ''));
   } finally { store.close(); }
   withDb(path, (db) => {
-    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 7);
+    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 8);
     assert.deepEqual([db.prepare('SELECT * FROM events').all(), db.prepare('SELECT * FROM event_prizes').all(),
       db.prepare('SELECT * FROM phase_audit').all(), db.prepare('SELECT * FROM active_event').all()], before);
     assert.equal(lineAwards(db), 0);
   });
   createEventStore(path).close();
-  withDb(path, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 7));
+  withDb(path, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 8));
 });
 
-test('every older schema reaches exactly the fresh v7 schema', (t) => {
+test('every older schema reaches exactly the fresh v8 schema', (t) => {
   const fresh = fixture(t);
   createEventStore(fresh).close();
   let expected: unknown;
@@ -1556,7 +1556,7 @@ test('every older schema reaches exactly the fresh v7 schema', (t) => {
     build(path);
     createEventStore(path).close();
     withDb(path, (db) => {
-      assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 7, name);
+      assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 8, name);
       assert.deepEqual(schemaOf(db), expected, name);
     });
   }
@@ -1575,7 +1575,7 @@ test('a failed v6 to v7 migration leaves the v6 database unchanged', (t) => {
   });
 });
 
-test('v7 rejects a missing or unconstrained line_awards table without writing', (t) => {
+test('v8 rejects a missing or unconstrained line_awards table without writing', (t) => {
   const directory = fs.realpathSync(join(fixture(t), '..'));
   for (const [name, sql] of [
     ['missing', null],
@@ -1588,8 +1588,138 @@ test('v7 rejects a missing or unconstrained line_awards table without writing', 
       if (sql !== null) db.exec(sql);
     });
     assert.throws(() => createEventStore(file), /invalid event schema: line_awards/i, name);
-    withDb(file, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 7));
+    withDb(file, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 8));
   }
+});
+
+
+// A v7 line_awards table exactly as v7 wrote it: no 'interrupted' presentation status.
+const v7Range = (name: string, low: number, high: number) => `CHECK (typeof(${name}) = 'integer' AND ${name} BETWEEN ${low} AND ${high})`;
+const V7_LINE_AWARDS = `CREATE TABLE line_awards (
+  event_id TEXT NOT NULL PRIMARY KEY REFERENCES events(id),
+  audit_sequence INTEGER NOT NULL ${v7Range('audit_sequence', 1, Number.MAX_SAFE_INTEGER)},
+  winner_count INTEGER NOT NULL ${v7Range('winner_count', 1, Number.MAX_SAFE_INTEGER)},
+  total_cents INTEGER NOT NULL ${v7Range('total_cents', 0, 10_000_000)},
+  share_cents INTEGER NOT NULL ${v7Range('share_cents', 0, 10_000_000)},
+  remainder_cents INTEGER NOT NULL ${v7Range('remainder_cents', 0, 10_000_000)},
+  lot TEXT NOT NULL CHECK (typeof(lot) = 'text' AND lot = trim(lot) AND length(lot) <= 120),
+  lot_resolution TEXT NOT NULL CHECK (lot_resolution IN ('not_required', 'pending', 'resolved')),
+  presentation_id TEXT NOT NULL UNIQUE CHECK (typeof(presentation_id) = 'text' AND length(trim(presentation_id)) > 0),
+  presentation_status TEXT NOT NULL CHECK (presentation_status IN ('pending', 'failed', 'started', 'completed')),
+  presentation_started_at INTEGER CHECK (presentation_started_at IS NULL OR
+    typeof(presentation_started_at) = 'integer' AND presentation_started_at BETWEEN 0 AND ${Number.MAX_SAFE_INTEGER}),
+  presentation_deadline INTEGER CHECK (presentation_deadline IS NULL OR
+    typeof(presentation_deadline) = 'integer' AND presentation_deadline BETWEEN 0 AND ${Number.MAX_SAFE_INTEGER}),
+  CHECK (share_cents = total_cents / winner_count AND remainder_cents = total_cents % winner_count),
+  CHECK (CASE WHEN lot = '' OR winner_count < 2 THEN lot_resolution = 'not_required'
+    ELSE lot_resolution IN ('pending', 'resolved') END),
+  CHECK (CASE WHEN presentation_status IN ('pending', 'failed')
+    THEN presentation_started_at IS NULL AND presentation_deadline IS NULL
+    ELSE presentation_started_at IS NOT NULL AND presentation_deadline IS NOT NULL AND
+      presentation_deadline > presentation_started_at END),
+  FOREIGN KEY (event_id, audit_sequence) REFERENCES phase_audit(event_id, sequence)
+)`;
+const timedRun = { presentation_started_at: 1000, presentation_deadline: 5000 };
+const SHAPES: Record<string, Record<string, unknown>> = { pending: {}, failed: { presentation_status: 'failed' },
+  started: { presentation_status: 'started', ...timedRun }, completed: { presentation_status: 'completed', ...timedRun } };
+
+// One directly declared event per status, written raw so every status exists independent of the lifecycle API.
+function seedAwards(path: string, statuses: string[]) {
+  const store = createEventStore(path);
+  const ids = statuses.map((status, index) => {
+    const event = store.createEvent({ name: `E${index}`, date: '2025-01-01', place: 'X' });
+    rawDirect(path, event.id);
+    insertAward(path, event.id, { ...SHAPES[status], presentation_id: `p-${index}` });
+    return event.id;
+  });
+  return { store, ids };
+}
+
+// Rewrites the current database as a v7 one: same rows, the v7 table, user_version 7.
+function downgradeToV7(path: string, corrupt = '') {
+  withDb(path, (db) => {
+    db.exec('PRAGMA foreign_keys = OFF');
+    const rows = db.prepare('SELECT * FROM line_awards').all();
+    db.exec(`DROP TABLE line_awards; ${V7_LINE_AWARDS}`);
+    for (const row of rows) {
+      const names = Object.keys(row);
+      db.prepare(`INSERT INTO line_awards (${names.join(', ')}) VALUES (${names.map((n) => `:${n}`).join(', ')})`).run(row as never);
+    }
+    if (corrupt !== '') db.exec(`PRAGMA ignore_check_constraints = 1; ${corrupt}`);
+    db.exec('PRAGMA user_version = 7');
+  });
+}
+
+const awardsSql = (path: string) => {
+  let sql: unknown;
+  withDb(path, (db) => { sql = db.prepare("SELECT sql FROM sqlite_schema WHERE name = 'line_awards'").get()?.sql; });
+  return String(sql);
+};
+
+test('v7 migrates to v8 once, keeping every award row, id, time and status; opening interrupts nothing', (t) => {
+  const path = fixture(t);
+  const { store, ids } = seedAwards(path, ['pending', 'failed', 'started', 'completed']);
+  store.close();
+  downgradeToV7(path);
+  assert.doesNotMatch(awardsSql(path), /interrupted/);
+  const before = JSON.stringify(dump(path));
+  const reopened = createEventStore(path);
+  try {
+    assert.equal(JSON.stringify(dump(path)), before);
+    assert.equal(reopened.selectEvent(ids[2]).id, ids[2]);
+    assert.deepEqual(reopened.loadLineAward()?.presentation, { id: 'p-2', status: 'started', startedAt: 1000, deadlineAt: 5000 });
+  } finally { reopened.close(); }
+  withDb(path, (db) => {
+    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 8);
+    assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
+    assert.deepEqual(db.prepare('SELECT presentation_status AS s FROM line_awards ORDER BY presentation_id').all().map((r) => r.s),
+      ['pending', 'failed', 'started', 'completed']);
+  });
+  createEventStore(path).close();
+  withDb(path, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 8));
+});
+
+test('a migrated v7 awards table equals the fresh v8 table and enforces the same foreign key and unique id', (t) => {
+  const fresh = fixture(t);
+  createEventStore(fresh).close();
+  const path = fixture(t);
+  const { store } = seedAwards(path, ['started']);
+  store.close();
+  downgradeToV7(path);
+  createEventStore(path).close();
+  assert.equal(awardsSql(path).replace(/\s/g, ''), awardsSql(fresh).replace(/\s/g, ''));
+  withDb(path, (db) => {
+    db.exec('PRAGMA foreign_keys = ON');
+    assert.throws(() => db.exec(`INSERT INTO line_awards SELECT 'ghost', audit_sequence, winner_count, total_cents,
+      share_cents, remainder_cents, lot, lot_resolution, 'other', presentation_status, presentation_started_at,
+      presentation_deadline FROM line_awards`), /FOREIGN/i);
+    assert.throws(() => db.exec("UPDATE line_awards SET presentation_status = 'interrupted', presentation_started_at = NULL"), /CHECK/i);
+    assert.throws(() => db.exec("UPDATE line_awards SET presentation_status = 'bogus'"), /CHECK/i);
+    db.exec("UPDATE line_awards SET presentation_status = 'interrupted'");
+  });
+});
+
+test('a failed v7 to v8 migration leaves the v7 database and rows unchanged and never normalizes corruption', (t) => {
+  for (const [name, corrupt] of [
+    ['check violation', "UPDATE line_awards SET share_cents = 1"],
+    ['dangling event', "PRAGMA foreign_keys = OFF; UPDATE line_awards SET event_id = 'gone'"],
+  ] as const) {
+    const path = fixture(t);
+    const { store } = seedAwards(path, ['started']);
+    store.close();
+    downgradeToV7(path, corrupt);
+    const before = JSON.stringify(dump(path));
+    assert.throws(() => createEventStore(path), /constraint|CHECK|FOREIGN/i, name);
+    withDb(path, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 7, name));
+    assert.doesNotMatch(awardsSql(path), /interrupted/, name);
+    assert.equal(JSON.stringify(dump(path)), before, name);
+  }
+  const path = fixture(t);
+  createEventStore(path).close();
+  downgradeToV7(path);
+  withDb(path, (db) => db.exec('DROP TABLE line_awards; CREATE TABLE line_awards (event_id TEXT PRIMARY KEY); PRAGMA user_version = 7'));
+  assert.throws(() => createEventStore(path), /invalid event schema: line_awards/i);
+  withDb(path, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 7));
 });
 
 test('the line_awards table enforces its row constraints on directly written rows', (t) => {
@@ -1628,6 +1758,8 @@ test('the line_awards table enforces its row constraints on directly written row
     'negative start': { ...started, presentation_started_at: -1 },
     'unsafe deadline': { ...started, presentation_deadline: MAX + 2 },
     'fractional time': { ...started, presentation_started_at: 1000.5 },
+    'interrupted without times': { presentation_status: 'interrupted' },
+    'interrupted with one time': { ...started, presentation_status: 'interrupted', presentation_deadline: null },
     'failed with times': { presentation_status: 'failed', presentation_started_at: 1000, presentation_deadline: 5000 },
     'missing audit row': { audit_sequence: 2 },
     'unknown event': { event_id: 'missing' },
@@ -1654,6 +1786,7 @@ test('the line_awards table enforces its row constraints on directly written row
       'resolved tie': { ...lot, lot_resolution: 'resolved' },
       'failed': { presentation_status: 'failed' },
       'completed': { ...started, presentation_status: 'completed' },
+      'interrupted keeps its times': { ...started, presentation_status: 'interrupted' },
     })) {
       insert({ ...base, ...change });
       db.prepare('DELETE FROM line_awards').run();
@@ -2506,4 +2639,100 @@ test('a completed presentation unlocks draws while a tied lot still blocks bingo
     cash.store.completeLinePresentation(cash.id, 5000);
     assert.equal(cash.store.transitionPhase('begin_bingo_check', T2).phase, 'checking_bingo');
   } finally { cash.store.close(); }
+});
+
+// ---- interruptStartedLinePresentations (FL-07 unit 1): explicit startup reconciliation, never a read side effect ----
+const statusesOf = (path: string) => {
+  let rows: unknown;
+  withDb(path, (db) => { rows = db.prepare(`SELECT presentation_id AS id, presentation_status AS status,
+    presentation_started_at AS startedAt, presentation_deadline AS deadlineAt FROM line_awards ORDER BY presentation_id`).all(); });
+  return (rows as object[]).map((row) => ({ ...row }));
+};
+
+test('interrupting with no events (so no active event) or no awards is a harmless no-op', (t) => {
+  const path = fixture(t);
+  const store = createEventStore(path);
+  try {
+    assert.equal(store.interruptStartedLinePresentations(), 0);
+    store.createEvent({ name: 'A', date: '2025-01-01', place: 'X' });
+    assert.equal(store.interruptStartedLinePresentations(), 0);
+    assert.equal(store.loadLineAward(), null);
+  } finally { store.close(); }
+});
+
+test('interrupting marks every started award in every event, keeping ids and times, and leaves other statuses alone', (t) => {
+  const path = fixture(t);
+  const { store, ids } = seedAwards(path, ['started', 'pending', 'started', 'failed', 'completed']);
+  try {
+    const frozen = frozenState(path);
+    assert.equal(store.interruptStartedLinePresentations(), 2);
+    assert.deepEqual(statusesOf(path), [
+      { id: 'p-0', status: 'interrupted', startedAt: 1000, deadlineAt: 5000 },
+      { id: 'p-1', status: 'pending', startedAt: null, deadlineAt: null },
+      { id: 'p-2', status: 'interrupted', startedAt: 1000, deadlineAt: 5000 },
+      { id: 'p-3', status: 'failed', startedAt: null, deadlineAt: null },
+      { id: 'p-4', status: 'completed', startedAt: 1000, deadlineAt: 5000 }]);
+    assert.equal(frozenState(path), frozen);
+    // Idempotent: a second run finds nothing started and changes nothing.
+    const after = JSON.stringify(dump(path));
+    assert.equal(store.interruptStartedLinePresentations(), 0);
+    assert.equal(JSON.stringify(dump(path)), after);
+    assert.equal(store.loadLineAward()?.presentation.status, 'interrupted');
+    assert.equal(store.selectEvent(ids[2]).id, ids[2]);
+    assert.deepEqual(store.loadLineAward()?.presentation, { id: 'p-2', status: 'interrupted', startedAt: 1000, deadlineAt: 5000 });
+  } finally { store.close(); }
+});
+
+test('an interrupted award keeps draws and bingo blocked and refuses every presentation step, even past its deadline', (t) => {
+  const { path, store, id } = declared(t);
+  try {
+    store.startLinePresentation(id, 1000);
+    assert.equal(store.interruptStartedLinePresentations(), 1);
+    const before = JSON.stringify(dump(path));
+    assert.throws(() => store.update((e) => drawManual(e, 1)), /presentation/i);
+    assert.throws(() => store.transitionPhase('begin_bingo_check', '2025-01-01T00:00:09.000Z'), /presentation|delivery|completed/i);
+    assert.throws(() => store.completeLinePresentation(id, 999_999), /transition|presentation/i);
+    assert.throws(() => store.startLinePresentation(id, 2000), /transition|presentation/i);
+    assert.throws(() => store.failLinePresentation(id), /transition|presentation/i);
+    assert.throws(() => store.retryLinePresentation(id), /transition|presentation/i);
+    assert.equal(JSON.stringify(dump(path)), before);
+    assert.deepEqual(store.loadLineAward()?.presentation, { id, status: 'interrupted', startedAt: 1000, deadlineAt: 5000 });
+  } finally { store.close(); }
+});
+
+test('reopening or switching events never interrupts a started presentation; only the explicit call does', (t) => {
+  const path = fixture(t);
+  const { store, ids } = seedAwards(path, ['started', 'started']);
+  store.selectEvent(ids[1]);
+  store.selectEvent(ids[0]);
+  assert.equal(store.loadLineAward()?.presentation.status, 'started');
+  store.close();
+  const reopened = createEventStore(path);
+  try {
+    assert.deepEqual(statusesOf(path).map((row) => (row as { status: string }).status), ['started', 'started']);
+    assert.equal(reopened.loadLineAward()?.presentation.status, 'started');
+    assert.equal(reopened.interruptStartedLinePresentations(), 2);
+  } finally { reopened.close(); }
+});
+
+test('interruption is all or nothing and refuses corrupted started rows instead of normalizing them', (t) => {
+  const path = fixture(t);
+  const { store, ids } = seedAwards(path, ['started', 'started']);
+  try {
+    // A started row whose share contradicts its arithmetic bypassed the CHECKs: it is corruption, not an interruption.
+    withDb(path, (db) => db.exec(`PRAGMA ignore_check_constraints = 1;
+      UPDATE line_awards SET share_cents = 1 WHERE event_id = '${ids[1]}'`));
+    const before = JSON.stringify(dump(path));
+    assert.throws(() => store.interruptStartedLinePresentations(), /invalid stored line award/i);
+    assert.equal(JSON.stringify(dump(path)), before);
+    withDb(path, (db) => db.exec(`UPDATE line_awards SET share_cents = 333 WHERE event_id = '${ids[1]}'`));
+    // A write failure on the second row rolls the first one back too.
+    withDb(path, (db) => db.exec(`CREATE TRIGGER fail_second BEFORE UPDATE ON line_awards
+      WHEN NEW.presentation_id = 'p-1' BEGIN SELECT RAISE(ABORT, 'boom'); END`));
+    const clean = JSON.stringify(dump(path));
+    assert.throws(() => store.interruptStartedLinePresentations(), /boom/);
+    assert.equal(JSON.stringify(dump(path)), clean);
+    withDb(path, (db) => db.exec('DROP TRIGGER fail_second'));
+    assert.equal(store.interruptStartedLinePresentations(), 2);
+  } finally { store.close(); }
 });

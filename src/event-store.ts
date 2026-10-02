@@ -9,10 +9,11 @@ import { createLineAward, isLineDeliveryResolved, transitionLinePresentation, ty
 import { MAX_PRIZE_AMOUNT, MAX_PRIZE_LOT, NO_PRIZES, normalizePrizes, validAmount, validLot,
   type EventPrizes } from './event-prizes.ts';
 
-// Event prizes (#71) are the only v6 change and the first-line award table (#26/#28) is the only v7
-// change. Each lives in its own table, so each step is one self-contained migration chained after the
-// v5 theme allow-list step. If another change claims a version first, renumber and re-chain.
-const VERSION = 7;
+// Event prizes (#71) are the only v6 change, the first-line award table (#26/#28) is the only v7 change and
+// the `interrupted` presentation status is the only v8 change (a transactional line_awards rebuild). Each step
+// is one self-contained migration chained after the v5 theme allow-list step. If another change claims a
+// version first, renumber and re-chain.
+const VERSION = 8;
 export const EVENT_SCHEMA_VERSION = VERSION;
 const phases = ['drawing', 'checking_line', 'line_declared', 'checking_bingo', 'bingo_declared', 'finished'];
 const phaseCheck = `CHECK (phase IN (${phases.map((phase) => `'${phase}'`).join(', ')}))`;
@@ -88,7 +89,7 @@ const integerColumn = (name: string, low: number, high: number) => `CHECK (${int
 // Optional first-line award, at most one per event, written later together with its audit row. Shares
 // use integer division so the arithmetic cannot overflow for any safe winner count; the remainder is
 // never assigned. Only a nonempty lot shared by 2+ winners needs a tie; presentation times are epoch ms.
-const lineAwardsTable = `CREATE TABLE line_awards (
+const lineAwardsTableSql = (statuses: readonly string[]) => `CREATE TABLE line_awards (
   event_id TEXT NOT NULL PRIMARY KEY REFERENCES events(id),
   audit_sequence INTEGER NOT NULL ${integerColumn('audit_sequence', 1, MAX_SAFE_INTEGER)},
   winner_count INTEGER NOT NULL ${integerColumn('winner_count', 1, MAX_SAFE_INTEGER)},
@@ -98,7 +99,7 @@ const lineAwardsTable = `CREATE TABLE line_awards (
   lot TEXT NOT NULL CHECK (typeof(lot) = 'text' AND lot = trim(lot) AND length(lot) <= 120),
   lot_resolution TEXT NOT NULL CHECK (lot_resolution IN ('not_required', 'pending', 'resolved')),
   presentation_id TEXT NOT NULL UNIQUE CHECK (typeof(presentation_id) = 'text' AND length(trim(presentation_id)) > 0),
-  presentation_status TEXT NOT NULL CHECK (presentation_status IN ('pending', 'failed', 'started', 'completed')),
+  presentation_status TEXT NOT NULL CHECK (presentation_status IN (${statuses.map((status) => `'${status}'`).join(', ')})),
   presentation_started_at INTEGER CHECK (presentation_started_at IS NULL OR
     ${integerRange('presentation_started_at', 0, MAX_SAFE_INTEGER)}),
   presentation_deadline INTEGER CHECK (presentation_deadline IS NULL OR
@@ -112,6 +113,8 @@ const lineAwardsTable = `CREATE TABLE line_awards (
       presentation_deadline > presentation_started_at END),
   FOREIGN KEY (event_id, audit_sequence) REFERENCES phase_audit(event_id, sequence)
 )`;
+const lineAwardsTableV7 = lineAwardsTableSql(['pending', 'failed', 'started', 'completed']);
+const lineAwardsTable = lineAwardsTableSql(['pending', 'failed', 'started', 'completed', 'interrupted']);
 const PLACEHOLDER_NAME = 'Evento actual';
 const PLACEHOLDER_PLACE = 'Sin especificar';
 
@@ -540,13 +543,24 @@ function validatePrizesSchema(db: DatabaseSync): void {
 
 // v6 → v7: add the empty line_awards table. Older games, including declared ones, keep no award.
 function migrateLineAwards(db: DatabaseSync): void {
-  db.exec(lineAwardsTable);
+  db.exec(lineAwardsTableV7);
 }
 
-function validateLineAwardsSchema(db: DatabaseSync): void {
+// v7 → v8: rebuild line_awards so presentation_status also allows `interrupted`. Nothing references the table, so
+// it is copied aside, recreated and refilled in the caller's transaction; the refill re-checks every constraint
+// and foreign key, so any malformed row aborts (and rolls back) the migration instead of being repaired.
+function migrateInterruptedPresentation(db: DatabaseSync): void {
+  db.exec('CREATE TEMP TABLE line_awards_migration AS SELECT * FROM line_awards');
+  db.exec('DROP TABLE line_awards');
+  db.exec(lineAwardsTable);
+  db.exec('INSERT INTO line_awards SELECT * FROM line_awards_migration');
+  db.exec('DROP TABLE line_awards_migration');
+}
+
+function validateLineAwardsSchema(db: DatabaseSync, expected = lineAwardsTable): void {
   const normalize = (sql: string) => sql.replace(/[\s"`\[\]]/g, '').toUpperCase();
   const sql = db.prepare("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'line_awards'").get()?.sql;
-  if (typeof sql !== 'string' || normalize(sql) !== normalize(lineAwardsTable)) {
+  if (typeof sql !== 'string' || normalize(sql) !== normalize(expected)) {
     throw new Error('Invalid event schema: line_awards table missing or malformed');
   }
 }
@@ -576,7 +590,7 @@ export type StoredLineAward = {
   };
 };
 
-const PRESENTATION_STATUSES: readonly string[] = ['pending', 'failed', 'started', 'completed'];
+const PRESENTATION_STATUSES: readonly string[] = ['pending', 'failed', 'started', 'completed', 'interrupted'];
 const LOT_RESOLUTIONS: readonly string[] = ['not_required', 'pending', 'resolved'];
 
 // Reads the active event's award, or null only when no row exists. A populated row is re-derived with the
@@ -621,7 +635,7 @@ function readLineAward(db: DatabaseSync, eventId: string, audit: PhaseAuditEntry
       typeof status !== 'string' || !PRESENTATION_STATUSES.includes(status)) {
     invalid('presentation');
   }
-  const timed = status === 'started' || status === 'completed';
+  const timed = status !== 'pending' && status !== 'failed';
   if (timed ? !(safe(startedAt, 0) && safe(deadlineAt, 0) && deadlineAt > startedAt)
     : startedAt !== null || deadlineAt !== null) {
     invalid('presentation times');
@@ -739,7 +753,7 @@ export function createEventStore(path: string) {
     db.exec('BEGIN');
     try {
       const observed = db.prepare('PRAGMA user_version').get()?.user_version;
-      if (observed !== 1 && observed !== 2 && observed !== 3 && observed !== 4 && observed !== 5 && observed !== 6 && observed !== VERSION) {
+      if (observed !== 1 && observed !== 2 && observed !== 3 && observed !== 4 && observed !== 5 && observed !== 6 && observed !== 7 && observed !== VERSION) {
         throw new Error(`Unsupported event schema version: ${String(observed)}`);
       }
       if (observed === VERSION) {
@@ -778,7 +792,7 @@ export function createEventStore(path: string) {
           validateV3(db);
           migrateV3ToV4(db);
           db.exec('PRAGMA user_version = 4');
-        } else if (version !== 4 && version !== 5 && version !== 6 && version !== VERSION) {
+        } else if (version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== VERSION) {
           throw new Error(`Unsupported event schema version: ${String(version)}`);
         }
         if (version === 1 || version === 2 || version === 3 || version === 4) {
@@ -789,8 +803,13 @@ export function createEventStore(path: string) {
           migratePrizes(db);
           db.exec('PRAGMA user_version = 6');
         }
-        if (version !== VERSION) {
+        if (version !== 7 && version !== VERSION) {
           migrateLineAwards(db);
+          db.exec('PRAGMA user_version = 7');
+        }
+        if (version !== VERSION) {
+          validateLineAwardsSchema(db, lineAwardsTableV7);
+          migrateInterruptedPresentation(db);
           db.exec(`PRAGMA user_version = ${VERSION}`);
         }
         validateV4(db);
@@ -1072,6 +1091,34 @@ export function createEventStore(path: string) {
       return stepPresentation(id, 'complete', (current) => {
         if (current.deadlineAt === null || now < current.deadlineAt) throw new Error('Line presentation deadline not reached');
         return { startedAt: current.startedAt, deadlineAt: current.deadlineAt };
+      });
+    },
+    // Startup reconciliation, called once by main before any window or delivery exists: every award persisted as
+    // started across all events becomes interrupted, keeping its id and times. Never run by open, read or event
+    // switching, and it creates no replay, completion or audit row. Each started row is fully validated first, so
+    // corruption throws and rolls the whole batch back. Returns the number of awards changed.
+    interruptStartedLinePresentations(): number {
+      return transaction(() => {
+        const ids = db.prepare("SELECT event_id FROM line_awards WHERE presentation_status = 'started' ORDER BY event_id")
+          .all().map((row) => row.event_id);
+        const to = transitionLinePresentation({ status: 'started' }, 'interrupt').status;
+        for (const eventId of ids) {
+          if (typeof eventId !== 'string') throw new Error('Invalid stored line award: event');
+          const current = readLineAward(db, eventId, replayAudit(db, eventId));
+          if (current === null || current.presentation.status !== 'started') {
+            throw new Error('Invalid stored line award: presentation');
+          }
+          const result = db.prepare(`UPDATE line_awards SET presentation_status = ?
+            WHERE event_id = ? AND presentation_id = ? AND presentation_status = 'started'`)
+            .run(to, eventId, current.presentation.id);
+          if (result.changes !== 1) throw new Error('Line presentation changed concurrently');
+          const stored = readLineAward(db, eventId, replayAudit(db, eventId))?.presentation;
+          if (stored?.status !== to || stored.id !== current.presentation.id ||
+              stored.startedAt !== current.presentation.startedAt || stored.deadlineAt !== current.presentation.deadlineAt) {
+            throw new Error('Invalid stored line award: presentation mismatch after write');
+          }
+        }
+        return ids.length;
       });
     },
     // Replaces only the active event's prizes; like updateEventMeta, a stale id never reaches another event.

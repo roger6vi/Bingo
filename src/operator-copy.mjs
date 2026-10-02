@@ -76,8 +76,10 @@ export function linePrizeSummary({ amount, lot }) {
   return `Premio de línea configurado: ${parts.length === 0 ? 'sin premio' : parts.join(' + ')}.`;
 }
 
-// What the committed award says; nothing about the public screen, which has not shown it yet.
-export function lineAwardSummary({ award }) {
+export const isLineInterrupted = (value) => value?.presentation?.status === 'interrupted';
+
+// What the committed award says; nothing about the public screen unless its celebration was interrupted.
+export function lineAwardSummary({ award, presentation }) {
   const { winnerCount, totalCents, shareCents, remainderCents, lot, lotResolution } = award;
   const parts = [`Línea declarada con ${winnerCount} ganador${winnerCount === 1 ? '' : 'es'}.`];
   if (totalCents > 0) {
@@ -85,7 +87,9 @@ export function lineAwardSummary({ award }) {
     if (remainderCents > 0) parts.push(remainderCents === 1 ? 'Sobra 1 céntimo sin asignar.' : `Sobran ${remainderCents} céntimos sin asignar.`);
   }
   if (lot !== '') parts.push(lotResolution === 'pending' ? `Lote «${lot}»: pendiente de resolver entre los ganadores.` : `Lote «${lot}».`);
-  parts.push('La pantalla pública todavía no muestra la celebración.');
+  parts.push(presentation?.status === 'interrupted'
+    ? 'La celebración pública quedó interrumpida al reiniciar la aplicación: no se ha completado ni se repite sola. Los números siguen bloqueados hasta reiniciar manualmente la celebración completa.'
+    : 'La pantalla pública todavía no muestra la celebración.');
   return parts.join(' ');
 }
 
