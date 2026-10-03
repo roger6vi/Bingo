@@ -1621,7 +1621,8 @@ const V7_LINE_AWARDS = `CREATE TABLE line_awards (
 )`;
 const timedRun = { presentation_started_at: 1000, presentation_deadline: 5000 };
 const SHAPES: Record<string, Record<string, unknown>> = { pending: {}, failed: { presentation_status: 'failed' },
-  started: { presentation_status: 'started', ...timedRun }, completed: { presentation_status: 'completed', ...timedRun } };
+  started: { presentation_status: 'started', ...timedRun }, completed: { presentation_status: 'completed', ...timedRun },
+  interrupted: { presentation_status: 'interrupted', ...timedRun } };
 
 // One directly declared event per status, written raw so every status exists independent of the lifecycle API.
 function seedAwards(path: string, statuses: string[]) {
@@ -2717,22 +2718,181 @@ test('reopening or switching events never interrupts a started presentation; onl
 
 test('interruption is all or nothing and refuses corrupted started rows instead of normalizing them', (t) => {
   const path = fixture(t);
-  const { store, ids } = seedAwards(path, ['started', 'started']);
+  const { store, ids } = seedAwards(path, ['started', 'started', 'started']);
   try {
     // A started row whose share contradicts its arithmetic bypassed the CHECKs: it is corruption, not an interruption.
     withDb(path, (db) => db.exec(`PRAGMA ignore_check_constraints = 1;
-      UPDATE line_awards SET share_cents = 1 WHERE event_id = '${ids[1]}'`));
+      UPDATE line_awards SET share_cents = 1 WHERE event_id = '${ids[2]}'`));
     const before = JSON.stringify(dump(path));
     assert.throws(() => store.interruptStartedLinePresentations(), /invalid stored line award/i);
     assert.equal(JSON.stringify(dump(path)), before);
-    withDb(path, (db) => db.exec(`UPDATE line_awards SET share_cents = 333 WHERE event_id = '${ids[1]}'`));
+    withDb(path, (db) => db.exec(`UPDATE line_awards SET share_cents = 333 WHERE event_id = '${ids[2]}'`));
     // A write failure on the second row rolls the first one back too.
-    withDb(path, (db) => db.exec(`CREATE TRIGGER fail_second BEFORE UPDATE ON line_awards
-      WHEN NEW.presentation_id = 'p-1' BEGIN SELECT RAISE(ABORT, 'boom'); END`));
+    withDb(path, (db) => db.exec(`CREATE TRIGGER fail_last BEFORE UPDATE ON line_awards
+      WHEN NEW.presentation_id = 'p-2' BEGIN SELECT RAISE(ABORT, 'boom'); END`));
     const clean = JSON.stringify(dump(path));
     assert.throws(() => store.interruptStartedLinePresentations(), /boom/);
     assert.equal(JSON.stringify(dump(path)), clean);
-    withDb(path, (db) => db.exec('DROP TRIGGER fail_second'));
-    assert.equal(store.interruptStartedLinePresentations(), 2);
+    assert.deepEqual(statusesOf(path).map((row) => (row as { status: string }).status), ['started', 'started', 'started']);
+    withDb(path, (db) => db.exec('DROP TRIGGER fail_last'));
+    assert.equal(store.interruptStartedLinePresentations(), 3);
+  } finally { store.close(); }
+});
+
+// ---- replayLinePresentation / failPendingLinePresentations (FL-07 unit 2-A) ----
+test('replay turns an interrupted award into pending with a new id and cleared times; the old id is dead', (t) => {
+  const { path, store, id } = declared(t);
+  try {
+    store.startLinePresentation(id, 1000);
+    store.interruptStartedLinePresentations();
+    const frozen = frozenState(path);
+    const replayed = store.replayLinePresentation(id);
+    const fresh = replayed.presentation.id;
+    assert.notEqual(fresh, id);
+    assert.deepEqual(replayed.presentation, { id: fresh, status: 'pending', startedAt: null, deadlineAt: null });
+    assert.equal(frozenState(path), frozen);
+    const before = JSON.stringify(dump(path));
+    for (const step of [() => store.startLinePresentation(id, 2000), () => store.completeLinePresentation(id, 99_999),
+      () => store.failLinePresentation(id), () => store.replayLinePresentation(id)]) {
+      assert.throws(step, /presentation/i);
+    }
+    assert.equal(JSON.stringify(dump(path)), before);
+    // A second replay on the new (pending) id is refused: only interrupted rows replay.
+    assert.throws(() => store.replayLinePresentation(fresh), /transition|presentation/i);
+    // Draws stay blocked until the full run on the new id completes.
+    assert.throws(() => store.update((e) => drawManual(e, 1)), /presentation/i);
+    assert.equal(store.startLinePresentation(fresh, 10_000).presentation.status, 'started');
+    assert.throws(() => store.update((e) => drawManual(e, 1)), /presentation/i);
+    assert.throws(() => store.completeLinePresentation(fresh, 13_999), /deadline/i);
+    assert.equal(store.completeLinePresentation(fresh, 14_000).presentation.status, 'completed');
+    store.update((e) => drawManual(e, 1));
+  } finally { store.close(); }
+});
+
+test('replay refuses every non-interrupted source and non-string ids without changing anything', (t) => {
+  const { path, store, id } = declared(t);
+  try {
+    assert.throws(() => store.replayLinePresentation(id), /transition|presentation/i, 'pending');
+    assert.throws(() => store.replayLinePresentation(7), /invalid line presentation id/i);
+    store.failLinePresentation(id);
+    assert.throws(() => store.replayLinePresentation(id), /transition|presentation/i, 'failed');
+    const fresh = store.retryLinePresentation(id).presentation.id;
+    store.startLinePresentation(fresh, 1000);
+    assert.throws(() => store.replayLinePresentation(fresh), /transition|presentation/i, 'started');
+    store.completeLinePresentation(fresh, 5000);
+    assert.throws(() => store.replayLinePresentation(fresh), /transition|presentation/i, 'completed');
+    assert.equal(presentationStatus(path), 'completed');
+  } finally { store.close(); }
+});
+
+test('replay only reaches the active event and rolls back on an injected failure', (t) => {
+  const path = fixture(t);
+  const { store, ids } = seedAwards(path, ['interrupted', 'interrupted']);
+  try {
+    store.selectEvent(ids[0]);
+    assert.throws(() => store.replayLinePresentation('p-1'), /presentation/i, 'other event id');
+    const before = JSON.stringify(dump(path));
+    withDb(path, (db) => db.exec(`CREATE TRIGGER fail_replay BEFORE UPDATE ON line_awards
+      BEGIN SELECT RAISE(ABORT, 'boom'); END`));
+    assert.throws(() => store.replayLinePresentation('p-0'), /boom/);
+    assert.equal(JSON.stringify(dump(path)), before);
+    withDb(path, (db) => db.exec('DROP TRIGGER fail_replay'));
+    assert.equal(store.replayLinePresentation('p-0').presentation.status, 'pending');
+    assert.deepEqual(statusesOf(path).filter((row) => (row as { id: string }).id === 'p-1'),
+      [{ id: 'p-1', status: 'interrupted', startedAt: 1000, deadlineAt: 5000 }]);
+  } finally { store.close(); }
+});
+
+test('failing pending marks every pending award in every event failed, keeping ids and nulling nothing else', (t) => {
+  const path = fixture(t);
+  const { store, ids } = seedAwards(path, ['pending', 'started', 'pending', 'failed', 'completed', 'interrupted']);
+  try {
+    const frozen = frozenState(path);
+    assert.equal(store.failPendingLinePresentations(), 2);
+    assert.deepEqual(statusesOf(path), [
+      { id: 'p-0', status: 'failed', startedAt: null, deadlineAt: null },
+      { id: 'p-1', status: 'started', startedAt: 1000, deadlineAt: 5000 },
+      { id: 'p-2', status: 'failed', startedAt: null, deadlineAt: null },
+      { id: 'p-3', status: 'failed', startedAt: null, deadlineAt: null },
+      { id: 'p-4', status: 'completed', startedAt: 1000, deadlineAt: 5000 },
+      { id: 'p-5', status: 'interrupted', startedAt: 1000, deadlineAt: 5000 }]);
+    assert.equal(frozenState(path), frozen);
+    const after = JSON.stringify(dump(path));
+    assert.equal(store.failPendingLinePresentations(), 0);
+    assert.equal(JSON.stringify(dump(path)), after);
+    store.selectEvent(ids[2]);
+    assert.equal(store.retryLinePresentation('p-2').presentation.status, 'pending');
+  } finally { store.close(); }
+});
+
+test('failing pending is a no-op without events or awards and never runs on open, read or event switch', (t) => {
+  const path = fixture(t);
+  const empty = createEventStore(path);
+  try {
+    assert.equal(empty.failPendingLinePresentations(), 0);
+    empty.createEvent({ name: 'A', date: '2025-01-01', place: 'X' });
+    assert.equal(empty.failPendingLinePresentations(), 0);
+  } finally { empty.close(); }
+  const second = fixture(t);
+  const { store, ids } = seedAwards(second, ['pending', 'pending']);
+  store.selectEvent(ids[1]);
+  store.selectEvent(ids[0]);
+  assert.equal(store.loadLineAward()?.presentation.status, 'pending');
+  store.close();
+  const reopened = createEventStore(second);
+  try {
+    assert.deepEqual(statusesOf(second).map((row) => (row as { status: string }).status), ['pending', 'pending']);
+    assert.equal(reopened.failPendingLinePresentations(), 2);
+  } finally { reopened.close(); }
+});
+
+// Processing follows insertion order (rowid), never the random event UUIDs, so "the last row" is well defined.
+function orderLog(path: string, seeds: string[]) {
+  const store = seedAwards(path, seeds);
+  withDb(path, (db) => db.exec(`CREATE TABLE order_log (n INTEGER PRIMARY KEY, id TEXT);
+    CREATE TRIGGER log_order AFTER UPDATE ON line_awards BEGIN INSERT INTO order_log (id) VALUES (NEW.presentation_id); END`));
+  return store;
+}
+const readOrder = (path: string) => {
+  let rows: unknown[] = [];
+  withDb(path, (db) => { rows = db.prepare('SELECT id FROM order_log ORDER BY n').all(); });
+  return rows.map((row) => (row as { id: string }).id);
+};
+
+test('batch reconciliation processes awards in insertion order, not event-id order', (t) => {
+  const names = ['p-0', 'p-1', 'p-2', 'p-3', 'p-4', 'p-5'];
+  const pendingPath = fixture(t);
+  const pending = orderLog(pendingPath, names.map(() => 'pending'));
+  try {
+    assert.equal(pending.store.failPendingLinePresentations(), 6);
+    assert.deepEqual(readOrder(pendingPath), names);
+  } finally { pending.store.close(); }
+  const startedPath = fixture(t);
+  const started = orderLog(startedPath, names.map(() => 'started'));
+  try {
+    assert.equal(started.store.interruptStartedLinePresentations(), 6);
+    assert.deepEqual(readOrder(startedPath), names);
+  } finally { started.store.close(); }
+});
+
+test('failing pending is all or nothing and refuses corrupted pending rows', (t) => {
+  const path = fixture(t);
+  const { store, ids } = seedAwards(path, ['pending', 'pending', 'pending']);
+  try {
+    // The corrupt and the failing row are the last one processed, so two earlier updates must be rolled back.
+    withDb(path, (db) => db.exec(`PRAGMA ignore_check_constraints = 1;
+      UPDATE line_awards SET share_cents = 1 WHERE event_id = '${ids[2]}'`));
+    const before = JSON.stringify(dump(path));
+    assert.throws(() => store.failPendingLinePresentations(), /invalid stored line award/i);
+    assert.equal(JSON.stringify(dump(path)), before);
+    withDb(path, (db) => db.exec(`UPDATE line_awards SET share_cents = 333 WHERE event_id = '${ids[2]}'`));
+    withDb(path, (db) => db.exec(`CREATE TRIGGER fail_last BEFORE UPDATE ON line_awards
+      WHEN NEW.presentation_id = 'p-2' BEGIN SELECT RAISE(ABORT, 'boom'); END`));
+    const clean = JSON.stringify(dump(path));
+    assert.throws(() => store.failPendingLinePresentations(), /boom/);
+    assert.equal(JSON.stringify(dump(path)), clean);
+    assert.deepEqual(statusesOf(path).map((row) => (row as { status: string }).status), ['pending', 'pending', 'pending']);
+    withDb(path, (db) => db.exec('DROP TRIGGER fail_last'));
+    assert.equal(store.failPendingLinePresentations(), 3);
   } finally { store.close(); }
 });

@@ -46,7 +46,7 @@ export function createLineAward(input: LineAwardInput): LineAward {
 }
 
 // Presentation is independent of lot resolution. `interrupted` is a run that had started when the main process
-// stopped: it never completes or replays by itself, and only a later explicit operator action may leave it.
+// stopped: it never completes or replays by itself; only an explicit operator `replay` leaves it, for a new pending run.
 export type LinePresentationStatus = 'pending' | 'started' | 'failed' | 'completed' | 'interrupted';
 
 export interface LinePresentationState {
@@ -58,7 +58,7 @@ const presentationTransitions = {
   started: { complete: 'completed', interrupt: 'interrupted' },
   failed: { retry: 'pending' },
   completed: {},
-  interrupted: {},
+  interrupted: { replay: 'pending' },
 } as const satisfies Record<LinePresentationStatus, Record<string, LinePresentationStatus>>;
 
 export type LinePresentationIntent = {

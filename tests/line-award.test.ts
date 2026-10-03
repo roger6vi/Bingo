@@ -110,10 +110,14 @@ test('drawing resumes once presentation completes even with a pending lot', () =
   assert.equal(isLineDeliveryResolved({ lotResolution: 'not_required' }, { status: 'interrupted' }), false);
 });
 
-test('an interrupted presentation is terminal in this graph: it cannot complete, restart or fail', () => {
+test('an interrupted presentation only leaves through an explicit replay back to pending', () => {
   assert.deepEqual(transitionLinePresentation({ status: 'started' }, 'interrupt'), { status: 'interrupted' });
+  assert.deepEqual(transitionLinePresentation({ status: 'interrupted' }, 'replay'), { status: 'pending' });
   for (const intent of ['start', 'fail', 'retry', 'complete', 'interrupt'] as const) {
     assert.throws(() => transitionLinePresentation({ status: 'interrupted' }, intent), /invalid presentation/i, intent);
+  }
+  for (const status of ['pending', 'started', 'failed', 'completed'] as const) {
+    assert.throws(() => transitionLinePresentation({ status }, 'replay' as never), /invalid presentation/i, status);
   }
   for (const status of ['pending', 'failed', 'completed'] as const) {
     assert.throws(() => transitionLinePresentation({ status }, 'interrupt'), /invalid presentation/i, status);

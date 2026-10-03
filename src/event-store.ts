@@ -853,7 +853,7 @@ export function createEventStore(path: string) {
       if (current === null || current.presentation.id !== id) throw new Error('Line presentation is not the current one');
       const status = transitionLinePresentation({ status: current.presentation.status }, intent).status;
       const times = plan(current.presentation);
-      const nextId = intent === 'retry' ? randomUUID() : id;
+      const nextId = intent === 'retry' || intent === 'replay' ? randomUUID() : id;
       const result = db.prepare(`UPDATE line_awards SET presentation_id = ?, presentation_status = ?,
         presentation_started_at = ?, presentation_deadline = ?
         WHERE event_id = ? AND presentation_id = ? AND presentation_status = ?`)
@@ -1084,6 +1084,8 @@ export function createEventStore(path: string) {
     },
     failLinePresentation(id: unknown): StoredLineAward { return stepPresentation(id, 'fail', noTimes); },
     retryLinePresentation(id: unknown): StoredLineAward { return stepPresentation(id, 'retry', noTimes); },
+    // Explicit operator replay of an interrupted run: back to pending under a new id, so the old run can never complete.
+    replayLinePresentation(id: unknown): StoredLineAward { return stepPresentation(id, 'replay', noTimes); },
     completeLinePresentation(id: unknown, now: unknown): StoredLineAward {
       if (typeof now !== 'number' || !Number.isSafeInteger(now) || now < 0) {
         throw new Error('Line presentation completion time must be a safe epoch millisecond');
@@ -1099,7 +1101,7 @@ export function createEventStore(path: string) {
     // corruption throws and rolls the whole batch back. Returns the number of awards changed.
     interruptStartedLinePresentations(): number {
       return transaction(() => {
-        const ids = db.prepare("SELECT event_id FROM line_awards WHERE presentation_status = 'started' ORDER BY event_id")
+        const ids = db.prepare("SELECT event_id FROM line_awards WHERE presentation_status = 'started' ORDER BY rowid")
           .all().map((row) => row.event_id);
         const to = transitionLinePresentation({ status: 'started' }, 'interrupt').status;
         for (const eventId of ids) {
@@ -1115,6 +1117,35 @@ export function createEventStore(path: string) {
           const stored = readLineAward(db, eventId, replayAudit(db, eventId))?.presentation;
           if (stored?.status !== to || stored.id !== current.presentation.id ||
               stored.startedAt !== current.presentation.startedAt || stored.deadlineAt !== current.presentation.deadlineAt) {
+            throw new Error('Invalid stored line award: presentation mismatch after write');
+          }
+        }
+        return ids.length;
+      });
+    },
+    // Rows are processed in insertion (rowid) order, never by random event id, so failures are reproducible.
+    // Startup reconciliation (run after interruptStarted, before any window): every award persisted as
+    // pending across all events becomes failed, keeping its id; its times stay NULL. Never run by open, read or event
+    // switching, and it creates no retry, completion or audit row. Each pending row is fully validated first, so
+    // corruption throws and rolls the whole batch back. Returns the number of awards changed.
+    failPendingLinePresentations(): number {
+      return transaction(() => {
+        const ids = db.prepare("SELECT event_id FROM line_awards WHERE presentation_status = 'pending' ORDER BY rowid")
+          .all().map((row) => row.event_id);
+        const to = transitionLinePresentation({ status: 'pending' }, 'fail').status;
+        for (const eventId of ids) {
+          if (typeof eventId !== 'string') throw new Error('Invalid stored line award: event');
+          const current = readLineAward(db, eventId, replayAudit(db, eventId));
+          if (current === null || current.presentation.status !== 'pending') {
+            throw new Error('Invalid stored line award: presentation');
+          }
+          const result = db.prepare(`UPDATE line_awards SET presentation_status = ?
+            WHERE event_id = ? AND presentation_id = ? AND presentation_status = 'pending'`)
+            .run(to, eventId, current.presentation.id);
+          if (result.changes !== 1) throw new Error('Line presentation changed concurrently');
+          const stored = readLineAward(db, eventId, replayAudit(db, eventId))?.presentation;
+          if (stored?.status !== to || stored.id !== current.presentation.id ||
+              stored.startedAt !== null || stored.deadlineAt !== null) {
             throw new Error('Invalid stored line award: presentation mismatch after write');
           }
         }
