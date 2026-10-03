@@ -223,3 +223,27 @@ test('the real seed phase reaches its interaction steps (no undefined helper bef
   } }, argv: [exe] }), (error) => error === sentinel);
   assert.equal(typeof original, 'function');
 }));
+
+// GitHub-hosted Windows runners keep RUNNER_TEMP (the workflow's BINGO_DATA parent) apart from os.tmpdir().
+test('a supplied profile directly under RUNNER_TEMP is accepted when it differs from the OS temp dir, and never deleted', () => setup(async ({ deps, log, launched }) => {
+  const runnerTemp = realpathSync(mkdtempSync(path.join(tmpdir(), 'packaged-smoke-runner-')));
+  try {
+    const profile = path.join(runnerTemp, 'bingo-user-data');
+    await main({ ...deps, env: { RUNNER_TEMP: runnerTemp }, argv: [exe, profile, 'seed'], phases: noSeedPhases });
+    assert.ok(existsSync(profile));
+    assert.ok(launched[0].options.args.includes(`--user-data-dir=${profile}`));
+    assert.ok(!log.some((entry) => entry.startsWith('rm:')));
+  } finally { rmSync(runnerTemp, { recursive: true, force: true }); }
+}));
+
+test('RUNNER_TEMP widens the parent only to that exact directory: nested, other and relative values are refused', () => setup(async ({ deps, launched, tmp }) => {
+  const runnerTemp = realpathSync(mkdtempSync(path.join(tmpdir(), 'packaged-smoke-runner-')));
+  const elsewhere = realpathSync(mkdtempSync(path.join(tmpdir(), 'packaged-smoke-else-')));
+  try {
+    for (const [envValue, profile] of [[runnerTemp, path.join(runnerTemp, 'sub', 'bingo-x')], [runnerTemp, path.join(elsewhere, 'bingo-x')],
+      ['relative/dir', path.join(elsewhere, 'bingo-x')], [path.join(tmp, 'missing'), path.join(path.join(tmp, 'missing'), 'bingo-x')]]) {
+      await assert.rejects(main({ ...deps, env: { RUNNER_TEMP: envValue }, argv: [exe, profile, 'seed'], phases: noSeedPhases }), /directly under/);
+    }
+    assert.deepEqual(launched, []);
+  } finally { rmSync(runnerTemp, { recursive: true, force: true }); rmSync(elsewhere, { recursive: true, force: true }); }
+}));

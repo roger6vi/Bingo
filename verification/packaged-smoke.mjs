@@ -177,11 +177,19 @@ export async function checkBrokenDatabase({ executablePath, step, spawn = realSp
 const refuse = (profile, why) => new Error(`Refusing the supplied profile ${profile}: ${why}`);
 
 // Bounded acceptance of a CI-supplied profile. Returns the canonical path (a missing seed profile is created).
-export function validateSuppliedProfile(profile, phase, tmp = osTmpdir()) {
+// The parent must be exactly the OS temp dir or, on CI, the runner's own RUNNER_TEMP (which GitHub-hosted Windows
+// runners keep apart from os.tmpdir()). RUNNER_TEMP counts only when absolute and an existing canonical directory.
+const allowedParents = (tmp, runnerTemp) => {
+  const parents = [realpathSync(tmp)];
+  if (runnerTemp && path.isAbsolute(runnerTemp) && realExists(runnerTemp)) parents.push(realpathSync(runnerTemp));
+  return parents;
+};
+
+export function validateSuppliedProfile(profile, phase, tmp = osTmpdir(), runnerTemp = undefined) {
   if (!path.isAbsolute(profile)) throw refuse(profile, 'it must be absolute');
   if (phase !== 'seed' && phase !== 'upgraded') throw refuse(profile, `phase must be seed or upgraded, got ${phase}`);
-  const base = realpathSync(tmp);
-  if (path.dirname(profile) !== base) throw refuse(profile, `it must be directly under the temp dir ${base}`);
+  const parents = allowedParents(tmp, runnerTemp);
+  if (!parents.includes(path.dirname(profile))) throw refuse(profile, `it must be directly under the temp dir ${parents.join(' or ')}`);
   if (!path.basename(profile).startsWith('bingo-')) throw refuse(profile, 'its name must start with bingo-');
   if (!realExists(profile)) {
     if (phase === 'upgraded') throw refuse(profile, 'an upgraded profile must already contain the seed database');
@@ -217,7 +225,7 @@ export async function main({ argv = process.argv.slice(2), env = process.env, pl
   assert.ok(executablePath && exists(executablePath), `packaged executable not found: ${executablePath ?? `no default for ${platform}`}`);
   const step = (name) => log(`✓ ${name}`);
   const fixture = profileArg === undefined ? createFixture({ tmp, rm, closeMs, killMs })
-    : suppliedFixture(validateSuppliedProfile(profileArg, phaseArg, tmp), { closeMs, killMs });
+    : suppliedFixture(validateSuppliedProfile(profileArg, phaseArg, tmp, env.RUNNER_TEMP), { closeMs, killMs });
   const profile = fixture.path;
   // Chromium refuses to run as root without disabling its own sandbox (e.g. in Linux containers).
   const args = (extra) => [`--user-data-dir=${profile}`, ...(uid === 0 ? ['--no-sandbox'] : []), ...extra];

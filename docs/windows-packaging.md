@@ -18,7 +18,7 @@ package holds only `dist/` (main, preloads, Vite-bundled renderers, generated th
 Each run installs and drives the real packaged app, always with a temporary `--user-data-dir` under
 `RUNNER_TEMP` that the workflow deletes afterwards (the real `%APPDATA%` profile is never used). The
 smoke accepts a supplied profile only if it is an absolute, canonical, non-symlink directory directly
-under the OS temp dir named `bingo-*` (new or empty for `seed`, already holding the seed database for
+under the OS temp dir or the runner's own `RUNNER_TEMP` (the two differ on GitHub-hosted Windows runners) named `bingo-*` (new or empty for `seed`, already holding the seed database for
 `upgraded`), checks that the runtime `userData` equals it, and never deletes it:
 
 1. `npm run build` and `npm run test:build` pass on Windows; `npm test` runs last so a source-test
