@@ -21,6 +21,13 @@ contextBridge.exposeInMainWorld('desktop', Object.freeze({
     ipcRenderer.invoke('line:confirm', sessionId, eventId, winnerCount),
   getTheme: () => ipcRenderer.invoke('theme:get'),
   setTheme: (theme: string) => ipcRenderer.invoke('theme:set', theme),
+  retryLinePresentation: (id: string) => ipcRenderer.invoke('line:retry-presentation', id),
+  repeatLinePresentation: (id: string) => ipcRenderer.invoke('line:repeat-presentation', id),
+  onLinePresentation: (callback: (award: unknown) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, award: unknown) => callback(award);
+    ipcRenderer.on('line:presentation', listener);
+    return () => ipcRenderer.removeListener('line:presentation', listener);
+  },
   playTongo: () => ipcRenderer.invoke('tongo:play'),
   onPublicStatus: (callback: (pauseSuggested: boolean) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, pauseSuggested: boolean) => callback(pauseSuggested);

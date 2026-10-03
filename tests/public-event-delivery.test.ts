@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   createPublicEventDelivery, PUBLIC_EVENT_CHANNEL, PUBLIC_META_CHANNEL, PUBLIC_PRESENTATION_CHANNEL,
-  PUBLIC_LINE_AWARD_CHANNEL, PUBLIC_PRIZES_CHANNEL, PUBLIC_THEME_CHANNEL, type PublicEventMeta, type PublicEventPrizes,
+  PUBLIC_LINE_AWARD_CHANNEL, PUBLIC_LINE_RECEIPT_CHANNEL, PUBLIC_PRIZES_CHANNEL, PUBLIC_THEME_CHANNEL, type PublicEventMeta, type PublicEventPrizes,
 } from '../src/public-event-delivery.ts';
 import type { EventSnapshot } from '../src/event-core.ts';
 
@@ -356,4 +356,119 @@ test('award state is never a presentation signal: reattach and publication send 
   for (const target of [first, second]) {
     assert.equal(channelsOf(target.messages).includes(PUBLIC_PRESENTATION_CHANNEL), false);
   }
+});
+
+const signal = { kind: 'line', id: 'p1', durationMs: 4000 } as const;
+const PAGE = 'file:///app/dist/renderer/public.html';
+
+test('a line signal reaches only the current window, is reported delivered, and is never resent on attach or switch', () => {
+  const f = fixture(), first = f.target(), next = f.target();
+  assert.equal(f.delivery.publishPresentation(signal), false);
+  f.delivery.attachAfterLoad(first);
+  first.messages.length = 0;
+  assert.equal(f.delivery.publishPresentation(signal), true);
+  assert.deepEqual(first.messages, [{ channel: PUBLIC_PRESENTATION_CHANNEL, result: signal }]);
+  first.failSend();
+  assert.equal(f.delivery.publishPresentation(signal), false);
+  f.delivery.attachAfterLoad(next);
+  f.delivery.publishActive('light');
+  assert.equal(channelsOf(next.messages).includes(PUBLIC_PRESENTATION_CHANNEL), false);
+});
+
+test('a line receipt is bound to the exact frame the signal was sent to, and is one-shot', () => {
+  const f = fixture();
+  const frameA = { url: PAGE }, frameB = { url: PAGE };
+  const target = Object.assign(f.target(), { mainFrame: frameA as { url: string } }), other = f.target();
+  const event = (sender: unknown, senderFrame: unknown) => ({ sender, senderFrame });
+  assert.equal(f.delivery.acceptLineReceipt(event(target, frameA), 'p1', PAGE), false, 'nothing sent yet');
+  f.delivery.attachAfterLoad(target);
+  assert.equal(f.delivery.acceptLineReceipt(event(target, frameA), 'p1', PAGE), false, 'attach binds nothing');
+  assert.equal(f.delivery.publishPresentation(signal), true);
+  // Rejections never consume the binding.
+  assert.equal(f.delivery.acceptLineReceipt(event(target, frameA), 'other', PAGE), false, 'wrong id');
+  assert.equal(f.delivery.acceptLineReceipt(event(other, frameA), 'p1', PAGE), false, 'wrong sender');
+  assert.equal(f.delivery.acceptLineReceipt(event(target, { url: PAGE }), 'p1', PAGE), false, 'unrelated frame');
+  assert.equal(f.delivery.acceptLineReceipt(event(target, null), 'p1', PAGE), false);
+  assert.equal(f.delivery.acceptLineReceipt(event(target, undefined), 'p1', PAGE), false);
+  assert.equal(f.delivery.acceptLineReceipt(event(target, frameA), 'p1', 'file:///other.html'), false, 'wrong url');
+  // The same webContents replaces its main frame: the new frame was never sent the signal, the old one is stale.
+  target.mainFrame = frameB;
+  assert.equal(f.delivery.acceptLineReceipt(event(target, frameB), 'p1', PAGE), false, 'replacement frame');
+  assert.equal(f.delivery.acceptLineReceipt(event(target, frameA), 'p1', PAGE), false, 'old frame no longer current');
+  target.mainFrame = frameA;
+  frameA.url = 'file:///elsewhere.html';
+  assert.equal(f.delivery.acceptLineReceipt(event(target, frameA), 'p1', PAGE), false, 'navigated away');
+  frameA.url = PAGE;
+  assert.equal(f.delivery.acceptLineReceipt(event(target, frameA), 'p1', PAGE), true, 'original frame while current');
+  assert.equal(f.delivery.acceptLineReceipt(event(target, frameA), 'p1', PAGE), false, 'one-shot: no replay');
+});
+
+test('a receipt binding dies with its window and is replaced by the next signal; Tongo and failed sends bind nothing', () => {
+  const f = fixture();
+  const frame = { url: PAGE };
+  const event = (sender: unknown) => ({ sender, senderFrame: frame });
+  const target = Object.assign(f.target(), { mainFrame: frame });
+  f.delivery.attachAfterLoad(target);
+  f.delivery.publishPresentation({ kind: 'tongo', id: 1, durationMs: 3000 });
+  assert.equal(f.delivery.acceptLineReceipt(event(target), '1', PAGE), false, 'Tongo is never receipted');
+  f.delivery.publishPresentation(signal);
+  f.delivery.publishPresentation({ ...signal, id: 'p2' });
+  assert.equal(f.delivery.acceptLineReceipt(event(target), 'p1', PAGE), false, 'superseded by a newer signal');
+  assert.equal(f.delivery.acceptLineReceipt(event(target), 'p2', PAGE), true);
+  f.delivery.publishPresentation(signal);
+  f.delivery.detachIfCurrent(target);
+  assert.equal(f.delivery.acceptLineReceipt(event(target), 'p1', PAGE), false, 'detached');
+  const next = Object.assign(f.target(), { mainFrame: frame });
+  f.delivery.attachAfterLoad(next);
+  assert.equal(f.delivery.acceptLineReceipt(event(next), 'p1', PAGE), false, 'attach never inherits a binding');
+  next.failSend();
+  assert.equal(f.delivery.publishPresentation({ ...signal, id: 'p3' }), false);
+  assert.equal(f.delivery.acceptLineReceipt(event(next), 'p3', PAGE), false, 'failed send binds nothing');
+});
+
+test('a throwing frame access never delivers a line signal or authorizes a receipt', () => {
+  const f = fixture();
+  const throwing = { ...f.target(), get mainFrame(): never { throw new Error('gone'); } };
+  f.delivery.attachAfterLoad(throwing);
+  throwing.messages.length = 0;
+  assert.equal(f.delivery.publishPresentation(signal), false);
+  assert.deepEqual(throwing.messages, []);
+  assert.equal(f.delivery.acceptLineReceipt({ sender: throwing, senderFrame: {} }, 'p1', PAGE), false);
+});
+
+test('a main-frame navigation detaches the window and voids its receipt even when the same target, frame and URL survive', () => {
+  const f = fixture();
+  const frame = { url: PAGE };
+  const event = (sender: unknown) => ({ sender, senderFrame: frame });
+  const target = Object.assign(f.target(), { mainFrame: frame });
+  f.delivery.attachAfterLoad(target);
+  f.delivery.publishPresentation(signal);
+  f.delivery.navigationStarted(target);
+  // While the new document loads, nothing is delivered to it, live signals included.
+  target.messages.length = 0;
+  assert.equal(f.delivery.publishPresentation({ ...signal, id: 'during' }), false);
+  f.delivery.publishCommitted(snapshot([1]));
+  assert.deepEqual(target.messages, []);
+  // The finished load re-attaches the very same target, frame and URL: static state only, and the old id stays void.
+  f.delivery.attachAfterLoad(target);
+  assert.equal(channelsOf(target.messages).includes(PUBLIC_PRESENTATION_CHANNEL), false, 'no replay on attach');
+  assert.equal(f.delivery.acceptLineReceipt(event(target), 'p1', PAGE), false, 'old awaited signal is void');
+  assert.equal(f.delivery.publishPresentation({ ...signal, id: 'p2' }), true);
+  assert.equal(f.delivery.acceptLineReceipt(event(target), 'p1', PAGE), false);
+  assert.equal(f.delivery.acceptLineReceipt(event(target), 'p2', PAGE), true, 'a fresh signal binds fresh');
+});
+
+test('navigation of an unrelated window leaves the rightful receipt binding and delivery intact', () => {
+  const f = fixture();
+  const frame = { url: PAGE };
+  const target = Object.assign(f.target(), { mainFrame: frame }), foreign = f.target();
+  f.delivery.attachAfterLoad(target);
+  f.delivery.publishPresentation(signal);
+  f.delivery.navigationStarted(foreign);
+  assert.equal(f.delivery.publishPresentation({ ...signal, id: 'p1' }), true, 'still the current target');
+  assert.equal(f.delivery.acceptLineReceipt({ sender: target, senderFrame: frame }, 'p1', PAGE), true);
+});
+
+test('the receipt channel is a fixed literal', () => {
+  assert.equal(PUBLIC_LINE_RECEIPT_CHANNEL, 'public:line-presentation-started');
 });

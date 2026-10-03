@@ -16,7 +16,7 @@ export const EVENT_CHANNELS = Object.freeze({
 export type EventResult =
   | { ok: true; snapshot: PhaseSnapshot }
   | { ok: false; code: 'invalid_request' | 'event_unavailable' | 'duplicate' | 'exhausted' | 'invalid_draw' | 'storage_failure'
-    | 'presentation_active' | 'line_setup_active'; message: string };
+    | 'presentation_active' | 'line_setup_active' | 'line_presentation_active' | 'presentation_pending'; message: string };
 
 type EventRequest = { sender: unknown; senderFrame: unknown };
 type EventStore = {
@@ -51,7 +51,7 @@ export function registerEventIpc(
   registrar: Registrar, store: EventStore, rules: DrawRules, random: () => number,
   sender: object, getMainFrame: () => { url: string } | null, expectedUrl: string,
   notifyCommitted?: (snapshot: PhaseSnapshot) => void, presenting?: () => boolean,
-  setupActive?: () => boolean,
+  setupActive?: () => boolean, linePresenting?: () => boolean,
 ): void {
   const authorized = createOperatorGuard(sender, getMainFrame, expectedUrl);
   const busy = (): EventResult =>
@@ -60,6 +60,10 @@ export function registerEventIpc(
   // An open first-line setup holds a baseline of the called numbers, so no draw may change them underneath it.
   const setupOpen = (): EventResult =>
     ({ ok: false, code: 'line_setup_active', message: 'Finish or cancel the first-line setup, then draw again.' });
+
+  // A line celebration is running (or the store holds an unfinished presentation): the board must not change.
+  const lineBusy = (): EventResult => ({ ok: false, code: 'line_presentation_active',
+    message: 'Wait for the line celebration to finish, then draw again.' });
 
   function draw(transition: (current: EventSnapshot) => EventSnapshot, manualNumber?: number): EventResult {
     const domain: { thrown: boolean; error?: unknown; code: 'duplicate' | 'exhausted' | 'invalid_draw' } =
@@ -85,6 +89,9 @@ export function registerEventIpc(
         if (domain.code === 'duplicate') return { ok: false, code: 'duplicate', message: 'That number has already been called.' };
         return { ok: false, code: 'invalid_draw', message: 'Could not draw a number. Reload and try again.' };
       }
+      if (error instanceof Error && /until the line presentation is completed/.test(error.message)) {
+        return { ok: false, code: 'presentation_pending', message: 'The line celebration is not finished.' };
+      }
       return { ok: false, code: 'storage_failure', message: 'Could not save the draw. Reload and try again.' };
     }
   }
@@ -108,6 +115,7 @@ export function registerEventIpc(
     const number = args[0];
     if (setupActive?.()) return setupOpen();
     if (presenting?.()) return busy();
+    if (linePresenting?.()) return lineBusy();
     return draw((current) => rules.drawManual(current, number), number);
   });
   registrar.handle(EVENT_CHANNELS.digital, (event, ...args) => {
@@ -115,6 +123,7 @@ export function registerEventIpc(
     if (args.length !== 0) return invalidRequest();
     if (setupActive?.()) return setupOpen();
     if (presenting?.()) return busy();
+    if (linePresenting?.()) return lineBusy();
     return draw((current) => rules.drawDigital(current, random));
   });
 }

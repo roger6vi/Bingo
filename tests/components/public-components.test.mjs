@@ -110,7 +110,8 @@ it('panel, number, latest announcer and status respond to properties without dup
   await expect(panel).to.be.accessible();
 });
 
-it('public wiring keeps a committed phase visible beside separate stale feedback', async () => {
+it('public wiring keeps a committed phase visible beside separate stale feedback', async function () {
+  this.timeout(15000);
   const page = new DOMParser().parseFromString(await (await fetch(new URL('../../src/public.html', import.meta.url))).text(), 'text/html');
   const shell = document.importNode(page.querySelector('bingo-shell'), true);
   document.body.append(shell);
@@ -140,11 +141,15 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
     receiveLineAward = callback;
     return () => { unsubscribed++; };
   } };
-  let receivePresentation;
+  // Tongo and the line celebration both listen on the presentation channel, as with the real preload.
+  const presentationListeners = [];
+  const receivePresentation = (value) => presentationListeners.forEach((callback) => callback(value));
   window.publicPresentation = { subscribe: (callback) => {
-    receivePresentation = callback;
+    presentationListeners.push(callback);
     return () => { unsubscribed++; };
   } };
+  const receipts = [];
+  window.publicLineReceipt = { started: (id) => receipts.push(id) };
   try {
     const entry = new URL('../../src/public-ui.mjs', import.meta.url);
     const response = await fetch(entry);
@@ -232,8 +237,35 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
     for (const ignored of [{ kind: 'tongo', id: 1, durationMs: 500 }, { kind: 'tongo', id: 2 }, 'tongo']) receivePresentation(ignored);
     expect(tongo.active).to.equal(false);
     expect([board(), phase.message, status.message]).to.deep.equal(before);
+    // First-line celebration: overlays the unchanged board with the committed facts, reports the start only once
+    // rendered, hides itself, and never replays a repeated id or a Tongo/junk signal.
+    const celebration = shell.querySelector('#line-celebration');
+    expect(celebration.active).to.equal(false);
+    expect(receipts).to.deep.equal([]);
+    const lineBefore = [board(), phase.message, status.message];
+    receivePresentation({ kind: 'line', id: 'p1', durationMs: 4000 });
+    expect(celebration.active).to.equal(true);
+    await celebration.updateComplete;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(receipts).to.deep.equal(['p1']);
+    expect(celebration.shadowRoot.querySelector('[role="status"]').textContent)
+      .to.equal('¡Línea! Línea declarada · 3 ganadores · 3,33 € cada uno · 1 céntimo sin repartir');
+    expect(celebration.shadowRoot.querySelector('.word').textContent).to.equal('¡Línea!');
+    expect(getComputedStyle(celebration.shadowRoot.querySelector('.card')).animationName).to.equal('none');
+    expect([board(), phase.message, status.message]).to.deep.equal(lineBefore);
+    expect(tongo.active).to.equal(false);
+    await expect(celebration).to.be.accessible();
+    receivePresentation({ kind: 'line', id: 'p2', durationMs: 4000 });
+    receivePresentation({ kind: 'line', id: 'p1', durationMs: 4000 });
+    expect(receipts).to.deep.equal(['p1']);
+    await new Promise((resolve) => setTimeout(resolve, 4100));
+    expect(celebration.active).to.equal(false);
+    for (const ignored of [{ kind: 'line', id: 'p1', durationMs: 4000 }, { kind: 'line', id: '', durationMs: 4000 },
+      { kind: 'line', id: 'p3', durationMs: 1 }]) receivePresentation(ignored);
+    expect(celebration.active).to.equal(false);
+    expect(receipts).to.deep.equal(['p1']);
     window.dispatchEvent(new Event('pagehide'));
-    expect(unsubscribed).to.equal(6);
+    expect(unsubscribed).to.equal(7);
   } finally {
     shell.remove();
     delete window.publicEvent;
@@ -242,6 +274,7 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
     delete window.publicEventPrizes;
     delete window.publicLineAward;
     delete window.publicPresentation;
+    delete window.publicLineReceipt;
     delete document.documentElement.dataset.theme;
   }
 });

@@ -14,7 +14,7 @@ const storedAward = (eventId = 'a') => ({ eventId, presentation: { id: 'p1', sta
   deadlineAt: null }, award: { winnerCount: 3, totalCents: 1000, shareCents: 333, remainderCents: 1, lot: 'Lote',
   lotResolution: 'not_required' } });
 
-function fixture(options: { head?: string | null; now?: () => Date } = {}) {
+function fixture(options: { head?: string | null; now?: () => Date; ports?: Record<string, unknown> } = {}) {
   const sender = {};
   const url = 'file:///app/operator.html';
   let frame: Frame = { url };
@@ -58,6 +58,7 @@ function fixture(options: { head?: string | null; now?: () => Date } = {}) {
       calls.push(`publish:${JSON.stringify(snapshot)}`);
       if (failure === 'publish') throw new Error('display gone');
     },
+    ...options.ports,
   });
   const invoke = (channel: string, args: unknown[] = [], from: object = sender, fromFrame: object | null = frame) =>
     handlers.get(channel)!({ sender: from, senderFrame: fromFrame }, ...args);
@@ -68,7 +69,7 @@ function fixture(options: { head?: string | null; now?: () => Date } = {}) {
 type Session = { sessionId: string; eventId: string; calledNumbers: number[]; linePrize: { amount: number; lot: string } };
 const begin = (f: ReturnType<typeof fixture>) => (f.invoke(LINE_CHANNELS.begin) as { ok: true; session: Session }).session;
 
-test('registers exactly four operator-only channels and rejects bad senders before any store access', () => {
+test('registers exactly six operator-only channels and rejects bad senders before any store access', () => {
   const f = fixture();
   assert.deepEqual([...f.handlers.keys()], Object.values(LINE_CHANNELS));
   for (const channel of Object.values(LINE_CHANNELS)) {
@@ -234,4 +235,101 @@ test('a reloaded renderer keeps the main session; only the adopting current fram
   permissive.invoke(LINE_CHANNELS.read, [], permissive.sender, frame2);
   assert.deepEqual(permissive.invoke(LINE_CHANNELS.cancel, [first.sessionId, 'a'], permissive.sender, frame2), { ok: true });
   assert.equal(permissive.line.active(), false);
+});
+
+const confirm = (f: ReturnType<typeof fixture>, count = 3) => {
+  const session = begin(f);
+  return f.invoke(LINE_CHANNELS.confirm, [session.sessionId, session.eventId, count]) as { ok: boolean };
+};
+
+test('a committed award starts its presentation once, after the committed state is published', () => {
+  const started: unknown[] = [];
+  const f = fixture({ ports: { committed: (award: unknown) => { f.calls.push('committed'); started.push(award); } } });
+  assert.equal(confirm(f).ok, true);
+  assert.deepEqual(started, [storedAward()]);
+  assert.deepEqual(f.calls.slice(-2).map((call) => call.split(':')[0]), ['publish', 'committed']);
+  // Reading recovers state but can never start a presentation.
+  f.invoke(LINE_CHANNELS.read);
+  assert.equal(started.length, 1);
+});
+
+test('the uncertain-acknowledgement reread also starts the presentation, and a failing hook never fails the confirmation', () => {
+  const started: unknown[] = [];
+  const f = fixture({ ports: { committed: (award: unknown) => { started.push(award); throw new Error('hook failed'); } } });
+  f.setFailure('declare-uncertain');
+  const result = confirm(f) as { ok: boolean; award?: unknown };
+  assert.equal(result.ok, true);
+  assert.deepEqual(started, [storedAward()]);
+});
+
+test('an uncommitted confirmation never starts a presentation', () => {
+  const started: unknown[] = [];
+  const f = fixture({ ports: { committed: (award: unknown) => started.push(award) } });
+  f.setFailure('declare-uncommitted');
+  assert.equal(confirm(f).ok, false);
+  assert.deepEqual(started, []);
+});
+
+test('manual retry and repeat are operator-only, validate the id, and return the read-back award', () => {
+  const actions: string[] = [];
+  const f = fixture({ ports: { retry: (id: string) => actions.push(`retry:${id}`), repeat: (id: string) => actions.push(`repeat:${id}`),
+    busy: () => false } });
+  confirm(f);
+  for (const [channel, name] of [[LINE_CHANNELS.retryPresentation, 'retry'], [LINE_CHANNELS.repeatPresentation, 'repeat']]) {
+    assert.deepEqual(f.invoke(channel, ['p1']), { ok: true, award: storedAward() });
+    assert.equal(actions.at(-1), `${name}:p1`);
+    for (const args of [[], [1], [''], ['x'.repeat(65)], ['p1', 'p2']]) {
+      assert.deepEqual(f.invoke(channel, args), { ok: false, code: 'invalid_request', message: 'Invalid line request.' });
+    }
+  }
+  assert.equal(actions.length, 2);
+});
+
+test('manual presentation actions report a typed busy or refused outcome without leaking detail', () => {
+  let busy = true, refuse = false;
+  const f = fixture({ ports: { busy: () => busy, retry: () => { if (refuse) throw new Error('secret row'); },
+    repeat: () => { throw new Error('secret row'); } } });
+  confirm(f);
+  const busyResult = f.invoke(LINE_CHANNELS.retryPresentation, ['p1']) as { ok: false; code: string; message: string };
+  assert.deepEqual([busyResult.ok, busyResult.code], [false, 'presentation_busy']);
+  busy = false;
+  refuse = true;
+  for (const channel of [LINE_CHANNELS.retryPresentation, LINE_CHANNELS.repeatPresentation]) {
+    const result = f.invoke(channel, ['p1']) as { ok: false; code: string; message: string };
+    assert.deepEqual([result.ok, result.code], [false, 'presentation_refused']);
+    assert.doesNotMatch(result.message, /secret/);
+  }
+});
+
+test('line begin and confirm are refused while Tongo is playing, and read is unaffected', () => {
+  let playing = true;
+  const f = fixture({ ports: { tongoPlaying: () => playing } });
+  assert.equal((f.invoke(LINE_CHANNELS.begin) as { code: string }).code, 'tongo_active');
+  assert.equal((f.invoke(LINE_CHANNELS.read) as { ok: boolean }).ok, true);
+  playing = false;
+  const session = begin(f);
+  playing = true;
+  assert.equal((f.invoke(LINE_CHANNELS.confirm, [session.sessionId, session.eventId, 3]) as { code: string }).code, 'tongo_active');
+  playing = false;
+  assert.equal((f.invoke(LINE_CHANNELS.confirm, [session.sessionId, session.eventId, 3]) as { ok: boolean }).ok, true);
+});
+
+test('manual retry and repeat are refused while Tongo plays, before any coordinator or store access', () => {
+  let playing = false;
+  const actions: string[] = [];
+  const f = fixture({ ports: { tongoPlaying: () => playing, busy: () => { actions.push('busy'); return false; },
+    retry: (id: string) => actions.push(`retry:${id}`), repeat: (id: string) => actions.push(`repeat:${id}`) } });
+  confirm(f);
+  playing = true;
+  const before = f.calls.length;
+  for (const channel of [LINE_CHANNELS.retryPresentation, LINE_CHANNELS.repeatPresentation]) {
+    const result = f.invoke(channel, ['p1']) as { ok: boolean; code: string };
+    assert.deepEqual([result.ok, result.code], [false, 'tongo_active']);
+    assert.throws(() => f.invoke(channel, ['p1'], {}), /Unauthorized/, 'operator auth still comes first');
+  }
+  assert.deepEqual(actions, []);
+  assert.equal(f.calls.length, before, 'no store access');
+  playing = false;
+  assert.equal((f.invoke(LINE_CHANNELS.retryPresentation, ['p1']) as { ok: boolean }).ok, true);
+  assert.deepEqual(actions, ['busy', 'retry:p1']);
 });

@@ -12,6 +12,16 @@ const csp = "default-src 'none'; script-src 'self'; style-src 'self'; media-src 
 const pageCsp = { public: csp, operator: csp.replace("object-src 'none';", "object-src 'none'; frame-src bingo-public:;") };
 const text = (file) => readFileSync(path.join(root, file), 'utf8');
 
+// The sandboxed public preload may send exactly one thing: the line-presentation start receipt. No invoke, no
+// sendSync, no other channel, and no way to pass anything but a validated string id.
+function assertOnlyLineReceiptSend(preload) {
+  const sends = [...preload.matchAll(/ipcRenderer\.(send|invoke|sendSync|postMessage|sendToHost)\b[^;]*;/g)].map(([call]) => call);
+  assert.equal(sends.length, 1, 'exactly one renderer-to-main call');
+  assert.match(sends[0], /^ipcRenderer\.send\(PUBLIC_LINE_RECEIPT_CHANNEL, id\);$/);
+  assert.match(preload, /PUBLIC_LINE_RECEIPT_CHANNEL = 'public:line-presentation-started'/);
+  assert.match(preload, /exposeInMainWorld\('publicLineReceipt', Object\.freeze\(\{\s*started: \(id\) => \{\s*if \(typeof id === 'string'/);
+}
+
 for (const name of ['main', 'preload', 'public-preload']) {
   test(`tsc emits ${name}.js beside renderer`, () => {
     assert.ok(statSync(path.join(dist, `${name}.js`)).size > 0);
@@ -167,7 +177,7 @@ test('theme selection keeps an operator-only setter, a receive-only sandboxed pu
   assert.match(publicPreload, /exposeInMainWorld\('publicTheme'/);
   assert.match(publicPreload, /exposeInMainWorld\('publicEventMeta'/);
   assert.match(publicPreload, /exposeInMainWorld\('publicEventPrizes'/);
-  assert.doesNotMatch(publicPreload, /ipcRenderer\.(?:send|invoke|sendSync)\b/);
+  assertOnlyLineReceiptSend(publicPreload);
   assert.match(text('dist/preload.js'), /invoke\('theme:set', theme\)/);
   assert.match(text('dist/preload.js'), /invoke\('events:update', id, meta\)/);
   assert.match(text('dist/preload.js'), /invoke\('prizes:update', id, prizes\)/);
@@ -211,13 +221,14 @@ test('operator cue sounds are emitted as local files, referenced by the operator
 
 test('Tongo keeps an operator-only trigger and a receive-only, never-replayed public signal', () => {
   const main = text('dist/main.js');
-  assert.match(main, /registerTongoIpc\)\(electron_1\.ipcMain, store, \{ authorize: operatorOnly, publish: publicDelivery\.publishPresentation \}\)/);
-  assert.match(main, /publicDelivery\.publishCommitted, tongo\.playing, line\.active\)/);
+  assert.match(main, /registerTongoIpc\)\(electron_1\.ipcMain, store, \{ authorize: operatorOnly, publish: publicDelivery\.publishPresentation,\s*lineBusy: presentation\.busy \}\)/);
+  assert.match(main, /publicDelivery\.publishCommitted, tongo\.playing, line\.active,\s*presentation\.busy\)/);
   assert.match(text('dist/preload.js'), /playTongo: \(\) => electron_1\.ipcRenderer\.invoke\('tongo:play'\)/);
   const publicPreload = text('dist/public-preload.js');
   assert.match(publicPreload, /exposeInMainWorld\('publicPresentation'/);
   assert.match(publicPreload, /'public:presentation'/);
-  assert.doesNotMatch(publicPreload, /tongo:play|ipcRenderer\.(?:send|invoke|sendSync)\b/);
+  assert.doesNotMatch(publicPreload, /tongo:play/);
+  assertOnlyLineReceiptSend(publicPreload);
 });
 
 test('committed line awards reach the public page through a main provider and one receive-only bridge', () => {
@@ -227,21 +238,59 @@ test('committed line awards reach the public page through a main provider and on
   const publicPreload = text('dist/public-preload.js');
   assert.match(publicPreload, /exposeInMainWorld\('publicLineAward'/);
   assert.match(publicPreload, /'public:line-award'/);
-  assert.doesNotMatch(publicPreload, /ipcRenderer\.(?:send|invoke|sendSync)\b/);
+  assertOnlyLineReceiptSend(publicPreload);
   // Static committed state only: no award channel on the presentation signal or an attach-time replay.
   assert.doesNotMatch(publicPreload, /public:presentation[^;]*line-award|line-award[^;]*public:presentation/);
 });
 
-test('main interrupts previously started line presentations once, before any window, delivery or IPC exists', () => {
+test('main reconciles line presentations once at startup (interrupt, then fail pending), before any window, delivery or IPC exists', () => {
   const main = text('dist/main.js');
   const calls = main.match(/interruptStartedLinePresentations\(/g) ?? [];
   assert.equal(calls.length, 1, 'one explicit startup reconciliation');
+  assert.equal((main.match(/failPendingLinePresentations\(/g) ?? []).length, 1, 'one pending reconciliation');
   const at = main.indexOf('store.interruptStartedLinePresentations()');
+  const failAt = main.indexOf('store.failPendingLinePresentations()');
+  assert.ok(failAt > at, 'pending is failed only after started is interrupted');
+  assert.ok(failAt < main.indexOf('new electron_1.BrowserWindow'), 'before any window');
   assert.ok(at > main.indexOf('initializeCurrentEvent)('), 'after the store opens');
   for (const later of ['new electron_1.BrowserWindow', 'createPublicEventDelivery)(', 'registerLineIpc)(', 'registerEventIpc)(', 'ipcMain.on(']) {
     assert.ok(main.indexOf(later) > at, `${later} comes after the reconciliation`);
   }
-  assert.doesNotMatch(main, /completeLinePresentation|startLinePresentation|retryLinePresentation/, 'no startup replay or completion');
+  // The only presentation steps main may name are the two startup reconciliations; every other transition stays
+  // inside the coordinator, so nothing replays, retries or completes by itself at startup.
+  assert.doesNotMatch(main, /completeLinePresentation|startLinePresentation|retryLinePresentation|replayLinePresentation/,
+    'no startup replay or completion');
+});
+
+test('line presentation wiring: coordinator ports, commit-only start, receipt guard and operator-only manual channels', () => {
+  const main = text('dist/main.js');
+  assert.match(main, /createLinePresentationCoordinator\)\(store, \{/);
+  assert.match(main, /publish: publicDelivery\.publishPresentation/);
+  assert.match(main, /operator\.webContents\.send\('line:presentation', award\)/);
+  assert.match(main, /committed: presentation\.begin, retry: presentation\.retry,\s*repeat: presentation\.repeat, busy: presentation\.busy, tongoPlaying: tongo\.playing/);
+  assert.match(main, /ipcMain\.on\(public_event_delivery_1\.PUBLIC_LINE_RECEIPT_CHANNEL/);
+  assert.match(main, /acceptLineReceipt\(event, id, publicUrl\)/);
+  // A main-frame (not subframe, not same-document) navigation voids pending receipt authority at its start; the
+  // finished load only re-attaches static state.
+  assert.match(main, /contents\.on\('did-start-navigation', \(details\) => \{\s*if \(details\.isMainFrame && !details\.isSameDocument\)\s*publicDelivery\.navigationStarted\(contents\);\s*\}\);/);
+  assert.match(main, /contents\.on\('did-finish-load', \(\) => publicDelivery\.attachAfterLoad\(contents\)\)/);
+  assert.match(main, /publicUrl = \(0, node_url_1\.pathToFileURL\)\(htmlPath\('public\.html'\)\)\.href/);
+  const operatorPreload = text('dist/preload.js');
+  assert.match(operatorPreload, /invoke\('line:retry-presentation', id\)/);
+  assert.match(operatorPreload, /invoke\('line:repeat-presentation', id\)/);
+  assert.match(operatorPreload, /ipcRenderer\.on\('line:presentation', listener\)/);
+  assert.doesNotMatch(operatorPreload, /public:line-presentation-started/, 'the operator cannot forge the public receipt');
+  assert.match(text('dist/line-ipc.js'), /retryPresentation: 'line:retry-presentation'/);
+  assert.match(text('dist/line-ipc.js'), /repeatPresentation: 'line:repeat-presentation'/);
+});
+
+test('the bundled public page ships the line overlay with the receipt bridge, never a trigger or a second send', () => {
+  assert.match(text('dist/renderer/public.html'), /<bingo-line-celebration id="line-celebration" lang="es"><\/bingo-line-celebration>/);
+  const bundle = readdirSync(path.join(renderer, 'assets')).filter((file) => file.endsWith('.js'))
+    .map((file) => text(`dist/renderer/assets/${file}`)).join('\n');
+  assert.match(bundle, /customElements\.define\("bingo-line-celebration"/);
+  assert.match(bundle, /publicLineReceipt/);
+  assert.doesNotMatch(bundle, /line:retry-presentation|line:repeat-presentation|tongo:play/);
 });
 
 test('the bundled public page ships the Tongo overlay but never the trigger', () => {

@@ -5,7 +5,7 @@ import type { GamePhase } from '../src/game-phase.ts';
 
 type Handler = (event: { sender: object; senderFrame: object | null }, ...args: unknown[]) => unknown;
 
-function fixture(phase: GamePhase | null = 'drawing') {
+function fixture(phase: GamePhase | null = 'drawing', lineBusy?: () => boolean) {
   const sender = {}, frame = {}, handlers = new Map<string, Handler>();
   const published: TongoPresentation[] = [], timers: Array<{ done: () => void; delay: number }> = [];
   let current: { phase: GamePhase; calledNumbers: number[] } | null =
@@ -27,6 +27,7 @@ function fixture(phase: GamePhase | null = 'drawing') {
       return true;
     },
     schedule: (done, delay) => { timers.push({ done, delay }); },
+    lineBusy,
   });
   const invoke = (args: unknown[] = [], from: object = sender, fromFrame: object | null = frame) =>
     handlers.get(TONGO_CHANNEL)!({ sender: from, senderFrame: fromFrame }, ...args);
@@ -96,4 +97,16 @@ test('a closed or failing public window yields no acknowledgement, no block, and
   }
   f.setDelivery('ok');
   assert.deepEqual(f.invoke(), { ok: true, presentation: { kind: 'tongo', id: 1, durationMs: 3000 } });
+});
+
+test('Tongo is refused while a line presentation runs, without touching the store or the display', () => {
+  let busy = true;
+  const f = fixture('drawing', () => busy);
+  const refused = f.invoke();
+  assert.deepEqual(refused, { ok: false, code: 'line_presentation_active',
+    message: 'Wait for the line celebration to finish, then try Tongo again.' });
+  assert.equal(f.loads(), 0);
+  assert.deepEqual(f.published, []);
+  busy = false;
+  assert.equal((f.invoke() as { ok: boolean }).ok, true);
 });

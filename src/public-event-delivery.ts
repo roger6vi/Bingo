@@ -5,6 +5,7 @@ import type { LotResolution } from './line-award';
 import type { GamePhase } from './game-phase';
 import type { ThemeId } from './theme';
 import type { TongoPresentation } from './tongo-ipc';
+import type { LinePresentationSignal } from './line-presentation';
 
 type PhaseSnapshot = EventSnapshot & { readonly phase: GamePhase; readonly lastTransitionAt: string | null };
 
@@ -14,6 +15,8 @@ export const PUBLIC_META_CHANNEL = 'public:event-meta';
 export const PUBLIC_PRESENTATION_CHANNEL = 'public:presentation';
 export const PUBLIC_PRIZES_CHANNEL = 'public:event-prizes';
 export const PUBLIC_LINE_AWARD_CHANNEL = 'public:line-award';
+// Renderer -> main, the only send of the public window: the line overlay has actually started rendering.
+export const PUBLIC_LINE_RECEIPT_CHANNEL = 'public:line-presentation-started';
 
 // The active event's committed name, date, and place; null when it cannot be read.
 export type PublicEventMeta = { readonly name: string; readonly date: string; readonly place: string } | null;
@@ -26,7 +29,8 @@ export type PublicLineAward = {
   readonly remainderCents: number; readonly lot: string; readonly lotResolution: LotResolution;
 } | null;
 type CommittedLineAward = Pick<StoredLineAward, 'eventId' | 'award'> | null;
-type Payload = PublicEventResult | ThemeId | PublicEventMeta | PublicEventPrizes | PublicLineAward | TongoPresentation;
+type Payload = PublicEventResult | ThemeId | PublicEventMeta | PublicEventPrizes | PublicLineAward | TongoPresentation
+  | LinePresentationSignal;
 
 export type PublicEventResult =
   | { ok: true; snapshot: PhaseSnapshot; eventChanged?: true }
@@ -36,6 +40,7 @@ type Store = { load(): PhaseSnapshot | null };
 type Target = {
   isDestroyed(): boolean;
   send(channel: string, result: Payload): void;
+  readonly mainFrame?: { readonly url: string } | null;
 };
 
 const success = (snapshot: PhaseSnapshot): PublicEventResult => ({
@@ -49,6 +54,8 @@ export function createPublicEventDelivery(
   committedPrizes?: () => PublicEventPrizes, committedLineAward?: () => CommittedLineAward,
 ) {
   let current: Target | null = null;
+  // The one line signal whose receipt may still arrive: the exact window and main frame it was sent to.
+  let lineBinding: { id: string; target: Target; frame: { readonly url: string } } | null = null;
 
   function send(target: Target, result: Payload, channel = PUBLIC_EVENT_CHANNEL): void {
     try {
@@ -125,6 +132,16 @@ export function createPublicEventDelivery(
     },
     detachIfCurrent(target: Target): void {
       if (current === target) current = null;
+      if (lineBinding?.target === target) lineBinding = null;
+    },
+    // The owning window's main frame began navigating (reload, same URL included). The frame object and URL may
+    // survive it, so identity alone cannot tell documents apart: detach now, which voids any pending receipt and
+    // keeps every send away from the loading page, and let the finished load re-attach static state only. The
+    // coordinator's already-running deadline is not owned here and is untouched. Other windows are ignored.
+    navigationStarted(target: Target): void {
+      if (current !== target) return;
+      current = null;
+      lineBinding = null;
     },
     publishCommitted(snapshot: PhaseSnapshot): void {
       const target = current;
@@ -144,11 +161,35 @@ export function createPublicEventDelivery(
     },
     // Transient and never resent on attach, so a reloaded or reopened window cannot replay it.
     // Reports whether the current window accepted it.
-    publishPresentation(presentation: TongoPresentation): boolean {
+    publishPresentation(presentation: TongoPresentation | LinePresentationSignal): boolean {
       const target = current;
       if (target === null) return false;
+      if (presentation.kind !== 'line') {
+        send(target, presentation, PUBLIC_PRESENTATION_CHANNEL);
+        return current === target;
+      }
+      // A line signal is receipted only by the frame that is sent it, so capture that frame first. A window whose
+      // frame cannot be read is not a delivery target, and any earlier binding is superseded either way.
+      lineBinding = null;
+      let frame: Target['mainFrame'];
+      try { frame = target.mainFrame; } catch { return false; }
       send(target, presentation, PUBLIC_PRESENTATION_CHANNEL);
-      return current === target;
+      if (current !== target) return false;
+      if (frame !== undefined && frame !== null) lineBinding = { id: presentation.id, target, frame };
+      return true;
+    },
+    // Authorizes one start receipt: the id must be the bound signal's, from the same window and the very frame it
+    // was sent to, which must still be that window's current main frame at the exact page URL. Rejections keep
+    // the binding; an accepted receipt consumes it, so the same signal can never be receipted twice.
+    acceptLineReceipt(event: { sender: unknown; senderFrame?: unknown }, id: unknown, expectedUrl: string): boolean {
+      const bound = lineBinding;
+      try {
+        if (bound === null || id !== bound.id || current !== bound.target || event.sender !== bound.target ||
+            bound.target.isDestroyed() || event.senderFrame !== bound.frame || bound.target.mainFrame !== bound.frame ||
+            bound.frame.url !== expectedUrl) return false;
+      } catch { return false; }
+      lineBinding = null;
+      return true;
     },
     // After the active event changes, resend its theme, metadata, prizes, and committed state in reveal order.
     publishActive(theme: ThemeId): void {

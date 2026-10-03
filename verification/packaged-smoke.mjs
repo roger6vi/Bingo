@@ -95,9 +95,9 @@ async function seed(profile) {
   await publicWindow.waitForFunction(() => document.querySelector('#called-count')?.value === '1');
   assert.deepEqual(await publicWindow.evaluate(() => ({
     desktop: 'desktop' in window, require: typeof require,
-    bridges: ['publicEvent', 'publicTheme', 'publicEventMeta', 'publicEventPrizes', 'publicPresentation']
-      .map((name) => Object.keys(window[name])),
-  })), { desktop: false, require: 'undefined', bridges: Array(5).fill(['subscribe']) });
+    bridges: ['publicEvent', 'publicTheme', 'publicEventMeta', 'publicEventPrizes', 'publicLineAward', 'publicPresentation',
+      'publicLineReceipt'].map((name) => Object.keys(window[name])),
+  })), { desktop: false, require: 'undefined', bridges: [...Array(6).fill(['subscribe']), ['started']] });
   step('committed draw reaches the sandboxed, receive-only public window');
 
   await assertPublicPlacement(app);

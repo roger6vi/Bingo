@@ -13,6 +13,14 @@ export const MESSAGES_ES = Object.freeze({
   'No current event is available.': 'No hay ningún evento activo.',
   'Could not read the current event. Try again.': 'No se pudo leer el evento activo. Inténtalo de nuevo.',
   'Wait for Tongo to finish, then draw again.': 'Espera a que termine el Tongo y vuelve a cantar.',
+  // Line celebration guards (src/event-ipc.ts, src/event-catalog-ipc.ts, src/tongo-ipc.ts, src/line-ipc.ts)
+  'Wait for the line celebration to finish, then draw again.': 'Espera a que termine la celebración de la línea y vuelve a cantar.',
+  'Wait for the line celebration to finish first.': 'Espera a que termine la celebración de la línea.',
+  'Wait for the line celebration to finish, then try Tongo again.':
+    'Espera a que termine la celebración de la línea y vuelve a intentar el Tongo.',
+  'Wait for Tongo to finish, then try again.': 'Espera a que termine el Tongo y vuelve a intentarlo.',
+  'The line celebration is not finished.': 'La celebración de la línea aún no ha terminado.',
+  'The line celebration cannot be started now.': 'No se puede iniciar la celebración de la línea ahora.',
   // Tongo IPC (src/tongo-ipc.ts)
   'Invalid Tongo request.': 'Solicitud de Tongo no válida.',
   'Tongo is already playing on the public window.': 'El Tongo ya se está mostrando en la pantalla pública.',

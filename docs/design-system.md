@@ -332,6 +332,24 @@ committed persistence snapshots (presentation never acknowledges its own intent)
   `motion.normal`, `motion.slow`, `opacity.scrim`, `radius.surface`, `space.layout`,
   `space.section`, `space.wide`.
 
+### `bingo-line-celebration` (public)
+- **Purpose:** the transient public overlay for a declared first line, shown for 4 seconds. The board
+  stays in the DOM underneath and reappears unchanged when `active` clears. The public page shows it
+  only for a signal that page received; it is never replayed on attach or reload. **Anatomy:** scrim →
+  card with "¡Línea!" and the committed award facts → visually hidden live region.
+- **Properties:** `active` (reflected boolean), `facts` (award description text, may be empty).
+  **States:** idle, active, reduced-motion (static).
+- **Accessibility:** a persistent polite `role="status"` region announces "¡Línea!" plus the facts
+  once when it appears; the card is `aria-hidden`; `pointer-events: none`, so it never traps focus or
+  input; all motion is dropped under `prefers-reduced-motion`.
+- **Scope:** presentation only. It does not report anything itself; the page reports the start after
+  the overlay has rendered. Operator recovery controls are not part of this component.
+- **Tokens:** `border-width.strong`, `color.accent`, `color.overlay`, `color.shadow`, `color.surface`,
+  `color.text`, `elevation.raised`, `font.body`, `font.display`, `font.emphasis`, `font.line`,
+  `font.size-large`, `font.tight`, `font.tracking`, `layer.overlay`, `motion.easing`,
+  `motion.normal`, `motion.slow`, `opacity.scrim`, `radius.surface`, `space.layout`,
+  `space.section`, `space.wide`.
+
 ### `bingo-tongo-control` (operator)
 - **Purpose:** the Tongo trigger, sharing the first row of the Bingo rail's claims grid with Línea
   and Bingo so it adds no rail height, with private playback progress. Presentation only: pressing

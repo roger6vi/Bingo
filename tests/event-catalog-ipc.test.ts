@@ -8,7 +8,7 @@ type Handler = (event: { sender: object; senderFrame: object | null }, ...args: 
 const summary = (id: string, active: boolean): EventSummary => ({ id, name: `Evento ${id}`, date: '2026-09-28',
   place: 'Sala', phase: 'drawing', createdAt: '2026-09-28T10:00:00.000Z', active });
 
-function fixture(setup?: () => boolean) {
+function fixture(setup?: () => boolean, lineBusy?: () => boolean) {
   const sender = {}, frame = { url: 'file:///app/operator.html' };
   const handlers = new Map<string, Handler>();
   const calls: string[] = [];
@@ -42,7 +42,7 @@ function fixture(setup?: () => boolean) {
     }, () => {
       calls.push('notify-meta');
       if (failure === 'notify-meta') throw new Error('display gone');
-    }, setup);
+    }, setup, lineBusy);
   const invoke = (channel: string, args: unknown[] = [], from: object = sender) =>
     handlers.get(channel)!({ sender: from, senderFrame: frame }, ...args);
   return { handlers, invoke, calls, setFailure: (value: string) => { failure = value; } };
@@ -152,5 +152,18 @@ test('an open first-line setup refuses select and create but not list or metadat
   assert.equal((f.invoke(CATALOG_CHANNELS.list) as { ok: boolean }).ok, true);
   assert.equal((f.invoke(CATALOG_CHANNELS.update, ['a', meta]) as { ok: boolean }).ok, true);
   open = false;
+  assert.equal((f.invoke(CATALOG_CHANNELS.select, ['a']) as { ok: boolean }).ok, true);
+});
+
+test('event create and select are refused while a line presentation runs; list and update stay available', () => {
+  let busy = true;
+  const f = fixture(undefined, () => busy);
+  const refused = { ok: false, code: 'line_presentation_active', message: 'Wait for the line celebration to finish first.' };
+  assert.deepEqual(f.invoke(CATALOG_CHANNELS.create, [meta]), refused);
+  assert.deepEqual(f.invoke(CATALOG_CHANNELS.select, ['a']), refused);
+  assert.deepEqual(f.calls, []);
+  assert.equal((f.invoke(CATALOG_CHANNELS.list) as { ok: boolean }).ok, true);
+  assert.equal((f.invoke(CATALOG_CHANNELS.update, ['a', meta]) as { ok: boolean }).ok, true);
+  busy = false;
   assert.equal((f.invoke(CATALOG_CHANNELS.select, ['a']) as { ok: boolean }).ok, true);
 });
