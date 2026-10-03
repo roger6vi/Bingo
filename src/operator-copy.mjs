@@ -62,6 +62,8 @@ export const MESSAGES_ES = Object.freeze({
   'Could not read the clock. Try again.':
     'No se pudo leer el reloj del equipo. Pulsa «Comprobar línea» para leer el estado y reintentar.',
   'Enter a whole number of winners, 1 or more.': 'Escribe un número entero de ganadores, 1 o más.',
+  'Could not confirm the line celebration. Check the line and try again.':
+    'No se pudo confirmar el estado de la celebración de la línea. Pulsa «Comprobar línea» para leerlo; no se repite sola.',
   // Renderer controllers
   'Could not connect to the event. Reload and try again.': 'No se pudo conectar con el evento. Recarga e inténtalo de nuevo.',
   'Invalid event update. Reload and try again.': 'Actualización del evento no válida. Recarga e inténtalo de nuevo.',
@@ -86,7 +88,19 @@ export function linePrizeSummary({ amount, lot }) {
 
 export const isLineInterrupted = (value) => value?.presentation?.status === 'interrupted';
 
-// What the committed award says; nothing about the public screen unless its celebration was interrupted.
+// What each stored presentation status means for the operator; only a completed one says the screen finished.
+const PRESENTATION_ES = Object.freeze({
+  pending: 'La pantalla pública todavía no muestra la celebración. Los números siguen bloqueados hasta que termine.',
+  started: 'La celebración pública está en marcha (unos 4 segundos). Los números siguen bloqueados hasta que termine.',
+  failed: 'La celebración pública no pudo mostrarse y no se ha completado. Los números siguen bloqueados: pulsa «Reintentar celebración» para intentarlo de nuevo.',
+  interrupted: 'La celebración pública quedó interrumpida al reiniciar la aplicación: no se ha completado ni se repite sola. Los números siguen bloqueados: pulsa «Repetir celebración completa» para mostrarla de nuevo manualmente.',
+  completed: 'La celebración pública terminó. Ya puedes seguir cantando números.',
+});
+
+// Shown when the celebration finished but the event could not be read again: drawing stays blocked.
+export const LINE_REFRESH_FAILED_ES = 'La celebración terminó, pero no se pudo releer el evento. Pulsa «Recargar evento» antes de seguir cantando.';
+
+// What the committed award says plus what the public celebration did; the lot stays separate from the screen.
 export function lineAwardSummary({ award, presentation }) {
   const { winnerCount, totalCents, shareCents, remainderCents, lot, lotResolution } = award;
   const parts = [`Línea declarada con ${winnerCount} ganador${winnerCount === 1 ? '' : 'es'}.`];
@@ -95,9 +109,9 @@ export function lineAwardSummary({ award, presentation }) {
     if (remainderCents > 0) parts.push(remainderCents === 1 ? 'Sobra 1 céntimo sin asignar.' : `Sobran ${remainderCents} céntimos sin asignar.`);
   }
   if (lot !== '') parts.push(lotResolution === 'pending' ? `Lote «${lot}»: pendiente de resolver entre los ganadores.` : `Lote «${lot}».`);
-  parts.push(presentation?.status === 'interrupted'
-    ? 'La celebración pública quedó interrumpida al reiniciar la aplicación: no se ha completado ni se repite sola. Los números siguen bloqueados hasta reiniciar manualmente la celebración completa.'
-    : 'La pantalla pública todavía no muestra la celebración.');
+  const status = presentation?.status;
+  parts.push(PRESENTATION_ES[Object.hasOwn(PRESENTATION_ES, status) ? status : 'pending']);
+  if (status === 'completed' && lotResolution === 'pending' && lot !== '') parts.push('El lote sigue pendiente de resolver.');
   return parts.join(' ');
 }
 
