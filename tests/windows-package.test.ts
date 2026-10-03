@@ -45,10 +45,17 @@ test('Windows config is a separate per-user NSIS x64 build that keeps user data'
   }
 });
 
-test('every packaged launch uses an explicit temporary user-data directory', () => {
-  const launches = smoke.match(/(?:electron\.launch\(\{ |spawn\()executablePath, [^\n]+/g) ?? [];
-  assert.equal(launches.length, 2);
-  for (const launch of launches) assert.match(launch, /`--user-data-dir=\$\{(?:profile|broken)\}`/);
-  assert.match(smoke, /mkdtempSync\(path\.join\(tmpdir\(\), 'bingo-packaged-'\)\)/);
-  assert.match(smoke, /rmSync\(profile, \{ recursive: true, force: true \}\)/);
+test('every packaged launch uses an explicit, verified user-data directory that the harness never deletes when supplied', () => {
+  assert.equal((smoke.match(/electron\.launch\(/g) ?? []).length, 1, 'one app launch site');
+  assert.match(smoke, /const args = \(extra\) => \[`--user-data-dir=\$\{profile\}`/);
+  assert.match(smoke, /spawn\(executablePath, \[`--user-data-dir=\$\{broken\}`/);
+  // Harness-created profiles come from the shared fixture (bingo-smoke-*); a supplied one is bounded and never removed.
+  assert.match(smoke, /createFixture\(/);
+  assert.doesNotMatch(smoke, /bingo-packaged-/);
+  assert.doesNotMatch(smoke, /rmSync\(profile/);
+  assert.match(smoke, /must be absolute/);
+  assert.match(smoke, /directly under/);
+  assert.match(smoke, /start with bingo-/);
+  assert.match(smoke, /getPath\('userData'\)/);
+  assert.match(workflow, /BINGO_DATA=\$env:RUNNER_TEMP\\bingo-user-data/, 'the workflow profile satisfies the supplied-profile rules');
 });
