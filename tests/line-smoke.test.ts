@@ -62,3 +62,20 @@ test('the body-facing context cannot launch, restart or read after cancellation,
   await assert.rejects(made.ctx.launch('after cleanup'), /cancelled/);
   assert.equal(launches.length, 1);
 }));
+
+test('packaged mode reads the foreign-window preload from inside the package; default mode keeps dist', () => {
+  const packaged = { executable: '/r/Bingo', appPath: '/r/Resources/app.asar' };
+  assert.equal(smoke.preloadFor({ root: '/feature', packaged }), '/r/Resources/app.asar/dist/public-preload.js');
+  assert.equal(smoke.preloadFor({ root: '/feature' }), '/feature/dist/public-preload.js');
+});
+
+test('an unusable packaged executable fails in setup before any launch', async () => {
+  const count = () => readdirSync(tmpdir()).filter((name) => name.startsWith('bingo-fl09-artifacts-') || name.startsWith('bingo-smoke-')).length;
+  const before = count();
+  const root = path.resolve(import.meta.dirname, '..');
+  await assert.rejects(smoke.main({ root, only: '1-', packaged: '/nonexistent/Bingo' }), /does not exist/);
+  await assert.rejects(smoke.main({ root, only: '1-', packaged: 'relative/Bingo' }), /absolute/);
+  assert.equal(count(), before, 'refused before any profile or artifact exists');
+  assert.equal(smoke.packagedFromEnv({}), undefined);
+  assert.equal(smoke.packagedFromEnv({ BINGO_SMOKE_PACKAGED: '/x/Bingo' }), '/x/Bingo');
+});

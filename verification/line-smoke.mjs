@@ -8,7 +8,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createFixture, createScope, guarded, launchVerified, resolveProject, runScenario } from './line-smoke-lifecycle.mjs';
+import { createFixture, createScope, guarded, launchVerified, resolvePackaged, resolveProject, runScenario } from './line-smoke-lifecycle.mjs';
 import { readAwards, readFixture } from './line-smoke-reader.mjs';
 
 const PRESENTATION_MS = 4000;
@@ -340,8 +340,21 @@ function provenance(project) {
       mtime: new Date(statSync(file).mtimeMs).toISOString() })) };
 }
 
-export async function main({ root, only = process.argv[2] } = {}) {
+// Opt-in packaged mode: BINGO_SMOKE_PACKAGED=<absolute path of the packaged executable under release/>.
+export const packagedFromEnv = (env = process.env) => env.BINGO_SMOKE_PACKAGED || undefined;
+// The foreign-window scenario loads the public preload from inside the package in packaged mode.
+export const preloadFor = (project) => path.join(project.packaged ? project.packaged.appPath : project.root, 'dist', 'public-preload.js');
+
+// Packaged project: the same canonical root plus the package; hashes cover the app.asar that is launched.
+function packagedProject(base, executable) {
+  const resolved = resolveProject(base, { dist: false });
+  const packaged = resolvePackaged(resolved.root, executable);
+  return { root: resolved.root, packaged, outputs: [packaged.appPath] };
+}
+
+export async function main({ root, only = process.argv[2], packaged = packagedFromEnv() } = {}) {
   const selected = selectScenarios(only);
+  if (packaged !== undefined) resolvePackaged(root ?? path.resolve(import.meta.dirname, '..'), packaged); // refuse before any profile or artifact exists
   const artifacts = mkdtempSync(path.join(tmpdir(), 'bingo-fl09-artifacts-'));
   const logFile = path.join(artifacts, 'line-smoke.log');
   const say = (text) => { const line = `[${new Date().toISOString()}] ${text}`; appendFileSync(logFile, `${line}\n`); console.log(line); };
@@ -349,13 +362,15 @@ export async function main({ root, only = process.argv[2] } = {}) {
   const save = () => writeFileSync(path.join(artifacts, 'results.json'), JSON.stringify(results, null, 2));
   say(`artifacts ${artifacts} (retained); scenarios ${selected.map(([name]) => name).join(', ')}`);
   try {
-    const project = resolveProject(root);
+    const base = root ?? path.resolve(import.meta.dirname, '..');
+    const project = packaged === undefined ? resolveProject(root) : packagedProject(base, packaged);
     say(`project ${project.root}; provenance ${JSON.stringify(provenance(project))}`);
     const { _electron: electron } = await import('playwright');
-    const executablePath = createRequire(path.join(project.root, 'package.json'))('electron');
+    const executablePath = project.packaged ? project.packaged.executable : createRequire(path.join(project.root, 'package.json'))('electron');
+    if (project.packaged) say(`PACKAGED mode: executable ${executablePath}; appPath must be ${project.packaged.appPath}`);
     for (const [name, body] of selected) {
       const { ctx, owner, scope } = createContext({ project, electron, executablePath, artifacts, name, say });
-      ctx.preload = path.join(project.root, 'dist', 'public-preload.js');
+      ctx.preload = preloadFor(project);
       results.push(await runScenario({ name, body, ctx, scope, owner, say }));
       say(`${name}: profile ${owner.fixture.path} removed=${!existsSync(owner.fixture.path)}`);
       save();

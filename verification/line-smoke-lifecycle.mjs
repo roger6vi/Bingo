@@ -17,9 +17,10 @@ const newest = (target) => {
 };
 
 // The explicit, canonical worktree root and its built entry. Never builds: a stale or missing dist is an error.
-export function resolveProject(root = path.resolve(import.meta.dirname, '..')) {
+export function resolveProject(root = path.resolve(import.meta.dirname, '..'), { dist: needsDist = true } = {}) {
   if (!path.isAbsolute(root) || !existsSync(root)) throw new Error(`project root ${root} does not exist`);
   if (realpathSync(root) !== root) throw new Error(`project root ${root} is not canonical`);
+  if (!needsDist) return { root, outputs: [] }; // packaged mode validates the package instead of dist
   const outputs = ['main.js', 'preload.js', 'public-preload.js', 'renderer/operator.html', 'renderer/public.html']
     .map((file) => path.join(root, 'dist', file));
   const missing = outputs.filter((file) => !existsSync(file));
@@ -28,6 +29,19 @@ export function resolveProject(root = path.resolve(import.meta.dirname, '..')) {
     throw new Error(`dist is stale compared with src: ${BUILD_HINT}`);
   }
   return { root, entry: path.join(root, 'dist', 'main.js'), outputs };
+}
+
+// Explicit opt-in packaged mode: the executable must be a file inside <root>/release and not older than src. The runtime
+// appPath must then be the app.asar of that same package (Contents/MacOS/<exe> -> Contents/Resources/app.asar).
+export function resolvePackaged(root, executable) {
+  if (typeof executable !== 'string' || !path.isAbsolute(executable)) throw new Error(`packaged executable ${executable} must be an absolute path`);
+  if (!existsSync(executable)) throw new Error(`packaged executable ${executable} does not exist`);
+  const real = realpathSync(executable);
+  if (!real.startsWith(path.join(root, 'release') + path.sep)) throw new Error(`packaged executable ${real} is not inside ${path.join(root, 'release')}`);
+  const appPath = path.join(path.dirname(real), '..', 'Resources', 'app.asar');
+  if (!existsSync(appPath)) throw new Error(`packaged app.asar ${appPath} does not exist`);
+  if (statSync(appPath).mtimeMs < newest(path.join(root, 'src'))) throw new Error('packaged build is stale compared with src: rebuild the package explicitly (never done by this harness)');
+  return { executable: real, appPath };
 }
 
 const exited = (child) => child.exitCode !== null || child.signalCode !== null;
@@ -119,7 +133,7 @@ export function createFixture({ tmp = tmpdir(), mkdtemp = mkdtempSync, rm = rmSy
 
 export function launchArgs(project, fixture, { isRoot = process.getuid?.() === 0 } = {}) {
   stateOf(fixture);
-  return [project.root, `--user-data-dir=${fixture.path}`, ...(isRoot ? ['--no-sandbox'] : [])];
+  return [...(project.packaged ? [] : [project.root]), `--user-data-dir=${fixture.path}`, ...(isRoot ? ['--no-sandbox'] : [])];
 }
 
 // Playwright's first main-process evaluate can fail once with "Resulting promise was garbage collected".
@@ -135,6 +149,8 @@ async function readMainPaths(app, attempts = 3) {
 export async function launchVerified({ electron, executablePath, project, fixture, timeout = 30_000, onLaunch }) {
   const state = stateOf(fixture);
   assertOpen(state, 'launch');
+  const expectedApp = project.packaged ? project.packaged.appPath : project.root;
+  if (project.packaged && path.basename(expectedApp) !== 'app.asar') throw new Error(`packaged appPath ${expectedApp} is not an app.asar`);
   const launching = Promise.resolve(electron.launch({ executablePath, args: launchArgs(project, fixture), timeout }))
     .then((app) => { state.apps.add(app); return app; });
   state.launches.add(launching.catch(() => {}));
@@ -144,10 +160,12 @@ export async function launchVerified({ electron, executablePath, project, fixtur
     assertOpen(state, 'verify a launch');
     const paths = await readMainPaths(app);
     if (paths.userData !== fixture.path) throw new Error(`Electron userData ${paths.userData} is not the fixture profile ${fixture.path}`);
-    if (paths.appPath !== project.root) throw new Error(`Electron appPath ${paths.appPath} is not the project root ${project.root}`);
+    if (paths.appPath !== expectedApp) {
+      throw new Error(`Electron appPath ${paths.appPath} is not the ${project.packaged ? 'packaged app.asar' : 'project root'} ${expectedApp}`);
+    }
     state.verified = true;
     state.active = app;
-    state.root = project.root;
+    state.root = expectedApp; // the reader re-checks the runtime appPath against this value
     return { app, operator: await app.firstWindow() };
   } catch (error) {
     await terminateApp(app).then(() => { state.apps.delete(app); }, () => {});

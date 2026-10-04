@@ -341,3 +341,53 @@ test('returned pages and locators are wrapped, handles are dropped, and results 
   }
   assert.deepEqual(raw.events, []);
 });
+
+// ---- explicit opt-in packaged mode ----------------------------------------------------------------------------
+const packagedLayout = (dir, { asar = 200, src = 100, executable = true } = {}) => {
+  project(dir);
+  const exe = path.join(dir, 'release', 'mac-arm64', 'Bingo.app', 'Contents', 'MacOS', 'Bingo');
+  if (executable) touch(exe, asar);
+  touch(path.join(dir, 'release', 'mac-arm64', 'Bingo.app', 'Contents', 'Resources', 'app.asar'), asar);
+  touch(path.join(dir, 'src', 'a.ts'), src);
+  return exe;
+};
+
+test('packaged mode resolves the executable and its app.asar, refusing relative, missing, foreign and stale builds', () => withTemp(async (dir) => {
+  const exe = packagedLayout(dir);
+  const packaged = smoke.resolvePackaged(dir, exe);
+  assert.deepEqual(packaged, { executable: exe, appPath: path.join(path.dirname(exe), '..', 'Resources', 'app.asar') });
+  assert.throws(() => smoke.resolvePackaged(dir, 'release/x/Bingo'), /absolute/);
+  assert.throws(() => smoke.resolvePackaged(dir, path.join(dir, 'release', 'nope')), /does not exist/);
+  const foreign = path.join(temp(), 'Bingo');
+  touch(foreign, 300);
+  assert.throws(() => smoke.resolvePackaged(dir, foreign), /inside .*release/);
+  rmSync(path.dirname(foreign), { recursive: true, force: true });
+  touch(path.join(dir, 'src', 'a.ts'), 900);
+  assert.throws(() => smoke.resolvePackaged(dir, exe), /stale.*rebuild/i);
+}));
+
+test('packaged launch arguments carry only the fixture profile (no project root); default arguments are unchanged', () => {
+  const fixture = smoke.createFixture();
+  try {
+    const packaged = { executable: '/r/Bingo', appPath: '/r/Resources/app.asar' };
+    assert.deepEqual(smoke.launchArgs({ root: '/feature', packaged }, fixture, { isRoot: false }), [`--user-data-dir=${fixture.path}`]);
+    assert.deepEqual(smoke.launchArgs({ root: '/feature', packaged }, fixture, { isRoot: true }), [`--user-data-dir=${fixture.path}`, '--no-sandbox']);
+    assert.deepEqual(smoke.launchArgs({ root: '/feature' }, fixture, { isRoot: false }), ['/feature', `--user-data-dir=${fixture.path}`]);
+  } finally { rmSync(fixture.path, { recursive: true, force: true }); }
+});
+
+test('packaged verification requires userData = fixture and appPath = the packaged app.asar', () => withTemp(async (dir) => {
+  const packaged = { executable: '/r/Bingo', appPath: '/r/Resources/app.asar' };
+  const launched = async (fixture, paths, packagedValue = packaged) => smoke.launchVerified({ electron: { launch: async () => fakeApp([], { paths }) },
+    executablePath: packagedValue.executable, project: { root: '/feature', packaged: packagedValue }, fixture });
+  const bad = smoke.createFixture({ tmp: dir });
+  await assert.rejects(launched(bad, { userData: bad.path, appPath: '/feature' }), /appPath .*app\.asar/);
+  const wrongProfile = smoke.createFixture({ tmp: dir });
+  await assert.rejects(launched(wrongProfile, { userData: path.join(dir, 'elsewhere'), appPath: packaged.appPath }), /userData/);
+  const notAsar = smoke.createFixture({ tmp: dir });
+  await assert.rejects(launched(notAsar, { userData: notAsar.path, appPath: '/r/Resources/app' }, { executable: '/r/Bingo', appPath: '/r/Resources/app' }), /app\.asar/);
+  const good = smoke.createFixture({ tmp: dir });
+  await launched(good, { userData: good.path, appPath: packaged.appPath });
+  assert.equal(good.verified, true);
+  await Promise.all([bad, wrongProfile, notAsar, good].map((fixture) => fixture.dispose()));
+}));
