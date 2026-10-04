@@ -135,6 +135,11 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
     receivePrizes = callback;
     return () => { unsubscribed++; };
   } };
+  let receiveLineAward;
+  window.publicLineAward = { subscribe: (callback) => {
+    receiveLineAward = callback;
+    return () => { unsubscribed++; };
+  } };
   let receivePresentation;
   window.publicPresentation = { subscribe: (callback) => {
     receivePresentation = callback;
@@ -196,6 +201,25 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
     await phase.updateComplete;
     expect(phase.shadowRoot.querySelector('[role="status"]').textContent).to.equal('Current phase: Line declared');
     await expect(phase).to.be.accessible();
+    // Committed first-line award: static text only, never a celebration; invalid or cleared payloads remove it.
+    const lineAward = shell.querySelector('#line-award');
+    expect(lineAward.hidden).to.equal(true);
+    const committedAward = { eventId: 'event-a', winnerCount: 3, totalCents: 1000, shareCents: 333, remainderCents: 1,
+      lot: '', lotResolution: 'not_required' };
+    const boardBefore = [...shell.querySelector('#called-numbers').calledNumbers];
+    receiveLineAward(committedAward);
+    expect([lineAward.hidden, lineAward.textContent]).to.deep.equal([false,
+      'Línea declarada · 3 ganadores · 3,33 € cada uno · 1 céntimo sin repartir']);
+    expect(shell.querySelector('#tongo').active).to.equal(false);
+    expect([...shell.querySelector('#called-numbers').calledNumbers]).to.deep.equal(boardBefore);
+    for (const invalid of [{ ...committedAward, shareCents: 1 }, 'award', undefined]) {
+      receiveLineAward(invalid);
+      expect([lineAward.hidden, lineAward.textContent]).to.deep.equal([true, '']);
+      receiveLineAward(committedAward);
+    }
+    receiveLineAward(null);
+    expect([lineAward.hidden, lineAward.textContent]).to.deep.equal([true, '']);
+    receiveLineAward(committedAward);
     // Tongo overlays the unchanged board, then clears; repeats and junk never replay it.
     const tongo = shell.querySelector('#tongo');
     const board = () => [...shell.querySelector('#called-numbers').calledNumbers];
@@ -209,13 +233,14 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
     expect(tongo.active).to.equal(false);
     expect([board(), phase.message, status.message]).to.deep.equal(before);
     window.dispatchEvent(new Event('pagehide'));
-    expect(unsubscribed).to.equal(5);
+    expect(unsubscribed).to.equal(6);
   } finally {
     shell.remove();
     delete window.publicEvent;
     delete window.publicTheme;
     delete window.publicEventMeta;
     delete window.publicEventPrizes;
+    delete window.publicLineAward;
     delete window.publicPresentation;
     delete document.documentElement.dataset.theme;
   }

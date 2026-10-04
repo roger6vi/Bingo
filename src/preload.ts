@@ -14,6 +14,11 @@ contextBridge.exposeInMainWorld('desktop', Object.freeze({
   getPrizes: () => ipcRenderer.invoke('prizes:get'),
   updatePrizes: (id: string, prizes: { line: { amount: number; lot: string }; bingo: { amount: number; lot: string } }) =>
     ipcRenderer.invoke('prizes:update', id, prizes),
+  beginLineSetup: () => ipcRenderer.invoke('line:begin'),
+  readLineSetup: () => ipcRenderer.invoke('line:read'),
+  cancelLineSetup: (sessionId: string, eventId: string) => ipcRenderer.invoke('line:cancel', sessionId, eventId),
+  confirmLine: (sessionId: string, eventId: string, winnerCount: number) =>
+    ipcRenderer.invoke('line:confirm', sessionId, eventId, winnerCount),
   getTheme: () => ipcRenderer.invoke('theme:get'),
   setTheme: (theme: string) => ipcRenderer.invoke('theme:set', theme),
   playTongo: () => ipcRenderer.invoke('tongo:play'),

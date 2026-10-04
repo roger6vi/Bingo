@@ -7,7 +7,7 @@ import './components/bingo-number-board.mjs';
 import './components/bingo-prize-display.mjs';
 import './components/bingo-tongo.mjs';
 import './screen.css';
-import { createPublicController } from './public-controller.mjs';
+import { createPublicController, describeLineAward, validLineAward } from './public-controller.mjs';
 import { applyTheme, revealAfter } from './theme-controller.mjs';
 import { publicBridges, validEventMeta } from './public-bridge.mjs';
 import { validPrizes } from './prize-format.mjs';
@@ -50,6 +50,19 @@ const unsubscribeMeta = bridges.meta.subscribe((meta) => {
 // Only the committed prizes the main process sends; an unreadable payload shows them as undefined.
 const unsubscribePrizes = bridges.prizes.subscribe((value) => { prizes.prizes = validPrizes(value) ? value : null; });
 
+// Static committed award text only: no animation, timer or presentation state, so a late attach or reload shows
+// the same facts and never implies that a celebration played. Invalid or cleared payloads remove it.
+const lineAward = document.createElement('p');
+lineAward.id = 'line-award';
+lineAward.lang = 'es';
+lineAward.hidden = true;
+prizes.parentElement.append(lineAward);
+const unsubscribeLineAward = bridges.lineAward.subscribe((award) => {
+  const valid = validLineAward(award);
+  lineAward.textContent = valid ? describeLineAward(award) : '';
+  lineAward.hidden = !valid;
+});
+
 const controller = createPublicController(bridges.event, {
   render: (state) => {
     latest.latest = state.latest;
@@ -84,5 +97,6 @@ window.addEventListener('pagehide', () => {
   unsubscribeTheme();
   unsubscribeMeta();
   unsubscribePrizes();
+  unsubscribeLineAward();
   clearTimeout(revealTimer);
 }, { once: true });

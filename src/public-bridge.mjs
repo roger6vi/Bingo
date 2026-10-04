@@ -2,7 +2,7 @@
 // subscriptions. Framed as the operator's simulator (no preload), the same page instead receives
 // display-only messages from its parent frame; it never gains a way to send or write anything.
 export const SIMULATOR_MESSAGE = 'bingo-public-simulator';
-const CHANNELS = ['event', 'theme', 'meta', 'prizes'];
+const CHANNELS = ['event', 'theme', 'meta', 'prizes', 'lineAward'];
 
 function frameBridges(win) {
   const listeners = Object.fromEntries(CHANNELS.map((channel) => [channel, new Set()]));
@@ -18,13 +18,15 @@ function frameBridges(win) {
   } });
   // Tongo plays only on the public window; the simulator's presentation input never fires.
   const inert = Object.freeze({ subscribe: () => () => {} });
-  return { event: channel('event'), theme: channel('theme'), meta: channel('meta'), prizes: channel('prizes'), presentation: inert };
+  return { event: channel('event'), theme: channel('theme'), meta: channel('meta'), prizes: channel('prizes'),
+    lineAward: channel('lineAward'), presentation: inert };
 }
 
 export function publicBridges(win = window) {
-  if (win.publicEvent && win.publicTheme && win.publicEventMeta && win.publicEventPrizes && win.publicPresentation) {
+  if (win.publicEvent && win.publicTheme && win.publicEventMeta && win.publicEventPrizes &&
+      win.publicLineAward && win.publicPresentation) {
     return { event: win.publicEvent, theme: win.publicTheme, meta: win.publicEventMeta, prizes: win.publicEventPrizes,
-      presentation: win.publicPresentation };
+      lineAward: win.publicLineAward, presentation: win.publicPresentation };
   }
   if (win.parent !== win) return frameBridges(win);
   throw new Error('Missing public display bridge');

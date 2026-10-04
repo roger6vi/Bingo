@@ -11,7 +11,7 @@ const initialSnapshot = (calledNumbers: number[]): StoredSnapshot =>
 type Handler = (event: { sender: object; senderFrame: object | null }, ...args: unknown[]) => unknown;
 
 function fixture(initial: readonly number[] | null = [90, 1], random = () => 0,
-  notify?: (snapshot: EventSnapshot) => void, presenting?: () => boolean) {
+  notify?: (snapshot: EventSnapshot) => void, presenting?: () => boolean, setup?: () => boolean) {
   const sender = {}, frame = { url: 'file:///app/operator.html' }, other = {};
   const handlers = new Map<string, Handler>();
   const calls: string[] = [];
@@ -35,7 +35,7 @@ function fixture(initial: readonly number[] | null = [90, 1], random = () => 0,
   registerEventIpc({ handle: (channel: string, handler: Handler) => {
     assert.equal(handlers.has(channel), false);
     handlers.set(channel, handler);
-  } }, store, rules, random, sender, () => frame, frame.url, notify, presenting);
+  } }, store, rules, random, sender, () => frame, frame.url, notify, presenting, setup);
   const invoke = (channel: string, args: unknown[] = [], from = sender, fromFrame: object | null = frame) => {
     const handler = handlers.get(channel);
     assert.ok(handler);
@@ -237,4 +237,18 @@ test('draws are refused without touching store, randomness, or display while Ton
   assert.deepEqual([f.calls, notified, f.snapshot()], [['load'], [], [1]]);
   playing = false;
   assert.deepEqual(f.invoke(EVENT_CHANNELS.manual, [2]), { ok: true, snapshot: initialSnapshot([1, 2]) });
+});
+
+test('an open first-line setup refuses manual and digital draws before the store or randomness', () => {
+  let open = true;
+  const f = fixture([90, 1], () => { f.calls.push('random'); return 0; }, undefined, undefined, () => open);
+  const refused = failure('line_setup_active', 'Finish or cancel the first-line setup, then draw again.');
+  assert.deepEqual(f.invoke(EVENT_CHANNELS.manual, [45]), refused);
+  assert.deepEqual(f.invoke(EVENT_CHANNELS.digital), refused);
+  assert.deepEqual(f.calls, []);
+  assert.deepEqual(f.snapshot(), [90, 1]);
+  // Reading stays available so a reloaded dialog can recover, and draws resume once setup closes.
+  assert.equal((f.invoke(EVENT_CHANNELS.get) as { ok: boolean }).ok, true);
+  open = false;
+  assert.equal((f.invoke(EVENT_CHANNELS.manual, [45]) as { ok: boolean }).ok, true);
 });

@@ -1,3 +1,5 @@
+import { formatEuros } from './prize-format.mjs';
+
 // Spanish copy for the operator window. The main process and the shared controllers report English
 // messages; the operator presents them in Spanish. An unknown message falls back to a generic Spanish
 // notice rather than showing English copy.
@@ -32,6 +34,26 @@ export const MESSAGES_ES = Object.freeze({
     'No se pudieron guardar los datos del evento. Recarga los eventos e inténtalo de nuevo.',
   'The event details were saved, but the list could not be read. Reload the events.':
     'Los datos del evento se guardaron, pero no se pudo leer la lista. Recarga los eventos.',
+  // First-line IPC (src/line-ipc.ts, event-ipc.ts and catalog guards)
+  'Invalid line request.': 'Solicitud de línea no válida. Comprueba el estado de la línea.',
+  'This setup is no longer current. Reopen it.':
+    'Esta declaración ya no está vigente. Pulsa «Comprobar línea» para ver el estado.',
+  'A first-line setup is already open. Reopen it to continue.':
+    'Ya hay una declaración de línea abierta. Pulsa «Reanudar línea» para continuar.',
+  'The first line cannot be declared now.': 'Ahora no se puede declarar la línea. Comprueba el estado del evento.',
+  'A confirmation is in progress. Try again.': 'Hay una confirmación en curso. Comprueba el estado de la línea en unos segundos.',
+  'Could not read the first-line state. Try again.': 'No se pudo leer el estado de la línea. Pulsa «Comprobar línea».',
+  'Could not declare the line. Reopen the setup and check the state before trying again.':
+    'No se pudo confirmar la línea. No la declares de nuevo: pulsa «Comprobar línea» para leer el estado.',
+  'Finish or cancel the first-line setup, then draw again.': 'Termina o cancela la declaración de la línea y vuelve a cantar.',
+  'Finish or cancel the first-line setup first.': 'Termina o cancela la declaración de la línea primero.',
+  'Could not connect to the first-line setup. Check the state and try again.':
+    'No se pudo conectar con la declaración de la línea. Pulsa «Comprobar línea» para leer el estado; no la declares de nuevo.',
+  'Invalid first-line update. Check the state and try again.':
+    'Respuesta de la línea no válida. Pulsa «Comprobar línea» para leer el estado; no la declares de nuevo.',
+  'Could not read the clock. Try again.':
+    'No se pudo leer el reloj del equipo. Pulsa «Comprobar línea» para leer el estado y reintentar.',
+  'Enter a whole number of winners, 1 or more.': 'Escribe un número entero de ganadores, 1 o más.',
   // Renderer controllers
   'Could not connect to the event. Reload and try again.': 'No se pudo conectar con el evento. Recarga e inténtalo de nuevo.',
   'Invalid event update. Reload and try again.': 'Actualización del evento no válida. Recarga e inténtalo de nuevo.',
@@ -42,6 +64,30 @@ export const MESSAGES_ES = Object.freeze({
   'Invalid Tongo response.': 'Respuesta de Tongo no válida.',
   'Could not start Tongo. Try again.': 'No se pudo iniciar el Tongo. Inténtalo de nuevo.',
 });
+
+// 333 → "3,33 €"; formatEuros supplies the grouped whole part and its trailing " €".
+const euroCents = (cents) => `${formatEuros(Math.trunc(cents / 100)).slice(0, -2)},${String(cents % 100).padStart(2, '0')} €`;
+
+// The frozen prize a declaration will use: money, an indivisible lot, both or neither.
+export function linePrizeSummary({ amount, lot }) {
+  const parts = [];
+  if (amount > 0) parts.push(formatEuros(amount));
+  if (lot !== '') parts.push(`lote «${lot}»`);
+  return `Premio de línea configurado: ${parts.length === 0 ? 'sin premio' : parts.join(' + ')}.`;
+}
+
+// What the committed award says; nothing about the public screen, which has not shown it yet.
+export function lineAwardSummary({ award }) {
+  const { winnerCount, totalCents, shareCents, remainderCents, lot, lotResolution } = award;
+  const parts = [`Línea declarada con ${winnerCount} ganador${winnerCount === 1 ? '' : 'es'}.`];
+  if (totalCents > 0) {
+    parts.push(winnerCount === 1 ? `Premio: ${euroCents(totalCents)}.` : `Premio: ${euroCents(totalCents)}, ${euroCents(shareCents)} cada uno.`);
+    if (remainderCents > 0) parts.push(remainderCents === 1 ? 'Sobra 1 céntimo sin asignar.' : `Sobran ${remainderCents} céntimos sin asignar.`);
+  }
+  if (lot !== '') parts.push(lotResolution === 'pending' ? `Lote «${lot}»: pendiente de resolver entre los ganadores.` : `Lote «${lot}».`);
+  parts.push('La pantalla pública todavía no muestra la celebración.');
+  return parts.join(' ');
+}
 
 export const UNKNOWN_ERROR_ES = 'Se produjo un error. Recarga e inténtalo de nuevo.';
 

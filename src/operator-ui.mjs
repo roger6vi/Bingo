@@ -17,11 +17,11 @@ import { BingoDateField } from './components/bingo-date-field.mjs';
 import { BingoSelectField } from './components/bingo-select-field.mjs';
 import { BingoFormActions } from './components/bingo-form-actions.mjs';
 import './screen.css';
-import { createOperatorController } from './operator-controller.mjs';
+import { createOperatorController, createLineController } from './operator-controller.mjs';
 import { createManualDrawHandler } from './manual-draw.mjs';
 import { createEventsController, today } from './events-controller.mjs';
 import { applyTheme, createThemeController, DEFAULT_THEME, revealAfter } from './theme-controller.mjs';
-import { operatorMessage, PHASE_LABELS_ES, THEME_NAMES_ES } from './operator-copy.mjs';
+import { operatorMessage, lineAwardSummary, linePrizeSummary, PHASE_LABELS_ES, THEME_NAMES_ES } from './operator-copy.mjs';
 import { bindSettings } from './settings-ui.mjs';
 import { bindCueControls } from './cue-ui.mjs';
 import { createTongoController, tongoPlayable } from './tongo.mjs';
@@ -111,20 +111,44 @@ let eventListRef = null;
 // While Tongo is requested or playing, every other live action waits; it is offered only during play.
 let tongoBusy = false;
 let gameState = null;
+let lineState = { mode: 'unknown', pending: false };
+let activeEventId = null;
+let createSubmitRef = null;
+// Main's line state must belong to the event the page shows as active; otherwise it is not trusted.
+// Only the data of the current mode counts: the controller keeps an old award after a later read of none.
+const lineEventId = () => (lineState.mode === 'setup' ? lineState.session?.eventId : lineState.mode === 'declared' ? lineState.award?.eventId : null) ?? null;
+const lineMismatch = () => activeEventId !== null && lineEventId() !== null && lineEventId() !== activeEventId;
+const lineBlocked = () => lineState.pending || lineState.mode === 'setup';
+const LINE_MISMATCH = 'El estado de la línea pertenece a otro evento. Pulsa «Recargar eventos» para leerlo de nuevo.';
+const claimLine = required('claim-line', BingoButton);
+const LINE_LABELS = { setup: 'Reanudar línea', uncertain: 'Comprobar línea', declared: 'Línea declarada' };
+// Starting needs a fully known drawing game; recovery and resuming need only main's answer.
+function lineClaimDisabled() {
+  // Pending stays enabled so the button keeps focus; the controller already ignores a second request.
+  if (lineState.mode === 'declared' || lineMismatch()) return true;
+  if (lineState.mode === 'idle') return !(gameState?.snapshot && !gameState.stale && !gameState.pending && gameState.phase === 'drawing');
+  return false;
+}
 const tongoControl = required('tongo-control', HTMLElement);
 const tongoError = required('tongo-error', HTMLElement);
 function applyLocks() {
-  const locked = selecting || activating || tongoBusy;
+  // An open or in-flight first-line setup blocks the same writes main refuses.
+  const lineLocked = lineBlocked();
+  const locked = selecting || activating || tongoBusy || lineLocked;
+  claimLine.disabled = selecting || activating || tongoBusy || lineClaimDisabled();
   tongoControl.disabled = locked || !tongoPlayable(gameState);
   controls.manualDisabled = locked || drawLocks.manualDisabled;
   controls.digitalDisabled = locked || drawLocks.digitalDisabled;
-  controls.reloadDisabled = locked || drawLocks.reloadDisabled;
+  // Reloading the event is the recovery path while a setup is open (it only re-reads); a line request in flight still blocks it.
+  controls.reloadDisabled = selecting || activating || tongoBusy || lineState.pending || drawLocks.reloadDisabled;
   // A request in flight keeps the board idle-looking but inert; it is disabled only when it cannot draw.
   board.disabled = locked || (drawLocks.manualDisabled && !drawLocks.pending);
   board.pending = drawLocks.pending;
   settings.setLocked(locked || themePending);
   // A second selection must not start until the first one's dependent panels have re-read.
-  if (eventListRef !== null) eventListRef.disabled = eventsPending || activating || tongoBusy;
+  if (eventListRef !== null) eventListRef.disabled = eventsPending || activating || tongoBusy || lineLocked;
+  // Main refuses a create during a setup; reload stays available as the recovery path.
+  if (createSubmitRef !== null) createSubmitRef.disabled = eventsPending || lineLocked;
 }
 
 openPublic.addEventListener('click', () => window.desktop.openPublic());
@@ -142,7 +166,8 @@ board.readonly = controls.mode === 'digital';
 controls.addEventListener('mode-change', () => { board.readonly = controls.mode === 'digital'; });
 
 const controller = createOperatorController(desktop, {
-  bind: ({ manual, digital, reload }) => {
+  bind: ({ manual, digital, reload: reloadEvent }) => {
+    const reload = () => { reloadEvent(); void rereadLine(); };
     // The board only requests a call; it shows the number called once the acknowledged snapshot arrives.
     board.addEventListener('number-select', (event) => {
       if (selecting || activating || tongoBusy || controls.mode === 'digital') return;
@@ -187,6 +212,52 @@ const controller = createOperatorController(desktop, {
   },
 });
 void controller.start();
+
+const lineStatus = required('line-status', HTMLElement);
+const lineDialog = required('line-dialog', HTMLElement);
+const lineWinners = required('line-winners', BingoTextField);
+const linePrize = required('line-prize', HTMLElement);
+lineDialog.actions = [{ action: 'cancel', label: 'Cancelar', signal: 'dismiss' },
+  { action: 'confirm', label: 'Declarar línea', signal: 'confirm' }];
+let lineDialogShown = false;
+function paintLineStatus() {
+  const state = lineState;
+  const shown = lineStatus.hidden;
+  lineStatus.message = state.pending ? 'Comprobando la línea' : operatorMessage(state.error)
+    ?? (lineMismatch() ? LINE_MISMATCH : state.mode === 'declared' && state.award ? lineAwardSummary(state.award)
+      : state.mode === 'setup' && !state.dialogOpen ? 'Hay una declaración de línea abierta. Pulsa «Reanudar línea» para continuar o cancelarla.' : '');
+  lineStatus.tone = state.error ? 'error' : lineMismatch() ? 'warning' : state.mode === 'declared' ? 'success' : 'info';
+  lineStatus.hidden = lineStatus.message === '';
+  // Like Tongo's refusal, a new line message must not stay clipped at the bottom of the rail.
+  if (lineStatus.hidden === false && shown) void lineStatus.updateComplete.then(() => lineStatus.scrollIntoView({ block: 'nearest' }));
+}
+const line = createLineController(desktop, {
+  render: (state) => {
+    lineState = state;
+    claimLine.textContent = LINE_LABELS[state.mode] ?? 'Línea';
+    paintLineStatus();
+    if (state.session) linePrize.textContent = linePrizeSummary(state.session.linePrize);
+    lineWinners.error = operatorMessage(state.countError) ?? '';
+    if (state.dialogOpen && !lineDialogShown) {
+      lineDialogShown = true;
+      // A fresh setup starts at one winner; a corrected attempt keeps what was typed.
+      if (state.countError === null) lineWinners.value = '1';
+      // After the dialog closed itself, the opener has regained focus, so it is restored to the same button.
+      queueMicrotask(() => { void lineDialog.show(); });
+    }
+    applyLocks();
+  },
+}, { committed: () => controller.start() });
+claimLine.addEventListener('click', () => { if (!claimLine.disabled) void line.open(); });
+lineDialog.addEventListener('dismiss', () => { lineDialogShown = false; void line.cancel(); });
+lineDialog.addEventListener('confirm', () => { lineDialogShown = false; void line.confirm(lineWinners.value); });
+void line.start();
+// After any change of the active event, main's line state is read again (never confirmed or cancelled).
+// A read already in flight may predate the change, so it settles first.
+async function rereadLine() {
+  if (lineState.pending) await line.start();
+  await line.start();
+}
 
 const tongo = createTongoController(desktop, {
   render: ({ busy, progress, error }) => {
@@ -233,6 +304,7 @@ const eventsError = required('events-error', HTMLElement);
 const reloadEvents = required('reload-events', HTMLElement);
 const createForm = required('create-event', HTMLFormElement);
 const createSubmit = required('create-event-submit', BingoButton);
+createSubmitRef = createSubmit;
 const createActions = required('create-event-actions', BingoFormActions);
 const eventDate = required('event-date', BingoDateField);
 const banner = required('active-event-banner', HTMLElement);
@@ -247,7 +319,9 @@ const events = createEventsController(desktop, {
     eventsPending = pending !== null;
     applyLocks();
     reloadEvents.disabled = pending !== null;
-    createSubmit.disabled = pending !== null;
+    if (!stale) activeEventId = active?.id ?? null;
+    paintLineStatus();
+    applyLocks();
     createActions.pending = pending === 'create';
     eventsStatus.message = pending === 'select' ? 'Activando evento' : pending === 'create' ? 'Creando evento'
       : !loaded ? (pending ? 'Cargando eventos' : 'No se pudieron cargar los eventos')
@@ -263,10 +337,10 @@ const events = createEventsController(desktop, {
       : loaded ? 'Ningún evento seleccionado. Elige uno en Eventos.' : 'Cargando evento';
     banner.tone = active && !stale ? 'info' : 'warning';
   },
-}, () => Promise.all([controller.resync(), themes.start(), loadPrizes()]));
+}, () => Promise.all([controller.resync(), themes.start(), loadPrizes(), rereadLine()]));
 // events.select resolves only after resync() and the theme re-read settle.
 eventList.addEventListener('event-select', async (event) => {
-  if (activating || tongoBusy) return;
+  if (activating || tongoBusy || lineBlocked()) return;
   // Selecting another event would replace the draft: offer Save, Discard, or Cancel first.
   if (await settings.confirmLeave() !== true || activating) return;
   activating = true;
@@ -278,11 +352,15 @@ eventList.addEventListener('event-select', async (event) => {
     applyLocks();
   }
 });
-reloadEvents.addEventListener('click', () => { void events.start(); void loadPrizes(); });
+reloadEvents.addEventListener('click', () => { void events.start(); void loadPrizes(); void rereadLine(); });
 createForm.addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (lineBlocked()) return;
   const meta = { name: createForm.elements.name.value, place: createForm.elements.place.value, date: eventDate.value };
-  if (await events.create(meta)) {
+  const created = await events.create(meta);
+  // A create may have activated the new event, so main's line state is read again either way.
+  void rereadLine();
+  if (created) {
     createForm.reset();
     eventDate.value = today();
   }

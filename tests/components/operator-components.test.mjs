@@ -28,7 +28,7 @@ const stylesheet = (href) => new Promise((resolve, reject) => {
 
 // Mounts the real operator page and entry module against an in-memory desktop boundary, and records
 // every message the Configuración simulator frame receives.
-async function loadOperator() {
+async function loadOperator(options = {}) {
   const page = new DOMParser().parseFromString(await (await fetch(new URL('../../src/operator.html', import.meta.url))).text(), 'text/html');
   const main = document.importNode(page.querySelector('bingo-app-shell'), true);
   // Browser-only tests cannot resolve Electron's local simulator protocol; keep its message sink inert.
@@ -42,7 +42,14 @@ async function loadOperator() {
   document.head.append(screen);
   const requests = [];
   const replies = { setTheme: null, updateEvent: null, drawManual: null, playTongo: null, getPrizes: null, updatePrizes: null };
-  const reads = { prizes: 0 };
+  const reads = { prizes: 0, line: 0 };
+  // First-line boundary: the default is an idle main; a test replaces a reply to script another state.
+  const lineSession = { sessionId: 's1', eventId: 'a', calledNumbers: [4, 9], linePrize: { amount: 10, lot: 'Jam\u00f3n' } };
+  const lineAward = (winnerCount) => ({ eventId: 'a', award: { winnerCount, totalCents: 1000, shareCents: Math.floor(1000 / winnerCount),
+    remainderCents: 1000 % winnerCount, lot: 'Jam\u00f3n', lotResolution: winnerCount > 1 ? 'pending' : 'not_required' },
+  presentation: { id: 'p', status: 'pending', startedAt: null, deadlineAt: null } });
+  const line = { read: async () => ({ ok: true, state: 'none' }), begin: async () => ({ ok: true, session: lineSession }),
+    cancel: async () => ({ ok: true }), confirm: async (count) => ({ ok: true, award: lineAward(count) }), session: lineSession, ...options.line };
   let theme = 'jules';
   const prizes = { a: { line: { amount: 150, lot: 'Jam\u00f3n' }, bingo: { amount: 0, lot: '' } } };
   const activeId = () => events.find((event) => event.active).id;
@@ -64,6 +71,10 @@ async function loadOperator() {
       return replies.playTongo ? replies.playTongo()
         : { ok: false, code: 'public_unavailable', message: 'Open the public window, then try Tongo again.' };
     },
+    readLineSetup: async () => { reads.line++; return line.read(); },
+    beginLineSetup: async () => { requests.push('line:begin'); return line.begin(); },
+    cancelLineSetup: async (id, eventId) => { requests.push(`line:cancel:${id}:${eventId}`); return line.cancel(); },
+    confirmLine: async (id, eventId, count) => { requests.push(`line:confirm:${id}:${eventId}:${count}`); return line.confirm(count); },
     onPublicStatus: () => {}, openPublic: () => {}, movePublicToSecondary: () => {},
     getTheme: async () => ({ ok: true, theme }),
     setTheme: async (next) => {
@@ -73,7 +84,7 @@ async function loadOperator() {
       return { ok: true, theme };
     },
     listEvents: async () => list(),
-    createEvent: async () => list(),
+    createEvent: async () => (options.createEvent ? options.createEvent() : list()),
     selectEvent: async (id) => {
       requests.push(`select:${id}`);
       events = events.map((event) => ({ ...event, active: event.id === id }));
@@ -126,7 +137,7 @@ async function loadOperator() {
     delete window.desktop;
     delete document.documentElement.dataset.theme;
   };
-  return { main, requests, replies, reads, simulator, cleanup };
+  return { main, requests, replies, reads, line, simulator, cleanup };
 }
 
 function type(input, value) {
@@ -173,7 +184,7 @@ it('operator page is a Spanish three-tab application shell with shared panels an
   expect(rail.getAttribute('label')).to.equal('Controles de la partida');
   expect(rail.querySelector('bingo-draw-controls#draw-controls')).not.to.equal(null);
   expect([...rail.querySelectorAll('.claim-buttons bingo-button')].map((button) => [button.textContent, button.hasAttribute('disabled')]))
-    .to.deep.equal([['Línea', true], ['Bingo', true], ['Sorteo de empate', true]]);
+    .to.deep.equal([['Línea', false], ['Bingo', true], ['Sorteo de empate', true]]);
   expect(rail.querySelector('[slot="footer"] #open-public')).not.to.equal(null, 'the public-window launch is pinned to the rail');
   expect(rail.querySelector('[slot="footer"] input#cue-mute[type="checkbox"]')).not.to.equal(null);
   expect(rail.querySelector('[slot="footer"] input#cue-volume[type="range"]')).not.to.equal(null);
@@ -213,7 +224,7 @@ it('operator page is a Spanish three-tab application shell with shared panels an
     expect(page.querySelector(`footer[slot="status"] bingo-status#${id}`)).not.to.equal(null, `${id} in the status bar`);
   }
   for (const id of ['open-public', 'move-public']) expect(page.querySelector(`bingo-button#${id}`)).not.to.equal(null);
-  expect([...page.querySelectorAll('bingo-dialog')].map((dialog) => dialog.id)).to.deep.equal(['unsaved-dialog']);
+  expect([...page.querySelectorAll('bingo-dialog')].map((dialog) => dialog.id)).to.deep.equal(['unsaved-dialog', 'line-dialog']);
   // No English operator copy remains in the page.
   const copy = [page.title, page.body.textContent, ...[...page.querySelectorAll('[label],[heading],[message],[title],[aria-label]')]
     .flatMap((element) => ['label', 'heading', 'message', 'title', 'aria-label'].map((name) => element.getAttribute(name) ?? ''))].join(' ');
@@ -1278,5 +1289,274 @@ it('a failed re-read locks previously read prizes with the visible error', async
     main.querySelector('#reload-events').click();
     await settle();
     expect([amount.disabled, amount.value, main.querySelector('#prizes-status').hidden]).to.deep.equal([true, '', false]);
+  } finally { op.cleanup(); }
+});
+
+// First-line declaration through the real operator page.
+async function openLineDialog(op) {
+  op.main.querySelector('#tab-bingo').click();
+  await settle();
+  const claim = op.main.querySelector('#claim-line');
+  await claim.updateComplete;
+  claim.button.focus();
+  claim.button.click();
+  await settle();
+  const dialog = op.main.querySelector('#line-dialog');
+  await dialog.updateComplete;
+  return { claim, dialog, field: op.main.querySelector('#line-winners'), status: op.main.querySelector('#line-status'),
+    action: (name) => dialog.shadowRoot.querySelector(`[data-action="${name}"]`).button };
+}
+
+it('Línea opens an accessible Spanish dialog with the physical-check reminder, no identities and one winner', async () => {
+  await setViewport({ width: 1280, height: 720 });
+  const op = await loadOperator();
+  try {
+    const { claim, dialog, field } = await openLineDialog(op);
+    expect(claim.disabled).to.equal(false);
+    expect(dialog.shadowRoot.querySelector('dialog').open).to.equal(true);
+    expect(dialog.label).to.equal('Declarar la línea');
+    expect(dialog.textContent).to.include('cartón físico, fuera de esta aplicación');
+    expect(dialog.textContent).to.include('Premio de línea configurado: 10 € + lote «Jamón».');
+    expect(field.value).to.equal('1');
+    expect(dialog.querySelectorAll('bingo-text-field')).to.have.length(1, 'only the winner count is asked');
+    expect(op.requests.filter((request) => request.startsWith('line:'))).to.deep.equal(['line:begin']);
+    await expect(dialog).to.be.accessible();
+    // The corrected rail still fits.
+    const rail = op.main.querySelector('bingo-side-rail').shadowRoot.querySelector('.body');
+    expect(rail.scrollHeight).to.be.at.most(rail.clientHeight);
+  } finally { op.cleanup(); await setViewport({ width: 800, height: 600 }); }
+});
+
+it('cancelling the line dialog by button or Escape cancels the session and restores focus without declaring', async () => {
+  const op = await loadOperator();
+  try {
+    for (const how of ['button', 'escape']) {
+      const { claim, dialog, action } = await openLineDialog(op);
+      if (how === 'button') action('cancel').click();
+      else dialog.shadowRoot.querySelector('dialog').dispatchEvent(new Event('cancel', { cancelable: true }));
+      await settle();
+      expect(dialog.shadowRoot.querySelector('dialog').open).to.equal(false);
+      expect(claim.button.getRootNode().activeElement === claim.button).to.equal(true, 'focus returns to the Línea button');
+    }
+    expect(op.requests.filter((request) => request.startsWith('line:'))).to.deep.equal([
+      'line:begin', 'line:cancel:s1:a', 'line:begin', 'line:cancel:s1:a']);
+  } finally { op.cleanup(); }
+});
+
+it('an invalid winner count keeps the dialog open with an inline Spanish error and sends nothing', async () => {
+  const op = await loadOperator();
+  try {
+    const { dialog, field, action } = await openLineDialog(op);
+    type(field.shadowRoot.querySelector('input'), '0');
+    action('confirm').click();
+    await settle();
+    await dialog.updateComplete;
+    expect(dialog.shadowRoot.querySelector('dialog').open).to.equal(true);
+    expect(field.error).to.equal('Escribe un número entero de ganadores, 1 o más.');
+    expect(field.value).to.equal('0');
+    expect(op.requests.filter((request) => request.startsWith('line:confirm'))).to.deep.equal([]);
+  } finally { op.cleanup(); }
+});
+
+it('confirming sends the explicit count once and shows the committed share, remainder and lot without public delivery', async () => {
+  const op = await loadOperator();
+  try {
+    const { claim, field, status, action } = await openLineDialog(op);
+    type(field.shadowRoot.querySelector('input'), '3');
+    action('confirm').click();
+    await settle();
+    expect(op.requests.filter((request) => request.startsWith('line:confirm'))).to.deep.equal(['line:confirm:s1:a:3']);
+    expect([status.hidden, status.tone]).to.deep.equal([false, 'success']);
+    expect(status.message).to.include('Línea declarada con 3 ganadores.');
+    expect(status.message).to.include('3,33 € cada uno');
+    expect(status.message).to.include('Sobra');
+    expect(status.message).to.include('pendiente de resolver');
+    expect(status.message).to.include('todavía no muestra la celebración');
+    expect([claim.disabled, claim.textContent]).to.deep.equal([true, 'Línea declarada']);
+  } finally { op.cleanup(); }
+});
+
+it('a lost confirmation asks to check the state, never confirms again, and a read recovers the committed award', async () => {
+  const op = await loadOperator();
+  try {
+    const { claim, field, status, action } = await openLineDialog(op);
+    op.line.confirm = async () => ({ ok: false, code: 'storage_failure',
+      message: 'Could not declare the line. Reopen the setup and check the state before trying again.' });
+    action('confirm').click();
+    await settle();
+    expect(status.message).to.equal('No se pudo confirmar la línea. No la declares de nuevo: pulsa «Comprobar línea» para leer el estado.');
+    expect([status.tone, claim.disabled, claim.textContent]).to.deep.equal(['error', false, 'Comprobar línea']);
+    expect(op.requests.filter((request) => request.startsWith('line:confirm'))).to.have.length(1);
+    op.line.read = async () => ({ ok: true, state: 'declared', award: { eventId: 'a', award: { winnerCount: 1, totalCents: 1000,
+      shareCents: 1000, remainderCents: 0, lot: '', lotResolution: 'not_required' }, presentation: { id: 'p', status: 'pending', startedAt: null, deadlineAt: null } } });
+    claim.button.click();
+    await settle();
+    expect(status.message).to.include('Línea declarada con 1 ganador.');
+    expect(op.requests.filter((request) => request === 'line:begin')).to.have.length(1);
+    expect(op.requests.filter((request) => request.startsWith('line:confirm'))).to.have.length(1);
+    expect(field.isConnected).to.equal(true);
+  } finally { op.cleanup(); }
+});
+
+it('reload recovery adopts an open setup without opening, cancelling or confirming it, then resumes on request', async () => {
+  const op = await loadOperator({ line: { read: async () => ({ ok: true, state: 'setup', session: { sessionId: 's9', eventId: 'a',
+    calledNumbers: [4, 9], linePrize: { amount: 0, lot: '' } } }) } });
+  try {
+    const { main } = op;
+    const claim = main.querySelector('#claim-line');
+    expect(main.querySelector('#line-dialog').shadowRoot.querySelector('dialog').open).to.equal(false);
+    expect(claim.textContent).to.equal('Reanudar línea');
+    expect(main.querySelector('#line-status').message).to.include('declaración de línea abierta');
+    expect(op.requests.filter((request) => request.startsWith('line:'))).to.deep.equal([]);
+    // A setup in main blocks draws, so the controls say so instead of failing at main.
+    expect(main.querySelector('#draw-controls').manualDisabled).to.equal(true);
+    main.querySelector('#tab-bingo').click();
+    claim.button.click();
+    await settle();
+    expect(main.querySelector('#line-dialog').shadowRoot.querySelector('dialog').open).to.equal(true);
+    expect(main.querySelector('#line-dialog').textContent).to.include('sin premio');
+    expect(op.requests.filter((request) => request === 'line:begin')).to.deep.equal([]);
+  } finally { op.cleanup(); }
+});
+
+it('an open setup blocks drawing, event selection and settings but leaves the explicit reload available', async () => {
+  const op = await loadOperator({ line: { read: async () => ({ ok: true, state: 'setup', session: { sessionId: 's9', eventId: 'a',
+    calledNumbers: [4, 9], linePrize: { amount: 0, lot: '' } } }) } });
+  try {
+    const { main } = op;
+    const controls = main.querySelector('#draw-controls');
+    expect([controls.manualDisabled, controls.digitalDisabled, controls.reloadDisabled]).to.deep.equal([true, true, false]);
+    expect(main.querySelector('#event-list').disabled).to.equal(true, 'event selection stays blocked');
+    expect(main.querySelector('#settings-name').disabled).to.equal(true, 'settings stay blocked');
+    expect(main.querySelector('#operator-board').disabled).to.equal(true);
+    // Reloading re-reads the event only: it neither cancels nor confirms the open session.
+    controls.reloadButton.click();
+    await settle();
+    expect(op.requests.filter((request) => request.startsWith('line:'))).to.deep.equal([]);
+    expect(main.querySelector('#claim-line').textContent).to.equal('Reanudar línea');
+    expect(controls.reloadDisabled).to.equal(false);
+  } finally { op.cleanup(); }
+});
+
+it('a line already declared at load is shown after reload and cannot be declared again', async () => {
+  const op = await loadOperator({ line: { read: async () => ({ ok: true, state: 'declared', award: { eventId: 'a',
+    award: { winnerCount: 2, totalCents: 1000, shareCents: 500, remainderCents: 0, lot: '', lotResolution: 'not_required' },
+    presentation: { id: 'p', status: 'pending', startedAt: null, deadlineAt: null } } }) } });
+  try {
+    const claim = op.main.querySelector('#claim-line');
+    expect([claim.disabled, claim.textContent]).to.deep.equal([true, 'Línea declarada']);
+    expect(op.main.querySelector('#line-status').message).to.include('5,00 € cada uno');
+  } finally { op.cleanup(); }
+});
+
+// The submit handler reads the hosts' values; dispatching the event also covers a path that bypasses the disabled button.
+function submitCreate(form) {
+  form.elements.name.value = 'Nuevo';
+  form.elements.place.value = 'Sala';
+  form.dispatchEvent(new Event('submit', { cancelable: true }));
+}
+
+const declaredA = { ok: true, state: 'declared', award: { eventId: 'a', award: { winnerCount: 1, totalCents: 1000, shareCents: 1000,
+  remainderCents: 0, lot: '', lotResolution: 'not_required' }, presentation: { id: 'p', status: 'pending', startedAt: null, deadlineAt: null } } };
+
+it('selecting another event re-reads the line state instead of keeping the previous event declared', async () => {
+  let answer = declaredA;
+  const op = await loadOperator({ line: { read: async () => answer } });
+  try {
+    const { main } = op;
+    const claim = main.querySelector('#claim-line');
+    expect([claim.disabled, claim.textContent]).to.deep.equal([true, 'Línea declarada']);
+    answer = { ok: true, state: 'none' };
+    const before = op.reads.line;
+    main.querySelector('#event-list').dispatchEvent(new CustomEvent('event-select', { detail: { id: 'b' } }));
+    await settle();
+    await settle();
+    expect(op.reads.line).to.be.greaterThan(before, 'the new active event was read');
+        expect([claim.disabled, claim.textContent]).to.deep.equal([false, 'Línea']);
+    expect(main.querySelector('#line-status').hidden).to.equal(true);
+    expect(op.requests.filter((request) => request.startsWith('line:'))).to.deep.equal([], 'a read never confirms or cancels');
+  } finally { op.cleanup(); }
+});
+
+it('reloading events and the draw reload re-read the line state, and a create that changes the active event does too', async () => {
+  let answer = { ok: true, state: 'none' };
+  const created = { ok: true, events: [
+    { id: 'a', name: 'Verbena', date: '2026-08-15', place: 'Plaza', phase: 'drawing', createdAt: '2026-01-01T00:00:00.000Z', active: false },
+    { id: 'n', name: 'Nuevo', date: '2026-11-01', place: 'Sala', phase: 'drawing', createdAt: '2026-01-03T00:00:00.000Z', active: true }] };
+  const op = await loadOperator({ line: { read: async () => answer }, createEvent: async () => created });
+  try {
+    const { main } = op;
+    const claim = main.querySelector('#claim-line');
+    answer = declaredA;
+    main.querySelector('#reload-events').click();
+    await settle();
+    expect(claim.textContent).to.equal('Línea declarada');
+    answer = { ok: true, state: 'none' };
+    main.querySelector('#draw-controls').reloadButton.click();
+    await settle();
+    expect(claim.textContent).to.equal('Línea');
+    answer = declaredA;
+    const before = op.reads.line;
+    const form = main.querySelector('#create-event');
+    submitCreate(form);
+    await settle();
+    await settle();
+    expect(op.reads.line).to.be.greaterThan(before);
+    expect(claim.textContent).to.equal('Línea declarada');
+  } finally { op.cleanup(); }
+});
+
+it('a line state that names another event than the active one is never shown as usable', async () => {
+  const op = await loadOperator({ line: { read: async () => ({ ...declaredA, award: { ...declaredA.award, eventId: 'zzz' } }) } });
+  try {
+    const { main } = op;
+    const claim = main.querySelector('#claim-line');
+    const status = main.querySelector('#line-status');
+    expect(claim.disabled).to.equal(true);
+    expect(status.message).to.equal('El estado de la línea pertenece a otro evento. Pulsa «Recargar eventos» para leerlo de nuevo.');
+    expect(status.tone).to.equal('warning');
+    expect(op.requests.filter((request) => request.startsWith('line:'))).to.deep.equal([]);
+  } finally { op.cleanup(); }
+});
+
+it('creating an event is locked while a line setup is open or in flight, with reload still available', async () => {
+  const session = { sessionId: 's9', eventId: 'a', calledNumbers: [4, 9], linePrize: { amount: 0, lot: '' } };
+  let creates = 0;
+  const op = await loadOperator({ line: { read: async () => ({ ok: true, state: 'setup', session }) },
+    createEvent: async () => { creates++; return { ok: false, message: 'x' }; } });
+  try {
+    const { main } = op;
+    const submit = main.querySelector('#create-event-submit');
+    expect([submit.disabled, main.querySelector('#reload-events').disabled]).to.deep.equal([true, false]);
+    const form = main.querySelector('#create-event');
+    submitCreate(form);
+    await settle();
+    expect(creates).to.equal(0, 'a submit that bypasses the disabled button sends nothing');
+  } finally { op.cleanup(); }
+  let release;
+  const held = await loadOperator({ line: { begin: () => new Promise((resolve) => { release = resolve; }) } });
+  try {
+    const submit = held.main.querySelector('#create-event-submit');
+    expect(submit.disabled).to.equal(false);
+    held.main.querySelector('#tab-bingo').click();
+    const claim = held.main.querySelector('#claim-line');
+    await claim.updateComplete;
+    claim.button.click();
+    await settle();
+    expect([submit.disabled, held.main.querySelector('#reload-events').disabled]).to.deep.equal([true, false]);
+    release({ ok: false, code: 'storage_failure', message: 'Could not read the first-line state. Try again.' });
+    await settle();
+    expect(submit.disabled).to.equal(false);
+  } finally { held.cleanup(); }
+});
+
+it('a line confirmation that cannot read the clock is explained in Spanish', async () => {
+  const op = await loadOperator();
+  try {
+    const { status, action } = await openLineDialog(op);
+    op.line.confirm = async () => ({ ok: false, code: 'storage_failure', message: 'Could not read the clock. Try again.' });
+    action('confirm').click();
+    await settle();
+    expect(status.message).to.equal('No se pudo leer el reloj del equipo. Pulsa «Comprobar línea» para leer el estado y reintentar.');
   } finally { op.cleanup(); }
 });

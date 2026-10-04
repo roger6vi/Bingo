@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   createPublicEventDelivery, PUBLIC_EVENT_CHANNEL, PUBLIC_META_CHANNEL, PUBLIC_PRESENTATION_CHANNEL,
-  PUBLIC_PRIZES_CHANNEL, PUBLIC_THEME_CHANNEL, type PublicEventMeta, type PublicEventPrizes,
+  PUBLIC_LINE_AWARD_CHANNEL, PUBLIC_PRIZES_CHANNEL, PUBLIC_THEME_CHANNEL, type PublicEventMeta, type PublicEventPrizes,
 } from '../src/public-event-delivery.ts';
 import type { EventSnapshot } from '../src/event-core.ts';
 
@@ -267,4 +267,93 @@ test('a presentation reaches only the live current window, reports delivery, and
   closed.destroy();
   assert.equal(f.delivery.publishPresentation({ ...tongo, id: 3 }), false);
   assert.equal(first.messages.filter(({ channel }) => channel === PUBLIC_PRESENTATION_CHANNEL).length, 1);
+});
+
+// First-line award transport: static committed state only, never a live celebration signal.
+const storedAward = (eventId = 'event-a', lot = '', winnerCount = 3) => ({
+  eventId,
+  award: { winnerCount, totalCents: 1000, shareCents: 333, remainderCents: 1, lot,
+    lotResolution: lot !== '' && winnerCount >= 2 ? 'pending' as const : 'not_required' as const },
+  presentation: { id: 'secret-presentation-id', status: 'started' as const, startedAt: 10, deadlineAt: 4010 },
+});
+function awardFixture(initial: ReturnType<typeof storedAward> | null) {
+  let award = initial;
+  let fail = false;
+  const delivery = createPublicEventDelivery({ load: () => snapshot([5]) }, () => 'light',
+    () => ({ name: 'N', date: '2026-01-01', place: 'P' }),
+    () => ({ line: { amount: 10, lot: '' }, bingo: { amount: 0, lot: '' } }),
+    () => { if (fail) throw new Error('private detail'); return award; });
+  const target = () => {
+    const messages: Message[] = [];
+    return { messages, isDestroyed: () => false, send: (channel: string, result: unknown) => { messages.push({ channel, result }); } };
+  };
+  return { delivery, target, set: (next: typeof award) => { award = next; }, failRead: () => { fail = true; } };
+}
+const channelsOf = (messages: Message[]) => messages.map((message) => message.channel);
+const publicAward = { eventId: 'event-a', winnerCount: 3, totalCents: 1000, shareCents: 333, remainderCents: 1,
+  lot: '', lotResolution: 'not_required' };
+
+test('attach sends the committed award between prizes and history as static data without presentation identity', () => {
+  const f = awardFixture(storedAward());
+  const target = f.target();
+  f.delivery.attachAfterLoad(target);
+  assert.deepEqual(channelsOf(target.messages), [PUBLIC_THEME_CHANNEL, PUBLIC_META_CHANNEL, PUBLIC_PRIZES_CHANNEL,
+    PUBLIC_LINE_AWARD_CHANNEL, PUBLIC_EVENT_CHANNEL]);
+  assert.deepEqual(target.messages[3].result, publicAward);
+  assert.doesNotMatch(JSON.stringify(target.messages), /secret-presentation-id|startedAt|deadlineAt/);
+  assert.equal(channelsOf(target.messages).includes(PUBLIC_PRESENTATION_CHANNEL), false);
+});
+
+test('a missing, unreadable or unwired award reads as null and never blocks history', () => {
+  const absent = awardFixture(null), first = absent.target();
+  absent.delivery.attachAfterLoad(first);
+  assert.deepEqual(first.messages[3], { channel: PUBLIC_LINE_AWARD_CHANNEL, result: null });
+  assert.equal(channelsOf(first.messages).at(-1), PUBLIC_EVENT_CHANNEL);
+  const broken = awardFixture(storedAward()), second = broken.target();
+  broken.failRead();
+  broken.delivery.attachAfterLoad(second);
+  assert.deepEqual(second.messages[3], { channel: PUBLIC_LINE_AWARD_CHANNEL, result: null });
+  assert.doesNotMatch(JSON.stringify(second.messages), /private detail/);
+  const unwired = fixture(), third = unwired.target();
+  unwired.delivery.attachAfterLoad(third);
+  assert.equal(channelsOf(third.messages).includes(PUBLIC_LINE_AWARD_CHANNEL), false);
+});
+
+test('committed publication transports the award, then the snapshot, and each send is a defensive copy', () => {
+  const f = awardFixture(null), target = f.target();
+  f.delivery.attachAfterLoad(target);
+  target.messages.length = 0;
+  f.set(storedAward('event-a', 'Jamón', 2));
+  f.delivery.publishCommitted(snapshot([5, 6], 'line_declared', '2026-01-01T00:00:00.000Z'));
+  assert.deepEqual(channelsOf(target.messages), [PUBLIC_LINE_AWARD_CHANNEL, PUBLIC_EVENT_CHANNEL]);
+  assert.deepEqual(target.messages[0].result, { ...publicAward, winnerCount: 2, lot: 'Jamón', lotResolution: 'pending' });
+  (target.messages[0].result as { lot: string }).lot = 'mutated';
+  f.delivery.publishCommitted(snapshot([5, 6, 7], 'line_declared', '2026-01-01T00:00:01.000Z'));
+  assert.equal((target.messages[2].result as { lot: string }).lot, 'Jamón');
+});
+
+test('an event switch replaces the award with the new event\'s or clears the previous one, in reveal order', () => {
+  const f = awardFixture(storedAward('event-a')), target = f.target();
+  f.delivery.attachAfterLoad(target);
+  target.messages.length = 0;
+  f.set(storedAward('event-b'));
+  f.delivery.publishActive('jules');
+  assert.deepEqual(channelsOf(target.messages), [PUBLIC_THEME_CHANNEL, PUBLIC_META_CHANNEL, PUBLIC_PRIZES_CHANNEL,
+    PUBLIC_LINE_AWARD_CHANNEL, PUBLIC_EVENT_CHANNEL]);
+  assert.equal((target.messages[3].result as { eventId: string }).eventId, 'event-b');
+  target.messages.length = 0;
+  f.set(null);
+  f.delivery.publishActive('jules');
+  assert.deepEqual(target.messages[3], { channel: PUBLIC_LINE_AWARD_CHANNEL, result: null });
+});
+
+test('award state is never a presentation signal: reattach and publication send nothing on the Tongo channel', () => {
+  const f = awardFixture(storedAward()), first = f.target(), second = f.target();
+  f.delivery.attachAfterLoad(first);
+  f.delivery.publishCommitted(snapshot([5, 6]));
+  f.delivery.attachAfterLoad(second);
+  f.delivery.publishActive('light');
+  for (const target of [first, second]) {
+    assert.equal(channelsOf(target.messages).includes(PUBLIC_PRESENTATION_CHANNEL), false);
+  }
 });

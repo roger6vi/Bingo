@@ -8,7 +8,7 @@ type Handler = (event: { sender: object; senderFrame: object | null }, ...args: 
 const summary = (id: string, active: boolean): EventSummary => ({ id, name: `Evento ${id}`, date: '2026-09-28',
   place: 'Sala', phase: 'drawing', createdAt: '2026-09-28T10:00:00.000Z', active });
 
-function fixture() {
+function fixture(setup?: () => boolean) {
   const sender = {}, frame = { url: 'file:///app/operator.html' };
   const handlers = new Map<string, Handler>();
   const calls: string[] = [];
@@ -42,7 +42,7 @@ function fixture() {
     }, () => {
       calls.push('notify-meta');
       if (failure === 'notify-meta') throw new Error('display gone');
-    });
+    }, setup);
   const invoke = (channel: string, args: unknown[] = [], from: object = sender) =>
     handlers.get(channel)!({ sender: from, senderFrame: frame }, ...args);
   return { handlers, invoke, calls, setFailure: (value: string) => { failure = value; } };
@@ -140,4 +140,17 @@ test('a failed update neither notifies nor leaks details; a committed one surviv
   f.setFailure('list');
   assert.deepEqual(f.invoke(CATALOG_CHANNELS.update, ['a', meta]), { ok: false, code: 'storage_failure',
     message: 'The event details were saved, but the list could not be read. Reload the events.', updated: true });
+});
+
+test('an open first-line setup refuses select and create but not list or metadata edits', () => {
+  let open = true;
+  const f = fixture(() => open);
+  const refused = { ok: false, code: 'line_setup_active', message: 'Finish or cancel the first-line setup first.' };
+  assert.deepEqual(f.invoke(CATALOG_CHANNELS.select, ['a']), refused);
+  assert.deepEqual(f.invoke(CATALOG_CHANNELS.create, [meta]), refused);
+  assert.deepEqual(f.calls, []);
+  assert.equal((f.invoke(CATALOG_CHANNELS.list) as { ok: boolean }).ok, true);
+  assert.equal((f.invoke(CATALOG_CHANNELS.update, ['a', meta]) as { ok: boolean }).ok, true);
+  open = false;
+  assert.equal((f.invoke(CATALOG_CHANNELS.select, ['a']) as { ok: boolean }).ok, true);
 });

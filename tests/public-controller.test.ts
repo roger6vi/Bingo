@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createPublicController } from '../src/public-controller.mjs';
+import { createPublicController, describeLineAward, validLineAward } from '../src/public-controller.mjs';
 
 type State = { loaded: boolean; calledNumbers: number[]; latest: number | null; count: number;
   remaining: number; phase: string | null; stale: boolean; error: string | null };
@@ -218,4 +218,30 @@ test('a republished active event replaces history only when marked eventChanged'
   assert.equal(f.last().stale, true);
   f.send({ ...success([7]), eventChanged: true });
   assert.deepEqual([f.last().calledNumbers, f.last().stale, f.last().error], [[7], false, null]);
+});
+
+const award = (overrides: Record<string, unknown> = {}) => ({ eventId: 'event-a', winnerCount: 3, totalCents: 1000,
+  shareCents: 333, remainderCents: 1, lot: '', lotResolution: 'not_required', ...overrides });
+
+test('validLineAward accepts only internally consistent frozen award values', () => {
+  assert.equal(validLineAward(award()), true);
+  assert.equal(validLineAward(award({ winnerCount: 2, lot: 'Jamón', lotResolution: 'pending', totalCents: 1000,
+    shareCents: 500, remainderCents: 0 })), true);
+  assert.equal(validLineAward(award({ winnerCount: 1, lot: 'Jamón', totalCents: 0, shareCents: 0, remainderCents: 0 })), true);
+  for (const bad of [null, [], 'x', award({ eventId: '' }), award({ eventId: 7 }), award({ winnerCount: 0 }),
+    award({ winnerCount: 1.5 }), award({ totalCents: 1001 }), award({ totalCents: 10_000_100 }), award({ shareCents: 334 }),
+    award({ remainderCents: 0 }), award({ lot: ' Jamón ' }), award({ lot: 'x'.repeat(121), winnerCount: 2, lotResolution: 'pending' }),
+    award({ lotResolution: 'pending' }), award({ lot: 'Jamón', winnerCount: 2, lotResolution: 'not_required', shareCents: 500, remainderCents: 0 }),
+    award({ lotResolution: 'unknown' }), award({ lot: 5 })]) {
+    assert.equal(validLineAward(bad), false, JSON.stringify(bad));
+  }
+});
+
+test('describeLineAward states the committed share and never claims a celebration happened', () => {
+  assert.equal(describeLineAward(award()), 'Línea declarada · 3 ganadores · 3,33 € cada uno · 1 céntimo sin repartir');
+  assert.equal(describeLineAward(award({ winnerCount: 1, totalCents: 1000, shareCents: 1000, remainderCents: 0, lot: 'Jamón' })),
+    'Línea declarada · 1 ganador · 10 € · Lote: Jamón');
+  assert.equal(describeLineAward(award({ winnerCount: 2, totalCents: 1000, shareCents: 500, remainderCents: 0, lot: 'Jamón',
+    lotResolution: 'pending' })), 'Línea declarada · 2 ganadores · 5 € cada uno · Lote: Jamón (pendiente de desempate)');
+  assert.doesNotMatch(describeLineAward(award()), /celebra|felicidades|ganó|premio entregado/i);
 });

@@ -8,7 +8,7 @@ type Handler = (event: { sender: object; senderFrame: object | null }, ...args: 
 const prizes = (lineAmount: number, lineLot: string, bingoAmount: number, bingoLot: string): EventPrizes =>
   ({ line: { amount: lineAmount, lot: lineLot }, bingo: { amount: bingoAmount, lot: bingoLot } });
 
-function fixture() {
+function fixture(setup?: () => boolean) {
   const sender = {}, frame = { url: 'file:///app/operator.html' };
   const handlers = new Map<string, Handler>();
   const calls: string[] = [];
@@ -32,7 +32,7 @@ function fixture() {
     store, createOperatorGuard(sender, () => frame, frame.url), () => {
       calls.push('notify');
       if (failure === 'notify') throw new Error('display gone');
-    });
+    }, setup);
   const invoke = (channel: string, args: unknown[] = [], from: object = sender) =>
     handlers.get(channel)!({ sender: from, senderFrame: frame }, ...args);
   return { handlers, invoke, calls, setFailure: (value: string) => { failure = value; },
@@ -94,4 +94,16 @@ test('a failed public delivery never turns a committed save into an error', () =
   f.setFailure('notify');
   assert.deepEqual(f.invoke(PRIZE_CHANNELS.update, ['a', prizes(5, '', 5, '')]),
     { ok: true, eventId: 'a', prizes: prizes(5, '', 5, '') });
+});
+
+test('an open first-line setup refuses prize updates before the store but still reads', () => {
+  let open = true;
+  const f = fixture(() => open);
+  const request = ['a', prizes(5, 'Otro', 0, '')];
+  assert.deepEqual(f.invoke(PRIZE_CHANNELS.update, request),
+    { ok: false, code: 'line_setup_active', message: 'Finish or cancel the first-line setup first.' });
+  assert.deepEqual(f.calls, []);
+  assert.equal((f.invoke(PRIZE_CHANNELS.get) as { ok: boolean }).ok, true);
+  open = false;
+  assert.equal((f.invoke(PRIZE_CHANNELS.update, request) as { ok: boolean }).ok, true);
 });

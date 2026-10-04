@@ -212,12 +212,24 @@ test('operator cue sounds are emitted as local files, referenced by the operator
 test('Tongo keeps an operator-only trigger and a receive-only, never-replayed public signal', () => {
   const main = text('dist/main.js');
   assert.match(main, /registerTongoIpc\)\(electron_1\.ipcMain, store, \{ authorize: operatorOnly, publish: publicDelivery\.publishPresentation \}\)/);
-  assert.match(main, /publicDelivery\.publishCommitted, tongo\.playing\)/);
+  assert.match(main, /publicDelivery\.publishCommitted, tongo\.playing, line\.active\)/);
   assert.match(text('dist/preload.js'), /playTongo: \(\) => electron_1\.ipcRenderer\.invoke\('tongo:play'\)/);
   const publicPreload = text('dist/public-preload.js');
   assert.match(publicPreload, /exposeInMainWorld\('publicPresentation'/);
   assert.match(publicPreload, /'public:presentation'/);
   assert.doesNotMatch(publicPreload, /tongo:play|ipcRenderer\.(?:send|invoke|sendSync)\b/);
+});
+
+test('committed line awards reach the public page through a main provider and one receive-only bridge', () => {
+  const main = text('dist/main.js');
+  assert.match(main, /createPublicEventDelivery\)\(store, \(\) => theme\.current\(\), activeMeta, activePrizes,\s*\(\) => store\.loadLineAward\(\)\)/);
+  assert.match(text('dist/public-event-delivery.js'), /PUBLIC_LINE_AWARD_CHANNEL = 'public:line-award'/);
+  const publicPreload = text('dist/public-preload.js');
+  assert.match(publicPreload, /exposeInMainWorld\('publicLineAward'/);
+  assert.match(publicPreload, /'public:line-award'/);
+  assert.doesNotMatch(publicPreload, /ipcRenderer\.(?:send|invoke|sendSync)\b/);
+  // Static committed state only: no award channel on the presentation signal or an attach-time replay.
+  assert.doesNotMatch(publicPreload, /public:presentation[^;]*line-award|line-award[^;]*public:presentation/);
 });
 
 test('the bundled public page ships the Tongo overlay but never the trigger', () => {
