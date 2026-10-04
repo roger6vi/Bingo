@@ -244,6 +244,7 @@ export async function main({ argv = process.argv.slice(2), env = process.env, pl
   const context = { executablePath, profile, step, delay, launch, restart: (app) => fixture.restart(app, launch) };
   try {
     if (profileArg === undefined || phaseArg === 'seed') await phases.seed(context);
+    await fixture.closeAll(); // the packaged app holds a single-instance lock on its profile: exit before the next launch
     if (profileArg === undefined || phaseArg === 'upgraded') {
       await phases.upgraded(context);
       await checkBrokenDatabase({ executablePath, step, platform, uid, tmp, rm, closeMs, killMs, ...rest });

@@ -165,7 +165,9 @@ test('an app ignoring close is SIGKILLed and awaited before deletion', () => set
 
 test('a process that will not exit keeps the profile and the failure is reported', () => setup(async ({ deps, log, tmp }) => {
   await assert.rejects(main({ ...deps, argv: [exe], phases: { seed: async (ctx) => { await ctx.launch(); }, upgraded: async () => {} } }), /did not exit|retained/);
-  assert.equal(log.filter((entry) => entry === 'rm:bingo-smoke').length, 1, 'only the broken-database profile was deleted');
+  // The stuck app is found when the phases are separated, so nothing later runs and nothing is deleted.
+  assert.equal(log.filter((entry) => entry.startsWith('rm:')).length, 0, 'nothing was deleted');
+  assert.ok(!log.includes('spawn:broken'), 'later checks do not run against a profile held by a live process');
   assert.equal((await import('node:fs')).readdirSync(tmp).length, 1, 'profile retained');
 }, { launchOptions: () => ({ neverExit: true }) }));
 
@@ -246,4 +248,10 @@ test('RUNNER_TEMP widens the parent only to that exact directory: nested, other 
     }
     assert.deepEqual(launched, []);
   } finally { rmSync(runnerTemp, { recursive: true, force: true }); rmSync(elsewhere, { recursive: true, force: true }); }
+}));
+
+// The packaged app holds a single-instance lock on its profile: a phase's last app must have exited before the next launch.
+test('in a combined run the seed phase app has exited before the upgraded phase launches', () => setup(async ({ deps, log }) => {
+  await main({ ...deps, argv: [exe], phases: { seed: async (ctx) => { await ctx.launch(); }, upgraded: async (ctx) => { log.push('upgraded-start'); await ctx.launch(); } } });
+  assert.ok(log.indexOf('exit:app1') >= 0 && log.indexOf('exit:app1') < log.indexOf('upgraded-start'), log.join(','));
 }));
