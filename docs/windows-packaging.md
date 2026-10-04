@@ -16,7 +16,10 @@ package holds only `dist/` (main, preloads, Vite-bundled renderers, generated th
 ## What the workflow verifies
 
 Each run installs and drives the real packaged app, always with a temporary `--user-data-dir` under
-`RUNNER_TEMP` that is deleted afterwards (the real `%APPDATA%` profile is never used):
+`RUNNER_TEMP` that the workflow deletes afterwards (the real `%APPDATA%` profile is never used). The
+smoke accepts a supplied profile only if it is an absolute, canonical, non-symlink directory directly
+under the OS temp dir or the runner's own `RUNNER_TEMP` (the two differ on GitHub-hosted Windows runners) named `bingo-*` (new or empty for `seed`, already holding the seed database for
+`upgraded`), checks that the runtime `userData` equals it, and never deletes it:
 
 1. `npm run build` and `npm run test:build` pass on Windows; `npm test` runs last so a source-test
    failure still leaves the packaged-app evidence.
@@ -24,9 +27,10 @@ Each run installs and drives the real packaged app, always with a temporary `--u
 3. `0.1.0` is installed silently (`/S`); the uninstall registry entry reports that version.
    [`packaged-smoke.mjs`](../verification/packaged-smoke.mjs) `seed` then checks that:
    - the operator page loads from `resources\app.asar` and the database is created in the profile;
-   - a committed digital draw reaches the sandboxed public window, whose only globals are the five
-     receive-only `subscribe` bridges (`publicEvent`, `publicTheme`, `publicEventMeta`,
-     `publicEventPrizes`, `publicPresentation`; no `desktop`, no `require`);
+   - a committed digital draw reaches the sandboxed public window, whose only globals are the seven
+     receive-only bridges: six `subscribe` ones (`publicEvent`, `publicTheme`, `publicEventMeta`,
+     `publicEventPrizes`, `publicLineAward`, `publicPresentation`) and the narrow
+     `publicLineReceipt.started` (no `desktop`, no `require`);
    - with the runner's single display the public window opens as a windowed primary preview;
    - the public presentation shows 90 board cells, the latest call, two prize rows, and no video;
    - the Configuración simulator loads over the `bingo-public:` protocol from inside the package, and
@@ -41,7 +45,7 @@ Each run installs and drives the real packaged app, always with a temporary `--u
 6. Both unsigned installers are uploaded as the `bingo-windows-unsigned` artifact (7 days).
 
 `packaged-smoke.mjs` can also be run against any unpacked build with no profile argument; it then
-creates, uses and deletes its own temporary profile. The same config built as a Linux `dir` target
+creates, uses and deletes its own `bingo-smoke-*` temporary profile. The same config built as a Linux `dir` target
 passed all smoke steps under Xvfb. The first fully green Windows run, `npm test` included, is
 [run 36562254981](https://github.com/roger6vi/Bingo/actions/runs/36562254981).
 
