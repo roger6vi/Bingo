@@ -65,8 +65,8 @@ test('the body-facing context cannot launch, restart or read after cancellation,
 
 test('packaged mode reads the foreign-window preload from inside the package; default mode keeps dist', () => {
   const packaged = { executable: '/r/Bingo', appPath: '/r/Resources/app.asar' };
-  assert.equal(smoke.preloadFor({ root: '/feature', packaged }), '/r/Resources/app.asar/dist/public-preload.js');
-  assert.equal(smoke.preloadFor({ root: '/feature' }), '/feature/dist/public-preload.js');
+  assert.equal(smoke.preloadFor({ root: '/feature', packaged }), path.join(packaged.appPath, 'dist', 'public-preload.js'));
+  assert.equal(smoke.preloadFor({ root: '/feature' }), path.join('/feature', 'dist', 'public-preload.js'));
 });
 
 test('an unusable packaged executable fails in setup before any launch', async () => {
