@@ -6,6 +6,7 @@ import { transitionPhase, type GamePhase, type PhaseTransitionIntent } from './g
 import { DEFAULT_THEME, isThemeId, THEME_IDS, type ThemeId } from './theme.ts';
 import { createLineAward, isLineDeliveryResolved, transitionLinePresentation, type LineAward,
   type LinePresentationIntent, type LinePresentationStatus } from './line-award.ts';
+import { parseLineLotResolution } from './line-lot-contract.ts';
 import { MAX_PRIZE_AMOUNT, MAX_PRIZE_LOT, NO_PRIZES, normalizePrizes, validAmount, validLot,
   type EventPrizes } from './event-prizes.ts';
 
@@ -649,19 +650,65 @@ export type StoredLineAward = {
   };
 };
 
+export type LineLotFact =
+  | Readonly<{ origin: 'none'; resolution: 'not_required' | 'pending' }>
+  | Readonly<{ origin: 'legacy_v8'; resolution: 'resolved'; winner: 'unknown' }>
+  | Readonly<{ origin: 'numbered_v1'; resolution: 'resolved'; paletteVersion: 1;
+    participantNumber: number; colorId: string }>;
+
+// Identity a later guarded writer must match, plus the decoded lot facts, from one active-event snapshot.
+export type LineLotSnapshot = Readonly<{
+  eventId: string; auditSequence: number; winnerCount: number; lot: string;
+  presentation: Readonly<{ id: string; status: LinePresentationStatus }>; fact: LineLotFact;
+}>;
+
 const PRESENTATION_STATUSES: readonly string[] = ['pending', 'failed', 'started', 'completed', 'interrupted'];
 const LOT_RESOLUTIONS: readonly string[] = ['not_required', 'pending', 'resolved'];
 
 // Reads the active event's award, or null only when no row exists. A populated row is re-derived with the
 // pure rules and linked to its direct audit intent; anything else fails closed. Never repairs or writes.
 function readLineAward(db: DatabaseSync, eventId: string, audit: PhaseAuditEntry[]): StoredLineAward | null {
+  return readLineAwardRecord(db, eventId, audit)?.stored ?? null;
+}
+
+// Strict provenance decode: every origin/column combination is explicit, so a legacy winner is never inferred
+// from missing data and a numbered result always passes the shared pure parser.
+function decodeLotFact(row: Record<string, unknown>, winnerCount: number, lot: string, resolution: string,
+    status: string, invalid: (reason: string, cause?: unknown) => never): LineLotFact {
+  const origin = row.lot_result_origin;
+  const number = row.lot_participant_number;
+  const color = row.lot_color_id;
+  if (origin === 'none') {
+    if (resolution === 'resolved' || number !== null || color !== null) invalid('lot result origin');
+    const parsed = parseLineLotResolution(winnerCount, resolution, null);
+    return Object.freeze({ origin, resolution: parsed.resolution as 'not_required' | 'pending' });
+  }
+  if (origin === 'legacy_v8') {
+    if (resolution !== 'resolved' || number !== null || color !== null) invalid('legacy lot result');
+    return Object.freeze({ origin, resolution: 'resolved' as const, winner: 'unknown' as const });
+  }
+  if (origin !== 'numbered_v1' || resolution !== 'resolved' || lot === '' || winnerCount < 2 ||
+      status !== 'completed') {
+    return invalid('lot result origin');
+  }
+  try {
+    const parsed = parseLineLotResolution(winnerCount, 'resolved', { participantNumber: number, colorId: color });
+    if (parsed.resolution !== 'resolved') return invalid('lot result');
+    return Object.freeze({ origin, resolution: 'resolved' as const, paletteVersion: 1 as const,
+      participantNumber: parsed.result.participantNumber, colorId: parsed.result.colorId });
+  } catch (error) { return invalid('lot result', error); }
+}
+
+function readLineAwardRecord(db: DatabaseSync, eventId: string, audit: PhaseAuditEntry[]):
+    { stored: StoredLineAward; auditSequence: number; fact: LineLotFact } | null {
   const invalid = (reason: string, cause?: unknown): never => {
     throw new Error(`Invalid stored line award: ${reason}`, cause === undefined ? undefined : { cause });
   };
   let row;
   try {
     row = db.prepare(`SELECT event_id, audit_sequence, winner_count, total_cents, share_cents, remainder_cents,
-      lot, lot_resolution, presentation_id, presentation_status, presentation_started_at, presentation_deadline
+      lot, lot_resolution, presentation_id, presentation_status, presentation_started_at, presentation_deadline,
+      lot_result_origin, lot_participant_number, lot_color_id
       FROM line_awards WHERE event_id = ?`).get(eventId);
   } catch (error) { return invalid('unreadable row', error); }
   if (row === undefined) return null;
@@ -699,12 +746,14 @@ function readLineAward(db: DatabaseSync, eventId: string, audit: PhaseAuditEntry
     : startedAt !== null || deadlineAt !== null) {
     invalid('presentation times');
   }
-  return Object.freeze({
+  const fact = decodeLotFact(row, row.winner_count as number, row.lot as string, resolution as string, status as string, invalid);
+  const stored = Object.freeze({
     eventId,
     award: Object.freeze({ ...derived, lotResolution: resolution as LineAward['lotResolution'] }),
     presentation: Object.freeze({ id: row.presentation_id as string, status: status as LinePresentationStatus,
       startedAt: startedAt as number | null, deadlineAt: deadlineAt as number | null }),
   });
+  return { stored, auditSequence: row.audit_sequence as number, fact };
 }
 
 export type LineDeclarationBaseline = {
@@ -1099,6 +1148,20 @@ export function createEventStore(path: string) {
         if (id === null) return null;
         readEvent(db);
         return readLineAward(db, id, replayAudit(db, id));
+      });
+    },
+    // Active-event lot facts only; null without an award. Corrupt or unknown provenance fails this read alone.
+    loadLineLotResult(): LineLotSnapshot | null {
+      return readSnapshot(() => {
+        const id = readActiveEventId(db);
+        if (id === null) return null;
+        readEvent(db);
+        const record = readLineAwardRecord(db, id, replayAudit(db, id));
+        if (record === null) return null;
+        const { award, presentation } = record.stored;
+        return Object.freeze({ eventId: id, auditSequence: record.auditSequence, winnerCount: award.winnerCount,
+          lot: award.lot, presentation: Object.freeze({ id: presentation.id, status: presentation.status }),
+          fact: record.fact });
       });
     },
     // Frozen store-authoritative baseline the operator confirms before declaring the first line.
