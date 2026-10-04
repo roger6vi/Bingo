@@ -9,11 +9,9 @@ import { createLineAward, isLineDeliveryResolved, transitionLinePresentation, ty
 import { MAX_PRIZE_AMOUNT, MAX_PRIZE_LOT, NO_PRIZES, normalizePrizes, validAmount, validLot,
   type EventPrizes } from './event-prizes.ts';
 
-// Event prizes (#71) are the only v6 change, the first-line award table (#26/#28) is the only v7 change and
-// the `interrupted` presentation status is the only v8 change (a transactional line_awards rebuild). Each step
-// is one self-contained migration chained after the v5 theme allow-list step. If another change claims a
-// version first, renumber and re-chain.
-const VERSION = 8;
+// v6 adds prizes, v7 adds first-line awards, v8 adds interrupted presentations and v9 adds
+// numbered lot provenance. Keep each historical definition and migration step independent.
+const VERSION = 9;
 export const EVENT_SCHEMA_VERSION = VERSION;
 const phases = ['drawing', 'checking_line', 'line_declared', 'checking_bingo', 'bingo_declared', 'finished'];
 const phaseCheck = `CHECK (phase IN (${phases.map((phase) => `'${phase}'`).join(', ')}))`;
@@ -114,7 +112,46 @@ const lineAwardsTableSql = (statuses: readonly string[]) => `CREATE TABLE line_a
   FOREIGN KEY (event_id, audit_sequence) REFERENCES phase_audit(event_id, sequence)
 )`;
 const lineAwardsTableV7 = lineAwardsTableSql(['pending', 'failed', 'started', 'completed']);
-const lineAwardsTable = lineAwardsTableSql(['pending', 'failed', 'started', 'completed', 'interrupted']);
+const lineAwardsTableV8 = lineAwardsTableSql(['pending', 'failed', 'started', 'completed', 'interrupted']);
+const originalAwardColumns = ['event_id', 'audit_sequence', 'winner_count', 'total_cents', 'share_cents',
+  'remainder_cents', 'lot', 'lot_resolution', 'presentation_id', 'presentation_status',
+  'presentation_started_at', 'presentation_deadline'];
+// Durable palette v1: never derive persisted results from a future presentation palette.
+const lotPaletteV1 = ['red', 'blue', 'green', 'yellow', 'purple', 'orange'] as const;
+const lotColorV1Sql = `CASE (lot_participant_number - 1) % 6 ${lotPaletteV1
+  .map((color, index) => `WHEN ${index} THEN '${color}'`).join(' ')} END`;
+const lineAwardsTable = lineAwardsTableV8.replace('  CHECK (share_cents', `  lot_result_origin TEXT NOT NULL DEFAULT 'none'
+    CHECK (lot_result_origin IN ('none', 'legacy_v8', 'numbered_v1')),
+  lot_participant_number INTEGER,
+  lot_color_id TEXT,
+  CHECK (CASE
+    WHEN lot_resolution IN ('pending', 'not_required') THEN lot_result_origin = 'none'
+      AND lot_participant_number IS NULL AND lot_color_id IS NULL
+    WHEN lot_resolution = 'resolved' AND lot_result_origin = 'legacy_v8'
+      THEN lot_participant_number IS NULL AND lot_color_id IS NULL
+    WHEN lot_resolution = 'resolved' AND lot_result_origin = 'numbered_v1'
+      THEN lot <> '' AND winner_count >= 2 AND presentation_status = 'completed'
+        AND lot_participant_number IS NOT NULL AND lot_color_id IS NOT NULL
+        AND ${integerRange('lot_participant_number', 1, MAX_SAFE_INTEGER)}
+        AND lot_participant_number <= winner_count AND typeof(lot_color_id) = 'text'
+        AND lot_color_id = ${lotColorV1Sql}
+    ELSE 0 END),
+  CHECK (share_cents`);
+// Migration is the sole creator of legacy provenance. Existing legacy awards may still advance
+// their presentation lifecycle, but their award identity and unknown-winner provenance are frozen.
+const legacyIdentityColumns = originalAwardColumns.filter((name) => ![
+  'presentation_id', 'presentation_status', 'presentation_started_at', 'presentation_deadline',
+].includes(name)).concat(['lot_result_origin', 'lot_participant_number', 'lot_color_id']);
+const lineAwardGuards = [
+  `CREATE TRIGGER line_awards_no_legacy_insert BEFORE INSERT ON line_awards
+    WHEN NEW.lot_result_origin = 'legacy_v8'
+    BEGIN SELECT RAISE(ABORT, 'cannot insert legacy lot provenance'); END`,
+  `CREATE TRIGGER line_awards_no_legacy_update BEFORE UPDATE ON line_awards
+    WHEN (NEW.lot_result_origin = 'legacy_v8' AND OLD.lot_result_origin IS NOT 'legacy_v8')
+      OR (OLD.lot_result_origin = 'legacy_v8' AND (${legacyIdentityColumns
+        .map((name) => `NEW.${name} IS NOT OLD.${name}`).join(' OR ')}))
+    BEGIN SELECT RAISE(ABORT, 'cannot introduce or retarget legacy lot provenance'); END`,
+];
 const PLACEHOLDER_NAME = 'Evento actual';
 const PLACEHOLDER_PLACE = 'Sin especificar';
 
@@ -552,9 +589,22 @@ function migrateLineAwards(db: DatabaseSync): void {
 function migrateInterruptedPresentation(db: DatabaseSync): void {
   db.exec('CREATE TEMP TABLE line_awards_migration AS SELECT * FROM line_awards');
   db.exec('DROP TABLE line_awards');
-  db.exec(lineAwardsTable);
+  db.exec(lineAwardsTableV8);
   db.exec('INSERT INTO line_awards SELECT * FROM line_awards_migration');
   db.exec('DROP TABLE line_awards_migration');
+}
+
+// v8 → v9: preserve every old field, label only old resolved rows and invent no winner.
+// Install guards after the copy; all DDL, data and user_version are in the caller's transaction.
+function migrateLotProvenance(db: DatabaseSync): void {
+  db.exec('CREATE TEMP TABLE line_awards_migration AS SELECT * FROM line_awards');
+  db.exec('DROP TABLE line_awards');
+  db.exec(lineAwardsTable);
+  db.exec(`INSERT INTO line_awards (${originalAwardColumns.join(', ')}, lot_result_origin)
+    SELECT ${originalAwardColumns.join(', ')}, CASE WHEN lot_resolution = 'resolved'
+      THEN 'legacy_v8' ELSE 'none' END FROM line_awards_migration`);
+  db.exec('DROP TABLE line_awards_migration');
+  db.exec(lineAwardGuards.join(';'));
 }
 
 function validateLineAwardsSchema(db: DatabaseSync, expected = lineAwardsTable): void {
@@ -562,6 +612,15 @@ function validateLineAwardsSchema(db: DatabaseSync, expected = lineAwardsTable):
   const sql = db.prepare("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'line_awards'").get()?.sql;
   if (typeof sql !== 'string' || normalize(sql) !== normalize(expected)) {
     throw new Error('Invalid event schema: line_awards table missing or malformed');
+  }
+  if (expected === lineAwardsTable) {
+    for (const guard of lineAwardGuards) {
+      const name = guard.split(' ')[2];
+      const stored = db.prepare("SELECT sql FROM sqlite_schema WHERE name = ? AND type = 'trigger'").get(name)?.sql;
+      if (typeof stored !== 'string' || normalize(stored) !== normalize(guard)) {
+        throw new Error('Invalid event schema: line_awards provenance guard missing or malformed');
+      }
+    }
   }
 }
 
@@ -731,6 +790,7 @@ export function createEventStore(path: string) {
           candidate.exec(auditGuards.join(';'));
           candidate.exec(prizesTable);
           candidate.exec(lineAwardsTable);
+          candidate.exec(lineAwardGuards.join(';'));
           candidate.exec(`PRAGMA user_version = ${VERSION}; COMMIT`);
         } catch (error) {
           try { candidate.exec('ROLLBACK'); } catch { /* Preserve the original error. */ }
@@ -753,7 +813,7 @@ export function createEventStore(path: string) {
     db.exec('BEGIN');
     try {
       const observed = db.prepare('PRAGMA user_version').get()?.user_version;
-      if (observed !== 1 && observed !== 2 && observed !== 3 && observed !== 4 && observed !== 5 && observed !== 6 && observed !== 7 && observed !== VERSION) {
+      if (observed !== 1 && observed !== 2 && observed !== 3 && observed !== 4 && observed !== 5 && observed !== 6 && observed !== 7 && observed !== 8 && observed !== VERSION) {
         throw new Error(`Unsupported event schema version: ${String(observed)}`);
       }
       if (observed === VERSION) {
@@ -792,7 +852,7 @@ export function createEventStore(path: string) {
           validateV3(db);
           migrateV3ToV4(db);
           db.exec('PRAGMA user_version = 4');
-        } else if (version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== VERSION) {
+        } else if (version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== VERSION) {
           throw new Error(`Unsupported event schema version: ${String(version)}`);
         }
         if (version === 1 || version === 2 || version === 3 || version === 4) {
@@ -803,13 +863,18 @@ export function createEventStore(path: string) {
           migratePrizes(db);
           db.exec('PRAGMA user_version = 6');
         }
-        if (version !== 7 && version !== VERSION) {
+        if (version !== 7 && version !== 8 && version !== VERSION) {
           migrateLineAwards(db);
           db.exec('PRAGMA user_version = 7');
         }
-        if (version !== VERSION) {
+        if (version !== 8 && version !== VERSION) {
           validateLineAwardsSchema(db, lineAwardsTableV7);
           migrateInterruptedPresentation(db);
+          db.exec('PRAGMA user_version = 8');
+        }
+        if (version !== VERSION) {
+          validateLineAwardsSchema(db, lineAwardsTableV8);
+          migrateLotProvenance(db);
           db.exec(`PRAGMA user_version = ${VERSION}`);
         }
         validateV4(db);
