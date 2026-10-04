@@ -21,7 +21,7 @@ import { createOperatorController, createLineController } from './operator-contr
 import { createManualDrawHandler } from './manual-draw.mjs';
 import { createEventsController, today } from './events-controller.mjs';
 import { applyTheme, createThemeController, DEFAULT_THEME, revealAfter } from './theme-controller.mjs';
-import { operatorMessage, lineAwardSummary, isLineInterrupted, linePrizeSummary, PHASE_LABELS_ES, THEME_NAMES_ES } from './operator-copy.mjs';
+import { operatorMessage, lineAwardSummary, linePrizeSummary, LINE_REFRESH_FAILED_ES, PHASE_LABELS_ES, THEME_NAMES_ES } from './operator-copy.mjs';
 import { bindSettings } from './settings-ui.mjs';
 import { bindCueControls } from './cue-ui.mjs';
 import { createTongoController, tongoPlayable } from './tongo.mjs';
@@ -111,16 +111,23 @@ let eventListRef = null;
 // While Tongo is requested or playing, every other live action waits; it is offered only during play.
 let tongoBusy = false;
 let gameState = null;
-let lineState = { mode: 'unknown', pending: false };
+// Until main's line state is read, drawing and the conflicting live actions stay locked.
+let lineState = { mode: 'unknown', pending: false, drawBlocked: true, liveBlocked: true, refresh: 'none' };
 let activeEventId = null;
 let createSubmitRef = null;
 // Main's line state must belong to the event the page shows as active; otherwise it is not trusted.
 // Only the data of the current mode counts: the controller keeps an old award after a later read of none.
 const lineEventId = () => (lineState.mode === 'setup' ? lineState.session?.eventId : lineState.mode === 'declared' ? lineState.award?.eventId : null) ?? null;
 const lineMismatch = () => activeEventId !== null && lineEventId() !== null && lineEventId() !== activeEventId;
-const lineBlocked = () => lineState.pending || lineState.mode === 'setup';
+// A setup, a request in flight or a running celebration (pending/started) blocks the writes main refuses; a failed or
+// interrupted one does not, so another event can still be selected.
+const lineBlocked = () => lineState.liveBlocked !== false;
+// Drawing needs a known, completed (and event-refreshed) presentation for the event the page shows as active.
+const drawingBlocked = () => lineState.drawBlocked !== false || lineMismatch() || lineBlocked();
 const LINE_MISMATCH = 'El estado de la línea pertenece a otro evento. Pulsa «Recargar eventos» para leerlo de nuevo.';
 const claimLine = required('claim-line', BingoButton);
+const lineRetry = required('line-retry', BingoButton);
+const lineRepeat = required('line-repeat', BingoButton);
 const LINE_LABELS = { setup: 'Reanudar línea', uncertain: 'Comprobar línea', declared: 'Línea declarada' };
 // Starting needs a fully known drawing game; recovery and resuming need only main's answer.
 function lineClaimDisabled() {
@@ -135,20 +142,22 @@ function applyLocks() {
   // An open or in-flight first-line setup blocks the same writes main refuses.
   const lineLocked = lineBlocked();
   const locked = selecting || activating || tongoBusy || lineLocked;
+  const drawLocked = locked || drawingBlocked();
   claimLine.disabled = selecting || activating || tongoBusy || lineClaimDisabled();
   tongoControl.disabled = locked || !tongoPlayable(gameState);
-  controls.manualDisabled = locked || drawLocks.manualDisabled;
-  controls.digitalDisabled = locked || drawLocks.digitalDisabled;
+  controls.manualDisabled = drawLocked || drawLocks.manualDisabled;
+  controls.digitalDisabled = drawLocked || drawLocks.digitalDisabled;
   // Reloading the event is the recovery path while a setup is open (it only re-reads); a line request in flight still blocks it.
   controls.reloadDisabled = selecting || activating || tongoBusy || lineState.pending || drawLocks.reloadDisabled;
   // A request in flight keeps the board idle-looking but inert; it is disabled only when it cannot draw.
-  board.disabled = locked || (drawLocks.manualDisabled && !drawLocks.pending);
+  board.disabled = drawLocked || (drawLocks.manualDisabled && !drawLocks.pending);
   board.pending = drawLocks.pending;
   settings.setLocked(locked || themePending);
   // A second selection must not start until the first one's dependent panels have re-read.
   if (eventListRef !== null) eventListRef.disabled = eventsPending || activating || tongoBusy || lineLocked;
   // Main refuses a create during a setup; reload stays available as the recovery path.
   if (createSubmitRef !== null) createSubmitRef.disabled = eventsPending || lineLocked;
+  paintLineActions();
 }
 
 openPublic.addEventListener('click', () => window.desktop.openPublic());
@@ -167,17 +176,18 @@ controls.addEventListener('mode-change', () => { board.readonly = controls.mode 
 
 const controller = createOperatorController(desktop, {
   bind: ({ manual, digital, reload: reloadEvent }) => {
-    const reload = () => { reloadEvent(); void rereadLine(); };
+    // Reload only reads; after a failed post-celebration refresh it is also the explicit recovery.
+    const reload = () => { reloadEvent(); void rereadLine(); line.retryRefresh(); };
     // The board only requests a call; it shows the number called once the acknowledged snapshot arrives.
     board.addEventListener('number-select', (event) => {
-      if (selecting || activating || tongoBusy || controls.mode === 'digital') return;
+      if (selecting || activating || tongoBusy || drawingBlocked() || controls.mode === 'digital') return;
       manual(event.detail.number);
     });
     controls.addEventListener('click', (event) => {
       if (selecting || activating || tongoBusy) return;
       const action = event.composedPath().find((node) => node?.id === 'draw-manual' || node?.id === 'draw-digital' || node?.id === 'reload-event');
-      if (action?.id === 'draw-manual') createManualDrawHandler(controls.manualInput, manual)();
-      else if (action?.id === 'draw-digital') digital();
+      if (action?.id === 'draw-manual') { if (!drawingBlocked()) createManualDrawHandler(controls.manualInput, manual)(); }
+      else if (action?.id === 'draw-digital') { if (!drawingBlocked()) digital(); }
       else if (action?.id === 'reload-event') reload();
     });
   },
@@ -220,14 +230,25 @@ const linePrize = required('line-prize', HTMLElement);
 lineDialog.actions = [{ action: 'cancel', label: 'Cancelar', signal: 'dismiss' },
   { action: 'confirm', label: 'Declarar línea', signal: 'confirm' }];
 let lineDialogShown = false;
+// Only a failed celebration can be retried and only an interrupted one repeated; nothing else is offered.
+function paintLineActions() {
+  const presentation = lineState.mode === 'declared' && !lineMismatch() ? lineState.award?.presentation : undefined;
+  const busy = lineState.pending || selecting || activating || tongoBusy;
+  for (const [button, status] of [[lineRetry, 'failed'], [lineRepeat, 'interrupted']]) {
+    button.hidden = presentation?.status !== status;
+    button.disabled = busy;
+  }
+}
 function paintLineStatus() {
   const state = lineState;
   const shown = lineStatus.hidden;
+  const presentation = state.mode === 'declared' ? state.award?.presentation?.status : undefined;
   lineStatus.message = state.pending ? 'Comprobando la línea' : operatorMessage(state.error)
-    ?? (lineMismatch() ? LINE_MISMATCH : state.mode === 'declared' && state.award ? lineAwardSummary(state.award)
+    ?? (lineMismatch() ? LINE_MISMATCH : state.mode === 'declared' && state.award
+      ? `${lineAwardSummary(state.award)}${state.refresh === 'failed' ? ` ${LINE_REFRESH_FAILED_ES}` : ''}`
       : state.mode === 'setup' && !state.dialogOpen ? 'Hay una declaración de línea abierta. Pulsa «Reanudar línea» para continuar o cancelarla.' : '');
-  lineStatus.tone = state.error ? 'error' : lineMismatch() || (state.mode === 'declared' && isLineInterrupted(state.award)) ? 'warning'
-    : state.mode === 'declared' ? 'success' : 'info';
+  lineStatus.tone = state.error ? 'error' : lineMismatch() || presentation === 'failed' || presentation === 'interrupted' || state.refresh === 'failed' ? 'warning'
+    : presentation === 'completed' ? 'success' : 'info';
   lineStatus.hidden = lineStatus.message === '';
   // Like Tongo's refusal, a new line message must not stay clipped at the bottom of the rail.
   if (lineStatus.hidden === false && shown) void lineStatus.updateComplete.then(() => lineStatus.scrollIntoView({ block: 'nearest' }));
@@ -237,6 +258,7 @@ const line = createLineController(desktop, {
     lineState = state;
     claimLine.textContent = LINE_LABELS[state.mode] ?? 'Línea';
     paintLineStatus();
+    paintLineActions();
     if (state.session) linePrize.textContent = linePrizeSummary(state.session.linePrize);
     lineWinners.error = operatorMessage(state.countError) ?? '';
     if (state.dialogOpen && !lineDialogShown) {
@@ -248,7 +270,25 @@ const line = createLineController(desktop, {
     }
     applyLocks();
   },
-}, { committed: () => controller.start() });
+}, { committed: refreshEvent });
+// A completed celebration needs a fresh authoritative event. A read already in flight may predate it, so the new
+// read is queued behind it; the answer says whether the page now holds an accepted, current event.
+async function refreshEvent() {
+  while (drawLocks.pending) await controller.start();
+  await controller.start();
+  return gameState !== null && !gameState.stale && gameState.error === null && gameState.snapshot !== null;
+}
+// Explicit buttons only: the handler re-validates the exact current id, status, event and busy state itself.
+const presentationClick = (status, run) => () => {
+  const award = lineState.award;
+  const presentation = award?.presentation;
+  if (lineState.pending || selecting || activating || tongoBusy || lineState.mode !== 'declared' || lineMismatch() ||
+    award.eventId !== activeEventId || presentation?.status !== status) return;
+  void run(presentation.id);
+};
+lineRetry.addEventListener('click', presentationClick('failed', (id) => line.retry(id)));
+lineRepeat.addEventListener('click', presentationClick('interrupted', (id) => line.repeat(id)));
+window.addEventListener('pagehide', () => line.dispose());
 claimLine.addEventListener('click', () => { if (!claimLine.disabled) void line.open(); });
 lineDialog.addEventListener('dismiss', () => { lineDialogShown = false; void line.cancel(); });
 lineDialog.addEventListener('confirm', () => { lineDialogShown = false; void line.confirm(lineWinners.value); });
@@ -320,7 +360,10 @@ const events = createEventsController(desktop, {
     eventsPending = pending !== null;
     applyLocks();
     reloadEvents.disabled = pending !== null;
-    if (!stale) activeEventId = active?.id ?? null;
+    if (!stale) {
+      activeEventId = active?.id ?? null;
+      line.setEvent(activeEventId);
+    }
     paintLineStatus();
     applyLocks();
     createActions.pending = pending === 'create';
@@ -353,7 +396,7 @@ eventList.addEventListener('event-select', async (event) => {
     applyLocks();
   }
 });
-reloadEvents.addEventListener('click', () => { void events.start(); void loadPrizes(); void rereadLine(); });
+reloadEvents.addEventListener('click', () => { void events.start(); void loadPrizes(); void rereadLine(); line.retryRefresh(); });
 createForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   if (lineBlocked()) return;

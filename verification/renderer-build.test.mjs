@@ -284,22 +284,61 @@ test('line presentation wiring: coordinator ports, commit-only start, receipt gu
   assert.match(text('dist/line-ipc.js'), /repeatPresentation: 'line:repeat-presentation'/);
 });
 
+// The JavaScript the public page actually loads: its entry script, modulepreloads and their static imports. The
+// operator bundle is deliberately excluded: it legitimately exposes the manual line actions the public one must never.
+function publicBundleFiles() {
+  const assets = path.join(renderer, 'assets');
+  const html = text('dist/renderer/public.html');
+  const pending = [...html.matchAll(/(?:src|href)="\.\/assets\/([^"]+\.js)"/g)].map(([, file]) => file);
+  assert.ok(pending.length > 0, 'public.html references its script');
+  const files = new Set();
+  while (pending.length > 0) {
+    const file = pending.pop();
+    if (files.has(file)) continue;
+    files.add(file);
+    for (const [, imported] of text(`dist/renderer/assets/${file}`).matchAll(/(?:from|import)\s*["']\.\/([^"']+\.js)["']/g)) pending.push(imported);
+  }
+  for (const file of files) assert.ok(readdirSync(assets).includes(file), `${file} is emitted`);
+  return [...files];
+}
+const publicBundle = () => publicBundleFiles().map((file) => text(`dist/renderer/assets/${file}`)).join('\n');
+const operatorBundle = () => readdirSync(path.join(renderer, 'assets')).filter((file) => /^operator-.*\.js$/.test(file))
+  .map((file) => text(`dist/renderer/assets/${file}`)).join('\n');
+// Every way to start, retry or repeat a presentation: IPC channels and the operator-only desktop methods.
+const mutationTriggers = /line:retry-presentation|line:repeat-presentation|tongo:play|retryLinePresentation|repeatLinePresentation|beginLineSetup|confirmLine/;
+
+test('the public bundle set is exactly the public entry and its imports, never the operator entry', () => {
+  const files = publicBundleFiles();
+  assert.ok(files.some((file) => file.startsWith('public-')), 'public entry');
+  assert.ok(!files.some((file) => file.startsWith('operator-')), 'no operator chunk is reachable from the public page');
+});
+
+test('the operator bundle intentionally exposes the manual line actions the public bundle never contains', () => {
+  const operator = operatorBundle();
+  assert.match(operator, /retryLinePresentation/);
+  assert.match(operator, /repeatLinePresentation/);
+  assert.match(operator, /onLinePresentation/);
+  assert.doesNotMatch(operator, /line:retry-presentation|line:repeat-presentation/, 'channels stay inside the preload');
+  assert.match(text('dist/renderer/operator.html'), /<bingo-button id="line-retry" hidden>Reintentar celebración<\/bingo-button>/);
+  assert.match(text('dist/renderer/operator.html'), /<bingo-button id="line-repeat" hidden>Repetir celebración completa<\/bingo-button>/);
+  assert.doesNotMatch(text('dist/renderer/public.html'), /line-retry|line-repeat|Reintentar celebración|Repetir celebración/);
+  assert.doesNotMatch(publicBundle(), mutationTriggers);
+});
+
 test('the bundled public page ships the line overlay with the receipt bridge, never a trigger or a second send', () => {
   assert.match(text('dist/renderer/public.html'), /<bingo-line-celebration id="line-celebration" lang="es"><\/bingo-line-celebration>/);
-  const bundle = readdirSync(path.join(renderer, 'assets')).filter((file) => file.endsWith('.js'))
-    .map((file) => text(`dist/renderer/assets/${file}`)).join('\n');
+  const bundle = publicBundle();
   assert.match(bundle, /customElements\.define\("bingo-line-celebration"/);
   assert.match(bundle, /publicLineReceipt/);
-  assert.doesNotMatch(bundle, /line:retry-presentation|line:repeat-presentation|tongo:play/);
+  assert.doesNotMatch(bundle, mutationTriggers);
 });
 
 test('the bundled public page ships the Tongo overlay but never the trigger', () => {
   assert.match(text('dist/renderer/public.html'), /<bingo-tongo id="tongo" lang="es"><\/bingo-tongo>/);
-  const assets = readdirSync(path.join(renderer, 'assets')).filter((file) => file.endsWith('.js'));
-  const bundle = assets.map((file) => text(`dist/renderer/assets/${file}`)).join('\n');
+  const bundle = publicBundle();
   assert.match(bundle, /customElements\.define\("bingo-tongo"/);
   assert.match(bundle, /publicPresentation/);
-  assert.doesNotMatch(bundle, /tongo:play/);
+  assert.doesNotMatch(bundle, mutationTriggers);
 });
 
 test('the bundled operator page ships the Tongo control in the claims row with its own status', () => {

@@ -246,24 +246,39 @@ const lineAward = { eventId: 'e1', award: { winnerCount: 3, totalCents: 1000, sh
 const lineFailure = (code: string, message: string) => ({ ok: false, code, message });
 
 type LineState = { mode: string; pending: boolean; error: string | null; countError: string | null; dialogOpen: boolean;
-  session: typeof lineSession | null; award: typeof lineAward | null };
+  session: typeof lineSession | null; award: typeof lineAward | null; drawBlocked: boolean; liveBlocked: boolean; refresh: string };
 function lineFixture() {
   const calls: string[] = [];
   const renders: LineState[] = [];
   let refreshed = 0;
+  let unsubscribed = 0;
+  let subscribedAt = -1;
+  let push: (value: unknown) => void = () => { throw new Error('not subscribed'); };
+  const refresh = { ok: true };
   const replies: Record<string, () => Promise<unknown>> = {
     read: async () => ({ ok: true, state: 'none' }),
     begin: async () => ({ ok: true, session: lineSession }),
     cancel: async () => ({ ok: true }),
     confirm: async () => ({ ok: true, award: lineAward }),
+    retry: async () => ({ ok: true, award: lineAward }),
+    repeat: async () => ({ ok: true, award: lineAward }),
   };
   const controller = createLineController({
     readLineSetup: () => { calls.push('read'); return replies.read(); },
     beginLineSetup: () => { calls.push('begin'); return replies.begin(); },
     cancelLineSetup: (id: string, event: string) => { calls.push(`cancel:${id}:${event}`); return replies.cancel(); },
     confirmLine: (id: string, event: string, count: number) => { calls.push(`confirm:${id}:${event}:${count}`); return replies.confirm(); },
-  }, { render: (state: LineState) => { renders.push(structuredClone(state)); } }, { committed: () => { refreshed++; } });
-  return { controller, calls, replies, refreshed: () => refreshed, last: () => renders.at(-1) as LineState };
+    retryLinePresentation: (id: string) => { calls.push(`retry:${id}`); return replies.retry(); },
+    repeatLinePresentation: (id: string) => { calls.push(`repeat:${id}`); return replies.repeat(); },
+    onLinePresentation: (callback: (value: unknown) => void) => {
+      subscribedAt = calls.length;
+      push = callback;
+      return () => { unsubscribed++; };
+    },
+  }, { render: (state: LineState) => { renders.push(structuredClone(state)); } },
+  { committed: async () => { refreshed++; return refresh.ok; } });
+  return { controller, calls, replies, refresh, push: (value: unknown) => push(value), refreshed: () => refreshed,
+    unsubscribed: () => unsubscribed, subscribedAt: () => subscribedAt, last: () => renders.at(-1) as LineState };
 }
 
 test('line recovery reads on start and never begins, cancels or confirms', async () => {
@@ -405,4 +420,635 @@ test('the dialog is already closed in every render while a confirm or cancel is 
   seen.push(f.last().pending && f.last().dialogOpen);
   await cancelling;
   assert.deepEqual(seen, [false, false]);
+});
+
+// Presentation recovery: explicit retry/repeat, pushes, races and fail-closed validation.
+const presentationOf = (status: string, id = 'p1') => ({ id, status,
+  ...(status === 'pending' || status === 'failed' ? { startedAt: null, deadlineAt: null } : { startedAt: 1000, deadlineAt: 5000 }) });
+const awardAt = (status: string, id = 'p1', eventId = 'e1') => ({ ...lineAward, eventId, presentation: presentationOf(status, id) });
+const declaredReply = (value: unknown) => async () => ({ ok: true, state: 'declared', award: value });
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+async function declaredFixture(status: string, id = 'p1') {
+  const f = lineFixture();
+  f.replies.read = declaredReply(awardAt(status, id));
+  await f.controller.start();
+  return f;
+}
+
+test('the push subscription exists before the first read and is released by dispose', async () => {
+  const f = lineFixture();
+  await f.controller.start();
+  assert.deepEqual([f.subscribedAt(), f.calls], [0, ['read']]);
+  f.controller.dispose();
+  f.controller.dispose();
+  assert.equal(f.unsubscribed(), 1);
+});
+
+test('retry invokes only the exact failed id and repeat only the exact interrupted id', async () => {
+  for (const [status, retry, repeat] of [['pending', false, false], ['started', false, false], ['completed', false, false],
+    ['failed', true, false], ['interrupted', false, true]] as const) {
+    const f = await declaredFixture(status);
+    await f.controller.retry('p1');
+    await f.controller.repeat('p1');
+    await f.controller.retry('other');
+    await f.controller.repeat('other');
+    assert.deepEqual(f.calls.slice(1), [...(retry ? ['retry:p1'] : []), ...(repeat ? ['repeat:p1'] : [])], status);
+  }
+  const idle = lineFixture();
+  await idle.controller.start();
+  await idle.controller.retry('p1');
+  assert.deepEqual(idle.calls, ['read']);
+});
+
+test('a retry or repeat result with a rotated id is adopted and the retired id can never come back', async () => {
+  for (const [status, call] of [['failed', 'retry'], ['interrupted', 'repeat']] as const) {
+    const f = await declaredFixture(status);
+    f.replies[call] = async () => ({ ok: true, award: awardAt('pending', 'p2') });
+    await (call === 'retry' ? f.controller.retry('p1') : f.controller.repeat('p1'));
+    assert.deepEqual([f.last().award?.presentation.id, f.last().award?.presentation.status, f.last().mode], ['p2', 'pending', 'declared']);
+    f.push(awardAt(status, 'p1'));
+    assert.equal(f.last().award?.presentation.id, 'p2', 'a push of the retired id is ignored');
+    f.replies.read = declaredReply(awardAt(status, 'p1'));
+    await f.controller.start();
+    assert.equal(f.last().award?.presentation.id, 'p2', 'a late read of the retired id is ignored');
+  }
+});
+
+test('a double click sends one request and the second click does nothing', async () => {
+  const f = await declaredFixture('failed');
+  let release!: (value: unknown) => void;
+  f.replies.retry = () => new Promise((resolve) => { release = resolve; });
+  const first = f.controller.retry('p1');
+  const second = f.controller.retry('p1');
+  assert.equal(f.last().pending, true);
+  release({ ok: true, award: awardAt('pending', 'p2') });
+  await Promise.all([first, second]);
+  assert.equal(f.calls.filter((call) => call.startsWith('retry')).length, 1);
+  assert.equal(f.last().pending, false);
+});
+
+test('the action shares the lock with read, confirm and cancel', async () => {
+  const f = await declaredFixture('interrupted');
+  let release!: (value: unknown) => void;
+  f.replies.repeat = () => new Promise((resolve) => { release = resolve; });
+  const running = f.controller.repeat('p1');
+  void f.controller.start();
+  void f.controller.open();
+  void f.controller.confirm('2');
+  void f.controller.cancel();
+  release({ ok: true, award: awardAt('pending', 'p2') });
+  await running;
+  assert.deepEqual(f.calls.slice(1), ['repeat:p1']);
+});
+
+test('pushes that arrive before the action response are kept and never overwritten by the older reply', async () => {
+  const f = await declaredFixture('failed');
+  let release!: (value: unknown) => void;
+  f.replies.retry = () => new Promise((resolve) => { release = resolve; });
+  const running = f.controller.retry('p1');
+  f.push(awardAt('pending', 'p2'));
+  f.push(awardAt('started', 'p2'));
+  f.push(awardAt('completed', 'p2'));
+  release({ ok: true, award: awardAt('pending', 'p2') });
+  await running;
+  await flush();
+  assert.deepEqual([f.last().award?.presentation.id, f.last().award?.presentation.status, f.last().pending], ['p2', 'completed', false]);
+  assert.equal(f.refreshed(), 1);
+});
+
+test('a read that answers older than a push for the same id does not regress it', async () => {
+  const f = await declaredFixture('pending');
+  let release!: (value: unknown) => void;
+  f.replies.read = () => new Promise((resolve) => { release = resolve; });
+  const reading = f.controller.start();
+  f.push(awardAt('started'));
+  release({ ok: true, state: 'declared', award: awardAt('pending') });
+  await reading;
+  assert.equal(f.last().award?.presentation.status, 'started');
+});
+
+test('a push for a new id outside any action is ignored, and a foreign event never changes the state', async () => {
+  const f = await declaredFixture('pending');
+  f.push(awardAt('completed', 'p9'));
+  f.push(awardAt('completed', 'p1', 'zzz'));
+  assert.deepEqual([f.last().award?.presentation.status, f.refreshed()], ['pending', 0]);
+  f.push(awardAt('started'));
+  assert.equal(f.last().award?.presentation.status, 'started');
+});
+
+test('a null or corrupt push fails closed with an explicit check and a read recovers', async () => {
+  const corrupt: unknown[] = [null, 'x', { eventId: 'e1', award: lineAward.award, presentation: { id: 'p1', status: 'bogus', startedAt: null, deadlineAt: null } },
+    { ...awardAt('completed'), presentation: { id: 'p1', status: 'completed', startedAt: 1000, deadlineAt: 4999 } },
+    { ...awardAt('started'), presentation: { id: 'p1', status: 'started', startedAt: 1000.5, deadlineAt: 5000.5 } },
+    { ...awardAt('pending'), presentation: { id: 'p1', status: 'pending', startedAt: 1000, deadlineAt: null } },
+    { ...awardAt('pending'), presentation: { id: '', status: 'pending', startedAt: null, deadlineAt: null } },
+    { ...awardAt('pending'), award: { ...lineAward.award, lotResolution: 'weird' } }];
+  for (const value of corrupt) {
+    const f = await declaredFixture('pending');
+    f.push(value);
+    assert.deepEqual([f.last().mode, f.last().award, f.last().drawBlocked, f.last().error],
+      ['uncertain', null, true, 'Invalid first-line update. Check the state and try again.'], JSON.stringify(value));
+    f.push(awardAt('completed'));
+    assert.equal(f.last().mode, 'uncertain', 'only an explicit check leaves the uncertain state');
+    f.replies.read = declaredReply(awardAt('completed'));
+    await f.controller.open();
+    assert.deepEqual([f.last().mode, f.last().award?.presentation.status], ['declared', 'completed']);
+  }
+});
+
+test('an unknown action result or a refusal becomes uncertain and is never invoked again', async () => {
+  for (const reply of [async () => { throw new Error('ipc'); }, async () => undefined, async () => ({ ok: true }),
+    async () => ({ ok: true, award: awardAt('pending', 'p2', 'zzz') }),
+    async () => ({ ok: false, code: 'presentation_busy', message: 'Wait for the line celebration to finish first.' })]) {
+    const f = await declaredFixture('failed');
+    f.replies.retry = reply;
+    await f.controller.retry('p1');
+    assert.deepEqual([f.last().mode, f.last().drawBlocked, f.last().award], ['uncertain', true, null]);
+    await f.controller.retry('p1');
+    assert.deepEqual(f.calls.filter((call) => call.startsWith('retry')), ['retry:p1']);
+  }
+});
+
+test('the draw lock follows the known presentation: only a refreshed completed state unlocks', async () => {
+  for (const [status, blocked, live] of [['pending', true, true], ['started', true, true], ['failed', true, false],
+    ['interrupted', true, false], ['completed', false, false]] as const) {
+    const f = await declaredFixture(status);
+    await flush();
+    assert.deepEqual([f.last().drawBlocked, f.last().liveBlocked], [blocked, live], status);
+  }
+  const idle = lineFixture();
+  assert.equal(idle.last().drawBlocked, true, 'unknown is locked');
+  await idle.controller.start();
+  assert.equal(idle.last().drawBlocked, false);
+  idle.replies.read = async () => ({ ok: true, state: 'setup', session: lineSession });
+  await idle.controller.start();
+  assert.deepEqual([idle.last().drawBlocked, idle.last().liveBlocked], [true, true]);
+});
+
+test('a completed award with a tied lot still pending unlocks drawing after one refresh', async () => {
+  const tied = { ...awardAt('completed'), award: { ...lineAward.award, winnerCount: 2, shareCents: 500, remainderCents: 0, lot: 'Jamón', lotResolution: 'pending' } };
+  const f = lineFixture();
+  f.replies.read = declaredReply(awardAt('pending'));
+  await f.controller.start();
+  f.push({ ...tied, presentation: presentationOf('started') });
+  assert.equal(f.last().drawBlocked, true);
+  f.push(tied);
+  assert.deepEqual([f.last().drawBlocked, f.last().refresh], [true, 'pending']);
+  await flush();
+  assert.deepEqual([f.refreshed(), f.last().drawBlocked, f.last().refresh, f.last().award?.award.lotResolution], [1, false, 'none', 'pending']);
+  f.push(tied);
+  await flush();
+  assert.equal(f.refreshed(), 1, 'the same completion does not refresh twice');
+});
+
+test('a failed required refresh keeps drawing blocked until an explicit retry succeeds', async () => {
+  const f = await declaredFixture('started');
+  f.refresh.ok = false;
+  f.push(awardAt('completed'));
+  await flush();
+  assert.deepEqual([f.last().drawBlocked, f.last().refresh, f.refreshed()], [true, 'failed', 1]);
+  await f.controller.retryRefresh();
+  await flush();
+  assert.deepEqual([f.last().drawBlocked, f.refreshed()], [true, 2]);
+  f.refresh.ok = true;
+  await f.controller.retryRefresh();
+  await flush();
+  assert.deepEqual([f.last().drawBlocked, f.last().refresh, f.refreshed()], [false, 'none', 3]);
+});
+
+test('a completion discovered by the first read after load also refreshes the event', async () => {
+  const f = await declaredFixture('completed');
+  await flush();
+  assert.deepEqual([f.refreshed(), f.last().drawBlocked], [1, false]);
+  await f.controller.start();
+  await flush();
+  assert.equal(f.refreshed(), 1, 'a later read of the same completion does not refresh again');
+});
+
+test('a stale read or a foreign push after the active event changed never becomes authority', async () => {
+  const f = lineFixture();
+  f.controller.setEvent('e1');
+  let release!: (value: unknown) => void;
+  f.replies.read = () => new Promise((resolve) => { release = resolve; });
+  const reading = f.controller.start();
+  f.controller.setEvent('e2');
+  assert.deepEqual([f.last().mode, f.last().drawBlocked], ['unknown', true]);
+  release({ ok: true, state: 'declared', award: awardAt('completed') });
+  await reading;
+  f.push(awardAt('completed'));
+  await flush();
+  assert.deepEqual([f.last().mode, f.last().award, f.refreshed()], ['unknown', null, 0]);
+  f.replies.read = async () => ({ ok: true, state: 'none' });
+  await f.controller.start();
+  assert.deepEqual([f.last().mode, f.last().drawBlocked], ['idle', false]);
+});
+
+test('an award for another event than the active one is rejected as uncertain and never refreshes', async () => {
+  const f = lineFixture();
+  f.controller.setEvent('e2');
+  f.replies.read = declaredReply(awardAt('completed'));
+  await f.controller.start();
+  await flush();
+  assert.deepEqual([f.last().mode, f.last().award, f.last().drawBlocked, f.refreshed()], ['uncertain', null, true, 0]);
+});
+
+test('a stale action response after the active event changed is ignored', async () => {
+  const f = await declaredFixture('failed');
+  f.controller.setEvent('e1');
+  let release!: (value: unknown) => void;
+  f.replies.retry = () => new Promise((resolve) => { release = resolve; });
+  const running = f.controller.retry('p1');
+  f.controller.setEvent('e2');
+  release({ ok: true, award: awardAt('completed', 'p2') });
+  await running;
+  await flush();
+  assert.deepEqual([f.last().mode, f.last().award, f.refreshed(), f.last().pending], ['unknown', null, 0, false]);
+});
+
+test('an award without any presentation keeps the legacy declared mode, locked and without actions', async () => {
+  const legacy = { eventId: 'e1', award: lineAward.award };
+  const f = lineFixture();
+  f.replies.read = declaredReply(legacy);
+  await f.controller.start();
+  assert.deepEqual([f.last().mode, f.last().drawBlocked], ['declared', true]);
+  await f.controller.retry('p1');
+  await f.controller.repeat('p1');
+  assert.deepEqual(f.calls, ['read']);
+});
+
+test('a push during a confirm in flight for the same event is kept and never opens or cancels the setup', async () => {
+  const f = lineFixture();
+  await f.controller.start();
+  await f.controller.open();
+  let release!: (value: unknown) => void;
+  f.replies.confirm = () => new Promise((resolve) => { release = resolve; });
+  const confirming = f.controller.confirm('3');
+  f.push(awardAt('started'));
+  release({ ok: true, award: awardAt('pending') });
+  await confirming;
+  assert.deepEqual([f.last().mode, f.last().award?.presentation.status, f.last().dialogOpen], ['declared', 'started', false]);
+  assert.deepEqual(f.calls.filter((call) => call.startsWith('cancel') || call === 'begin'), ['begin']);
+});
+
+// Review corrections: store-grade award validation, event generation across null contexts, and read ordering.
+type AwardParts = { winnerCount: number; totalCents: number; shareCents: number; remainderCents: number; lot: string; lotResolution: string };
+const derivedAward = (winnerCount: number, totalCents: number, lot = '', resolution?: string): AwardParts => ({ winnerCount, totalCents,
+  shareCents: Math.floor(totalCents / winnerCount), remainderCents: totalCents % winnerCount, lot,
+  lotResolution: resolution ?? (lot !== '' && winnerCount >= 2 ? 'pending' : 'not_required') });
+const storedAward = (award: AwardParts, presentation: unknown = presentationOf('completed'), eventId = 'e1') => ({ eventId, award, presentation });
+const base = derivedAward(3, 1000);
+
+const malformed: Array<[string, unknown]> = [
+  ['combined share/remainder/lot', storedAward({ winnerCount: 2, totalCents: 1000, shareCents: 999, remainderCents: 999, lot: '', lotResolution: 'pending' })],
+  ['share off by one', storedAward({ ...base, shareCents: 332 })],
+  ['remainder off by one', storedAward({ ...base, remainderCents: 2 })],
+  ['remainder not below the count', storedAward({ ...derivedAward(2, 1000), shareCents: 499, remainderCents: 2 })],
+  ['total not whole euros', storedAward(derivedAward(1, 1050))],
+  ['total above the maximum prize', storedAward(derivedAward(1, 10_000_100))],
+  ['negative total', storedAward({ ...base, totalCents: -100 })],
+  ['untrimmed lot', storedAward(derivedAward(2, 1000, ' Jamón '))],
+  ['lot over 120 characters', storedAward(derivedAward(2, 1000, 'x'.repeat(121)))],
+  ['pending resolution without a lot', storedAward({ ...derivedAward(2, 1000), lotResolution: 'pending' })],
+  ['not_required resolution for a tied lot', storedAward({ ...derivedAward(2, 1000, 'Jamón'), lotResolution: 'not_required' })],
+  ['resolved resolution without a tied lot', storedAward({ ...derivedAward(1, 1000, 'Jamón'), lotResolution: 'resolved' })],
+  ['zero winners', storedAward({ ...base, winnerCount: 0 })],
+  ['fractional winners', storedAward({ ...base, winnerCount: 1.5 })],
+  ['unsafe winners', storedAward({ ...base, winnerCount: Number.MAX_SAFE_INTEGER + 1 })],
+  ['negative started time', storedAward(base, { id: 'p1', status: 'completed', startedAt: -4000, deadlineAt: 0 })],
+  ['deadline not exactly 4000 later', storedAward(base, { id: 'p1', status: 'started', startedAt: 1000, deadlineAt: 5001 })],
+  ['unsafe deadline', storedAward(base, { id: 'p1', status: 'started', startedAt: Number.MAX_SAFE_INTEGER, deadlineAt: Number.MAX_SAFE_INTEGER + 4000 })],
+  ['blank presentation id', storedAward(base, { id: '  ', status: 'pending', startedAt: null, deadlineAt: null })],
+  ['times on a pending presentation', storedAward(base, { id: 'p1', status: 'pending', startedAt: 0, deadlineAt: 4000 })],
+];
+
+test('every malformed award or time part fails closed on read and on push, with no refresh and no unlock', async () => {
+  for (const [name, value] of malformed) {
+    const read = lineFixture();
+    read.replies.read = declaredReply(value);
+    await read.controller.start();
+    await flush();
+    assert.deepEqual([read.last().mode, read.last().drawBlocked, read.refreshed()],
+      ['uncertain', true, 0], `read: ${name}`);
+    const push = await declaredFixture('pending');
+    push.push(value);
+    await flush();
+    assert.deepEqual([push.last().mode, push.last().award, push.last().drawBlocked, push.refreshed()], ['uncertain', null, true, 0], `push: ${name}`);
+    await push.controller.retry('p1');
+    assert.deepEqual(push.calls.filter((call) => call.startsWith('retry')), [], name);
+  }
+});
+
+test('legitimate extremes are still accepted and unlock after one refresh', async () => {
+  const valid: Array<[string, unknown]> = [
+    ['MAX_SAFE winners', storedAward(derivedAward(Number.MAX_SAFE_INTEGER, 10_000_000))],
+    ['zero prize', storedAward(derivedAward(4, 0))],
+    ['zero share with a remainder', storedAward(derivedAward(3000, 100_00))],
+    ['remainder edge', storedAward(derivedAward(3, 1000))],
+    ['maximum prize', storedAward(derivedAward(1, 10_000_000))],
+    ['resolved tied lot', storedAward(derivedAward(2, 1000, 'Jamón', 'resolved'))],
+    ['pending tied lot', storedAward(derivedAward(2, 1000, 'Jamón'))],
+    ['120 character lot', storedAward(derivedAward(1, 500, 'x'.repeat(120)))],
+    ['time zero', storedAward(base, { id: 'p1', status: 'completed', startedAt: 0, deadlineAt: 4000 })],
+    ['largest safe time', storedAward(base, { id: 'p1', status: 'completed', startedAt: Number.MAX_SAFE_INTEGER - 4000, deadlineAt: Number.MAX_SAFE_INTEGER })],
+  ];
+  for (const [name, value] of valid) {
+    const f = lineFixture();
+    f.replies.read = declaredReply(value);
+    await f.controller.start();
+    await flush();
+    assert.deepEqual([f.last().mode, f.last().drawBlocked, f.refreshed()], ['declared', false, 1], name);
+  }
+});
+
+test('a response from before a null context boundary is never adopted by the next event', async () => {
+  const replies: Array<[string, unknown]> = [
+    ['declared', { ok: true, state: 'declared', award: awardAt('completed', 'p1', 'A') }],
+    ['setup', { ok: true, state: 'setup', session: { ...lineSession, eventId: 'A' } }],
+    ['none', { ok: true, state: 'none' }],
+    ['refusal', { ok: false, code: 'storage_failure', message: 'Could not read the first-line state. Try again.' }],
+  ];
+  for (const [name, reply] of replies) {
+    const f = lineFixture();
+    f.controller.setEvent('A');
+    f.controller.setEvent(null);
+    let release!: (value: unknown) => void;
+    f.replies.read = () => new Promise((resolve) => { release = resolve; });
+    const reading = f.controller.start();
+    f.controller.setEvent('B');
+    release(reply);
+    await reading;
+    await flush();
+    assert.deepEqual([f.last().mode, f.last().award, f.last().session, f.last().drawBlocked, f.last().pending, f.refreshed()],
+      ['unknown', null, null, true, false, 0], name);
+    f.replies.read = async () => ({ ok: true, state: 'none' });
+    await f.controller.start();
+    assert.deepEqual([f.last().mode, f.last().drawBlocked], ['idle', false], `${name}: a new explicit read succeeds`);
+  }
+});
+
+test('an action answered after a null context boundary is dropped, and the first context still keeps a read in flight', async () => {
+  const f = await declaredFixture('failed');
+  f.controller.setEvent('e1');
+  let release!: (value: unknown) => void;
+  f.replies.retry = () => new Promise((resolve) => { release = resolve; });
+  const running = f.controller.retry('p1');
+  f.controller.setEvent(null);
+  f.controller.setEvent('e1');
+  release({ ok: true, award: awardAt('completed', 'p2') });
+  await running;
+  await flush();
+  assert.deepEqual([f.last().mode, f.last().award, f.refreshed()], ['unknown', null, 0]);
+  const initial = lineFixture();
+  let answer!: (value: unknown) => void;
+  initial.replies.read = () => new Promise((resolve) => { answer = resolve; });
+  const first = initial.controller.start();
+  initial.controller.setEvent('e1');
+  answer({ ok: true, state: 'declared', award: awardAt('pending') });
+  await first;
+  assert.equal(initial.last().mode, 'declared', 'the first context assignment keeps the initial read');
+});
+
+async function deferredRead(f: ReturnType<typeof lineFixture>) {
+  let release!: (value: unknown) => void;
+  f.replies.read = () => new Promise((resolve) => { release = resolve; });
+  const reading = f.controller.start();
+  return { reading, release: (value: unknown) => release(value) };
+}
+
+test('an older read that says none never erases a newer pushed award', async () => {
+  for (const status of ['pending', 'started', 'completed']) {
+    const f = lineFixture();
+    f.controller.setEvent('e1');
+    const read = await deferredRead(f);
+    f.push(awardAt(status));
+    read.release({ ok: true, state: 'none' });
+    await read.reading;
+    await flush();
+    assert.deepEqual([f.last().mode, f.last().award?.presentation.status, f.last().pending], ['declared', status, false], status);
+    if (status !== 'completed') assert.equal(f.last().drawBlocked, true, status);
+    assert.equal(f.last().liveBlocked, status !== 'completed', status);
+  }
+  const done = lineFixture();
+  done.controller.setEvent('e1');
+  const read = await deferredRead(done);
+  done.push(awardAt('completed'));
+  read.release({ ok: true, state: 'none' });
+  await read.reading;
+  await flush();
+  assert.deepEqual([done.last().drawBlocked, done.refreshed()], [false, 1]);
+});
+
+test('an older setup, refusal or lost answer never overwrites a newer pushed award', async () => {
+  const stale: Array<[string, () => Promise<unknown>]> = [
+    ['setup', async () => ({ ok: true, state: 'setup', session: lineSession })],
+    ['refusal', async () => ({ ok: false, code: 'storage_failure', message: 'Could not read the first-line state. Try again.' })],
+    ['thrown', async () => { throw new Error('ipc'); }],
+    ['invalid', async () => ({ ok: true, state: 'declared', award: { eventId: 'e1' } })],
+  ];
+  for (const [name, reply] of stale) {
+    const f = lineFixture();
+    f.controller.setEvent('e1');
+    let release!: () => void;
+    f.replies.read = () => new Promise((resolve) => { release = () => resolve(reply()); });
+    const reading = f.controller.start();
+    f.push(awardAt('started'));
+    release();
+    await reading;
+    assert.deepEqual([f.last().mode, f.last().award?.presentation.status, f.last().session, f.last().drawBlocked], ['declared', 'started', null, true], name);
+  }
+});
+
+test('a null or corrupt push during a read is never forgotten in favour of a stale none or award', async () => {
+  for (const reply of [{ ok: true, state: 'none' }, { ok: true, state: 'declared', award: awardAt('completed') }]) {
+    for (const bad of [null, { eventId: 'e1' }]) {
+      const f = lineFixture();
+      f.controller.setEvent('e1');
+      const read = await deferredRead(f);
+      f.push(bad);
+      read.release(reply);
+      await read.reading;
+      await flush();
+      assert.deepEqual([f.last().mode, f.last().award, f.last().drawBlocked, f.refreshed()], ['uncertain', null, true, 0]);
+      f.replies.read = declaredReply(awardAt('completed'));
+      await f.controller.open();
+      await flush();
+      assert.deepEqual([f.last().mode, f.last().drawBlocked], ['declared', false], 'an explicit later check recovers');
+    }
+  }
+});
+
+test('an older begin or cancel answer does not overwrite a newer pushed award either', async () => {
+  const f = lineFixture();
+  f.controller.setEvent('e1');
+  await f.controller.start();
+  let release!: (value: unknown) => void;
+  f.replies.begin = () => new Promise((resolve) => { release = resolve; });
+  const opening = f.controller.open();
+  f.push(awardAt('started'));
+  release({ ok: true, session: lineSession });
+  await opening;
+  assert.deepEqual([f.last().mode, f.last().session, f.last().award?.presentation.status], ['declared', null, 'started']);
+});
+
+test('an unsolicited push while a setup is open keeps the real session, even during a read, unlike a confirm in flight', async () => {
+  const f = lineFixture();
+  f.controller.setEvent('e1');
+  f.replies.read = async () => ({ ok: true, state: 'setup', session: lineSession });
+  await f.controller.start();
+  const read = await deferredRead(f);
+  f.push(awardAt('completed'));
+  assert.deepEqual([f.last().mode, f.last().session?.sessionId, f.last().drawBlocked, f.last().liveBlocked, f.refreshed()], ['setup', 's1', true, true, 0]);
+  read.release({ ok: true, state: 'setup', session: lineSession });
+  await read.reading;
+  assert.deepEqual([f.last().mode, f.last().session?.sessionId], ['setup', 's1']);
+});
+
+test('before any event was ever named, a null context followed by the first event keeps the initial read', async () => {
+  const f = lineFixture();
+  f.controller.setEvent(null);
+  const read = await deferredRead(f);
+  f.controller.setEvent('e1');
+  read.release({ ok: true, state: 'declared', award: awardAt('pending') });
+  await read.reading;
+  assert.deepEqual([f.last().mode, f.last().award?.presentation.id], ['declared', 'p1']);
+});
+
+// Second review: the initial-context exception must not adopt a foreign event, and an obsolete read carries no authority.
+test('an initial read answered after the first event was named never adopts another event, and a fresh read works', async () => {
+  const foreign: Array<[string, unknown]> = [
+    ['declared', { ok: true, state: 'declared', award: awardAt('failed', 'p1', 'A') }],
+    ['setup', { ok: true, state: 'setup', session: { ...lineSession, eventId: 'A' } }],
+  ];
+  for (const [name, reply] of foreign) {
+    const f = lineFixture();
+    const read = await deferredRead(f);
+    f.controller.setEvent('B');
+    read.release(reply);
+    await read.reading;
+    await flush();
+    assert.deepEqual([f.last().mode, f.last().award, f.last().session, f.last().drawBlocked, f.last().pending, f.refreshed()],
+      ['unknown', null, null, true, false, 0], name);
+    f.replies.read = async () => ({ ok: true, state: 'none' });
+    await f.controller.start();
+    assert.deepEqual([f.last().mode, f.last().drawBlocked], ['idle', false], `${name}: a fresh read works`);
+  }
+  const own: Array<[string, unknown, string]> = [
+    ['declared', { ok: true, state: 'declared', award: awardAt('failed', 'p1', 'B') }, 'declared'],
+    ['setup', { ok: true, state: 'setup', session: { ...lineSession, eventId: 'B' } }, 'setup'],
+  ];
+  for (const [name, reply, mode] of own) {
+    const f = lineFixture();
+    const read = await deferredRead(f);
+    f.controller.setEvent('B');
+    read.release(reply);
+    await read.reading;
+    assert.equal(f.last().mode, mode, `${name} of the newly named event is the initial recovery`);
+  }
+});
+
+test('a begin answered for another event than the one named meanwhile, or a confirm for another event, is not adopted', async () => {
+  const f = lineFixture();
+  await f.controller.start();
+  let release!: (value: unknown) => void;
+  f.replies.begin = () => new Promise((resolve) => { release = resolve; });
+  const opening = f.controller.open();
+  f.controller.setEvent('B');
+  release({ ok: true, session: { ...lineSession, eventId: 'A' } });
+  await opening;
+  assert.deepEqual([f.last().mode, f.last().session, f.last().dialogOpen, f.last().pending], ['idle', null, false, false]);
+  const g = lineFixture();
+  await g.controller.start();
+  await g.controller.open();
+  g.replies.confirm = async () => ({ ok: true, award: awardAt('pending', 'p1', 'other') });
+  await g.controller.confirm('2');
+  assert.deepEqual([g.last().mode, g.last().award, g.refreshed()], ['uncertain', null, 0]);
+});
+
+test('an obsolete read never replaces a newer pushed id, even a valid declared one that was never retired', async () => {
+  for (const [pushed, old] of [['pending', 'completed'], ['started', 'completed'], ['started', 'failed'], ['pending', 'interrupted']] as const) {
+    const f = lineFixture();
+    f.controller.setEvent('e1');
+    const read = await deferredRead(f);
+    f.push(awardAt(pushed, 'p2'));
+    read.release({ ok: true, state: 'declared', award: awardAt(old, 'p1') });
+    await read.reading;
+    await flush();
+    assert.deepEqual([f.last().award?.presentation.id, f.last().award?.presentation.status, f.last().drawBlocked, f.refreshed()],
+      ['p2', pushed, true, 0], `${pushed} then old ${old}`);
+    assert.equal(f.last().liveBlocked, true, 'the live lock stays');
+    f.push(awardAt('started', 'p2'));
+    f.push(awardAt('completed', 'p2'));
+    await flush();
+    assert.deepEqual([f.last().award?.presentation.status, f.last().drawBlocked], ['completed', false], 'p2 was never retired');
+  }
+});
+
+test('an obsolete read cannot recover uncertainty and a new explicit check can', async () => {
+  const f = lineFixture();
+  f.controller.setEvent('e1');
+  const read = await deferredRead(f);
+  f.push(null);
+  read.release({ ok: true, state: 'declared', award: awardAt('completed') });
+  await read.reading;
+  await flush();
+  assert.deepEqual([f.last().mode, f.last().drawBlocked, f.refreshed()], ['uncertain', true, 0]);
+  f.replies.read = declaredReply(awardAt('completed'));
+  await f.controller.open();
+  await flush();
+  assert.deepEqual([f.last().mode, f.last().drawBlocked], ['declared', false]);
+});
+
+// Third review: a foreign event is never stored as authority, whenever the event was named.
+test('under a known event a read naming another event fails closed and a proper read recovers', async () => {
+  const foreign: Array<[string, unknown]> = [
+    ['declared', { ok: true, state: 'declared', award: awardAt('completed', 'p1', 'zzz') }],
+    ['setup', { ok: true, state: 'setup', session: { ...lineSession, eventId: 'zzz' } }],
+  ];
+  for (const [name, reply] of foreign) {
+    const f = lineFixture();
+    f.controller.setEvent('e1');
+    f.replies.read = async () => reply;
+    await f.controller.start();
+    await flush();
+    assert.deepEqual([f.last().mode, f.last().award, f.last().session, f.last().drawBlocked, f.last().error, f.refreshed(), f.last().pending],
+      ['uncertain', null, null, true, 'Invalid first-line update. Check the state and try again.', 0, false], name);
+    f.replies.read = declaredReply(awardAt('completed'));
+    await f.controller.open();
+    await flush();
+    assert.deepEqual([f.last().mode, f.last().drawBlocked], ['declared', false], `${name}: the check recovers`);
+  }
+});
+
+test('a begin or a confirm naming another event than the named one fails closed', async () => {
+  const f = lineFixture();
+  f.controller.setEvent('e1');
+  await f.controller.start();
+  f.replies.begin = async () => ({ ok: true, session: { ...lineSession, eventId: 'zzz' } });
+  await f.controller.open();
+  assert.deepEqual([f.last().mode, f.last().session, f.last().dialogOpen], ['uncertain', null, false]);
+  const g = lineFixture();
+  g.replies.read = async () => ({ ok: true, state: 'setup', session: lineSession });
+  await g.controller.start();
+  g.controller.setEvent('other');
+  assert.deepEqual([g.last().mode, g.last().session], ['uncertain', null], 'naming the event validates an initial session');
+  const h = lineFixture();
+  h.replies.read = declaredReply(awardAt('completed', 'p1', 'zzz'));
+  await h.controller.start();
+  assert.equal(h.last().mode, 'declared', 'with no event named yet the initial read is kept');
+  h.controller.setEvent('e1');
+  await flush();
+  // The event read triggered by the unnamed completion is only a read; nothing unlocks.
+  assert.deepEqual([h.last().mode, h.last().award, h.last().drawBlocked, h.last().refresh], ['uncertain', null, true, 'none']);
+});
+
+test('an obsolete read with a foreign or failing answer never replaces a newer pushed state', async () => {
+  for (const reply of [{ ok: true, state: 'declared', award: awardAt('completed', 'p1', 'zzz') }, { ok: false, message: 'x' }]) {
+    const f = lineFixture();
+    f.controller.setEvent('e1');
+    const read = await deferredRead(f);
+    f.push(awardAt('started', 'p2'));
+    read.release(reply);
+    await read.reading;
+    assert.deepEqual([f.last().mode, f.last().award?.presentation.id], ['declared', 'p2']);
+  }
 });
