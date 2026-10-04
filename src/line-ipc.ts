@@ -8,6 +8,8 @@ export const LINE_CHANNELS = Object.freeze({
   read: 'line:read',
   cancel: 'line:cancel',
   confirm: 'line:confirm',
+  retryPresentation: 'line:retry-presentation',
+  repeatPresentation: 'line:repeat-presentation',
 });
 
 type PhaseSnapshot = EventSnapshot & { readonly phase: GamePhase; readonly lastTransitionAt: string | null };
@@ -27,7 +29,8 @@ export type LineResult =
   | { ok: true; state: 'none' }
   | { ok: true; award: StoredLineAward }
   | { ok: true }
-  | { ok: false; code: 'invalid_request' | 'not_available' | 'setup_active' | 'stale_session' | 'storage_failure';
+  | { ok: false; code: 'invalid_request' | 'not_available' | 'setup_active' | 'stale_session' | 'storage_failure'
+    | 'tongo_active' | 'presentation_busy' | 'presentation_refused';
     message: string };
 
 type LineRequest = { sender: unknown; senderFrame: unknown };
@@ -45,12 +48,21 @@ type Ports = {
   now(): Date;
   // Best-effort delivery of the committed ordinary state; never undoes the declaration.
   publish?(snapshot: PhaseSnapshot): void;
+  // Called once per committed award, after publish; the owner starts the public celebration. Never undoes it.
+  committed?(award: StoredLineAward): void;
+  // Manual presentation steps (they throw on a refusal) and whether one is already running.
+  retry?(id: string): void;
+  repeat?(id: string): void;
+  busy?(): boolean;
+  // Tongo and a first-line declaration never overlap.
+  tongoPlaying?(): boolean;
 };
 type Session = { id: string; eventId: string; frame: unknown; baseline: LineDeclarationBaseline };
 
 const failure = (code: Exclude<LineResult, { ok: true }>['code'], message: string): LineResult =>
   ({ ok: false, code, message });
 const invalid = () => failure('invalid_request', 'Invalid line request.');
+const tongoActive = () => failure('tongo_active', 'Wait for Tongo to finish, then try again.');
 const stale = () => failure('stale_session', 'This setup is no longer current. Reopen it.');
 const text = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 64;
 
@@ -74,12 +86,15 @@ export function registerLineIpc(registrar: Registrar, store: LineStore, ports: P
       const snapshot = store.load();
       if (snapshot !== null) ports.publish?.(snapshot);
     } catch { /* Delivery is best effort after persistence commits. */ }
+    // Idempotent per presentation id downstream, so the uncertain-reread path may reach this twice.
+    try { ports.committed?.(award); } catch { /* The celebration is best effort after persistence commits. */ }
     return { ok: true, award: awardCopy(award) };
   }
 
   registrar.handle(LINE_CHANNELS.begin, (event, ...args) => {
     ports.authorize(event);
     if (args.length !== 0) return invalid();
+    if (ports.tongoPlaying?.()) return tongoActive();
     if (session !== null) return failure('setup_active', 'A first-line setup is already open. Reopen it to continue.');
     let baseline: LineDeclarationBaseline;
     try { baseline = store.loadLineDeclarationBaseline(); }
@@ -120,6 +135,7 @@ export function registerLineIpc(registrar: Registrar, store: LineStore, ports: P
     if (args.length !== 3 || !text(args[0]) || !text(args[1]) ||
         typeof count !== 'number' || !Number.isSafeInteger(count) || count < 1) return invalid();
     if (confirming || !owned(event, args[0], args[1])) return stale();
+    if (ports.tongoPlaying?.()) return tongoActive();
     const current = session as Session;
     let at: string;
     try {
@@ -143,6 +159,25 @@ export function registerLineIpc(registrar: Registrar, store: LineStore, ports: P
         'Could not declare the line. Reopen the setup and check the state before trying again.');
     } finally { confirming = false; }
   });
+
+  // Manual retry/repeat of the current award's presentation. The coordinator owns the transition; main only maps
+  // its refusals to typed codes and reads the committed award back.
+  const manual = (step: ((id: string) => void) | undefined) => (event: LineRequest, ...args: unknown[]): LineResult => {
+    ports.authorize(event);
+    if (args.length !== 1 || !text(args[0])) return invalid();
+    if (ports.tongoPlaying?.()) return tongoActive();
+    if (step === undefined) return failure('presentation_refused', 'The line celebration cannot be started now.');
+    if (ports.busy?.()) return failure('presentation_busy', 'Wait for the line celebration to finish first.');
+    try { step(args[0]); }
+    catch { return failure('presentation_refused', 'The line celebration cannot be started now.'); }
+    try {
+      const award = store.loadLineAward();
+      if (award !== null) return { ok: true, award: awardCopy(award) };
+    } catch { /* Fall through to the read failure below. */ }
+    return failure('storage_failure', 'Could not read the first-line state. Try again.');
+  };
+  registrar.handle(LINE_CHANNELS.retryPresentation, manual(ports.retry));
+  registrar.handle(LINE_CHANNELS.repeatPresentation, manual(ports.repeat));
 
   return { active: (): boolean => session !== null };
 }

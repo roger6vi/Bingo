@@ -13,6 +13,14 @@ export const MESSAGES_ES = Object.freeze({
   'No current event is available.': 'No hay ningún evento activo.',
   'Could not read the current event. Try again.': 'No se pudo leer el evento activo. Inténtalo de nuevo.',
   'Wait for Tongo to finish, then draw again.': 'Espera a que termine el Tongo y vuelve a cantar.',
+  // Line celebration guards (src/event-ipc.ts, src/event-catalog-ipc.ts, src/tongo-ipc.ts, src/line-ipc.ts)
+  'Wait for the line celebration to finish, then draw again.': 'Espera a que termine la celebración de la línea y vuelve a cantar.',
+  'Wait for the line celebration to finish first.': 'Espera a que termine la celebración de la línea.',
+  'Wait for the line celebration to finish, then try Tongo again.':
+    'Espera a que termine la celebración de la línea y vuelve a intentar el Tongo.',
+  'Wait for Tongo to finish, then try again.': 'Espera a que termine el Tongo y vuelve a intentarlo.',
+  'The line celebration is not finished.': 'La celebración de la línea aún no ha terminado.',
+  'The line celebration cannot be started now.': 'No se puede iniciar la celebración de la línea ahora.',
   // Tongo IPC (src/tongo-ipc.ts)
   'Invalid Tongo request.': 'Solicitud de Tongo no válida.',
   'Tongo is already playing on the public window.': 'El Tongo ya se está mostrando en la pantalla pública.',
@@ -76,8 +84,10 @@ export function linePrizeSummary({ amount, lot }) {
   return `Premio de línea configurado: ${parts.length === 0 ? 'sin premio' : parts.join(' + ')}.`;
 }
 
-// What the committed award says; nothing about the public screen, which has not shown it yet.
-export function lineAwardSummary({ award }) {
+export const isLineInterrupted = (value) => value?.presentation?.status === 'interrupted';
+
+// What the committed award says; nothing about the public screen unless its celebration was interrupted.
+export function lineAwardSummary({ award, presentation }) {
   const { winnerCount, totalCents, shareCents, remainderCents, lot, lotResolution } = award;
   const parts = [`Línea declarada con ${winnerCount} ganador${winnerCount === 1 ? '' : 'es'}.`];
   if (totalCents > 0) {
@@ -85,7 +95,9 @@ export function lineAwardSummary({ award }) {
     if (remainderCents > 0) parts.push(remainderCents === 1 ? 'Sobra 1 céntimo sin asignar.' : `Sobran ${remainderCents} céntimos sin asignar.`);
   }
   if (lot !== '') parts.push(lotResolution === 'pending' ? `Lote «${lot}»: pendiente de resolver entre los ganadores.` : `Lote «${lot}».`);
-  parts.push('La pantalla pública todavía no muestra la celebración.');
+  parts.push(presentation?.status === 'interrupted'
+    ? 'La celebración pública quedó interrumpida al reiniciar la aplicación: no se ha completado ni se repite sola. Los números siguen bloqueados hasta reiniciar manualmente la celebración completa.'
+    : 'La pantalla pública todavía no muestra la celebración.');
   return parts.join(' ');
 }
 

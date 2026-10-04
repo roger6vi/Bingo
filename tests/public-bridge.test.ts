@@ -17,10 +17,12 @@ test('the public window uses its preload subscriptions and never listens to fram
   const { win, listeners } = fakeWindow();
   Object.assign(win, { publicEvent: { subscribe: () => () => {} }, publicTheme: { subscribe: () => () => {} },
     publicEventMeta: { subscribe: () => () => {} }, publicEventPrizes: { subscribe: () => () => {} },
-    publicPresentation: { subscribe: () => () => {} }, publicLineAward: { subscribe: () => () => {} } });
+    publicPresentation: { subscribe: () => () => {} }, publicLineAward: { subscribe: () => () => {} },
+    publicLineReceipt: { started: () => {} } });
   const bridges = publicBridges(win);
-  assert.deepEqual([bridges.event, bridges.theme, bridges.meta, bridges.prizes, bridges.lineAward, bridges.presentation],
-    [win.publicEvent, win.publicTheme, win.publicEventMeta, win.publicEventPrizes, win.publicLineAward, win.publicPresentation]);
+  assert.deepEqual([bridges.event, bridges.theme, bridges.meta, bridges.prizes, bridges.lineAward, bridges.presentation,
+    bridges.lineReceipt], [win.publicEvent, win.publicTheme, win.publicEventMeta, win.publicEventPrizes, win.publicLineAward,
+    win.publicPresentation, win.publicLineReceipt]);
   assert.equal(listeners.length, 0);
   assert.throws(() => publicBridges(fakeWindow().win), /Missing public display bridge/);
   // A top-level page missing any one preload bridge is not the public window.
@@ -33,10 +35,12 @@ test('the public window fails closed without the committed line-award bridge', (
   const { win } = fakeWindow();
   const bridge = () => ({ subscribe: () => () => {} });
   Object.assign(win, { publicEvent: bridge(), publicTheme: bridge(), publicEventMeta: bridge(),
-    publicEventPrizes: bridge(), publicPresentation: bridge() });
+    publicEventPrizes: bridge(), publicPresentation: bridge(), publicLineReceipt: { started: () => {} } });
   assert.throws(() => publicBridges(win), /Missing public display bridge/);
   win.publicLineAward = bridge();
   assert.equal(publicBridges(win).lineAward, win.publicLineAward);
+  delete win.publicLineReceipt;
+  assert.throws(() => publicBridges(win), /Missing public display bridge/);
 });
 
 test('framed as the simulator, the page accepts only well-formed messages from its parent frame', () => {
@@ -103,4 +107,13 @@ test('validPrizes accepts only whole-euro amounts of 0\u2013100 000 and trimmed 
 
 test('formatEuros groups thousands with points independent of the host locale', () => {
   assert.deepEqual([0, 7, 999, 1000, 12_500, 100_000].map(formatEuros), ['0 \u20ac', '7 \u20ac', '999 \u20ac', '1.000 \u20ac', '12.500 \u20ac', '100.000 \u20ac']);
+});
+
+test('the simulator receipt is an inert no-op that can neither send nor throw', () => {
+  const { win } = fakeWindow({});
+  const { lineReceipt, presentation } = publicBridges(win);
+  assert.equal(lineReceipt.started('p1'), undefined);
+  assert.deepEqual(Object.keys(lineReceipt), ['started']);
+  assert.equal(Object.isFrozen(lineReceipt), true);
+  assert.equal(typeof presentation.subscribe(() => {}), 'function');
 });

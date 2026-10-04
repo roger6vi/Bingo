@@ -9,7 +9,8 @@ export type TongoPresentation = { readonly kind: 'tongo'; readonly id: number; r
 
 export type TongoResult =
   | { ok: true; presentation: TongoPresentation }
-  | { ok: false; code: 'invalid_request' | 'not_playable' | 'busy' | 'public_unavailable' | 'storage_failure';
+  | { ok: false; code: 'invalid_request' | 'not_playable' | 'busy' | 'public_unavailable' | 'storage_failure'
+    | 'line_presentation_active';
     message: string };
 
 type TongoRequest = { sender: unknown; senderFrame: unknown };
@@ -22,6 +23,8 @@ type Ports = {
   // Reports whether the signal reached a live public window.
   publish(presentation: TongoPresentation): boolean;
   schedule?(done: () => void, delay: number): unknown;
+  // A line celebration owns the public window; Tongo must not overlap it.
+  lineBusy?(): boolean;
 };
 
 const playable = (phase: GamePhase) => phase === 'drawing' || phase === 'line_declared';
@@ -37,6 +40,9 @@ export function registerTongoIpc(registrar: Registrar, store: Store, ports: Port
     ports.authorize(event);
     if (args.length !== 0) return failure('invalid_request', 'Invalid Tongo request.');
     if (playing) return failure('busy', 'Tongo is already playing on the public window.');
+    if (ports.lineBusy?.()) {
+      return failure('line_presentation_active', 'Wait for the line celebration to finish, then try Tongo again.');
+    }
     let phase: GamePhase | null;
     try { phase = store.load()?.phase ?? null; }
     catch { return failure('storage_failure', 'Could not read the current event. Try again.'); }

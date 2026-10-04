@@ -6,12 +6,14 @@ import './components/bingo-status.mjs';
 import './components/bingo-number-board.mjs';
 import './components/bingo-prize-display.mjs';
 import './components/bingo-tongo.mjs';
+import './components/bingo-line-celebration.mjs';
 import './screen.css';
 import { createPublicController, describeLineAward, validLineAward } from './public-controller.mjs';
 import { applyTheme, revealAfter } from './theme-controller.mjs';
 import { publicBridges, validEventMeta } from './public-bridge.mjs';
 import { validPrizes } from './prize-format.mjs';
 import { createTongoPlayback } from './tongo.mjs';
+import { createLineCelebrationPlayback } from './line-celebration.mjs';
 
 const bridges = publicBridges(window);
 const unsubscribeTheme = bridges.theme.subscribe((theme) => applyTheme(document.documentElement, theme));
@@ -52,6 +54,7 @@ const unsubscribePrizes = bridges.prizes.subscribe((value) => { prizes.prizes = 
 
 // Static committed award text only: no animation, timer or presentation state, so a late attach or reload shows
 // the same facts and never implies that a celebration played. Invalid or cleared payloads remove it.
+let awardFacts = '';
 const lineAward = document.createElement('p');
 lineAward.id = 'line-award';
 lineAward.lang = 'es';
@@ -61,6 +64,7 @@ const unsubscribeLineAward = bridges.lineAward.subscribe((award) => {
   const valid = validLineAward(award);
   lineAward.textContent = valid ? describeLineAward(award) : '';
   lineAward.hidden = !valid;
+  awardFacts = valid ? describeLineAward(award) : '';
 });
 
 const controller = createPublicController(bridges.event, {
@@ -91,9 +95,21 @@ const tongoPlayback = createTongoPlayback(bridges.presentation, {
   show: () => { tongo.active = true; },
   hide: () => { tongo.active = false; },
 });
+// The first-line celebration overlays the same unchanged board. Page-local, like Tongo: it plays only for a signal
+// this page received, and its start receipt is sent after the overlay has actually rendered.
+const lineCelebration = required('line-celebration', HTMLElement);
+const linePlayback = createLineCelebrationPlayback(bridges.presentation, {
+  show: () => {
+    lineCelebration.facts = awardFacts;
+    lineCelebration.active = true;
+    return lineCelebration.updateComplete;
+  },
+  hide: () => { lineCelebration.active = false; },
+}, bridges.lineReceipt);
 window.addEventListener('pagehide', () => {
   controller.cleanup();
   tongoPlayback.cleanup();
+  linePlayback.cleanup();
   unsubscribeTheme();
   unsubscribeMeta();
   unsubscribePrizes();

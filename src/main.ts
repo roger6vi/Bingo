@@ -10,7 +10,8 @@ import { registerThemeIpc } from './theme-ipc';
 import { registerTongoIpc } from './tongo-ipc';
 import { registerPrizeIpc } from './prize-ipc';
 import { registerLineIpc } from './line-ipc';
-import { createPublicEventDelivery } from './public-event-delivery';
+import { createLinePresentationCoordinator } from './line-presentation';
+import { createPublicEventDelivery, PUBLIC_LINE_RECEIPT_CHANNEL } from './public-event-delivery';
 import { createWindowLifecycle } from './window-lifecycle';
 import { planOperatorWindow, planPublicWindow } from './window-plan';
 import { createPublicWindowMover } from './window-placement';
@@ -48,6 +49,11 @@ if (!app.requestSingleInstanceLock()) {
     const databasePath = path.join(app.getPath('userData'), 'current-event.sqlite');
     ({ store } = initializeCurrentEvent(createEventStore(databasePath)));
     app.once('before-quit', () => store.close());
+    // A presentation still persisted as started belongs to a previous run: mark it interrupted exactly once, before
+    // any window, delivery or IPC exists. Then a pending one that never reached a renderer becomes failed. Nothing
+    // completes, replays or retries either; draws stay blocked and the operator retries manually.
+    store.interruptStartedLinePresentations();
+    store.failPendingLinePresentations();
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     dialog.showErrorBox('Could not open current event',
@@ -75,14 +81,32 @@ if (!app.requestSingleInstanceLock()) {
   const operatorOnly = createOperatorGuard(operator.webContents, operatorFrame, operatorUrl);
   const theme = registerThemeIpc(ipcMain, { load: store.loadTheme, save: store.saveTheme },
     operatorOnly, publicDelivery.publishTheme);
+  // The coordinator owns every presentation state change; main only supplies the clock, timers, the public signal
+  // and the operator notification.
+  const presentation = createLinePresentationCoordinator(store, {
+    now: Date.now,
+    schedule: (fn, ms) => setTimeout(fn, ms),
+    cancel: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+    publish: publicDelivery.publishPresentation,
+    notify: (award) => { if (!operator.isDestroyed()) operator.webContents.send('line:presentation', award); },
+  });
+  const tongo = registerTongoIpc(ipcMain, store, { authorize: operatorOnly, publish: publicDelivery.publishPresentation,
+    lineBusy: presentation.busy });
   const line = registerLineIpc(ipcMain, store, { authorize: operatorOnly, now: () => new Date(),
-    publish: publicDelivery.publishCommitted });
+    publish: publicDelivery.publishCommitted, committed: presentation.begin, retry: presentation.retry,
+    repeat: presentation.repeat, busy: presentation.busy, tongoPlaying: tongo.playing });
   registerEventCatalogIpc(ipcMain, store, operatorOnly, () => publicDelivery.publishActive(theme.reload()),
-    publicDelivery.publishMeta, line.active);
-  const tongo = registerTongoIpc(ipcMain, store, { authorize: operatorOnly, publish: publicDelivery.publishPresentation });
+    publicDelivery.publishMeta, line.active, presentation.busy);
   registerPrizeIpc(ipcMain, store, operatorOnly, publicDelivery.publishPrizes, line.active);
   registerEventIpc(ipcMain, store, { drawManual, drawDigital }, Math.random,
-    operator.webContents, operatorFrame, operatorUrl, publicDelivery.publishCommitted, tongo.playing, line.active);
+    operator.webContents, operatorFrame, operatorUrl, publicDelivery.publishCommitted, tongo.playing, line.active,
+    presentation.busy);
+  // The start receipt counts only from the exact public main frame the signal was sent to, still current at the page URL.
+  const publicUrl = pathToFileURL(htmlPath('public.html')).href;
+  ipcMain.on(PUBLIC_LINE_RECEIPT_CHANNEL, (event, id: unknown) => {
+    if (typeof id !== 'string' || !publicDelivery.acceptLineReceipt(event, id, publicUrl)) return;
+    presentation.receiptStarted(id);
+  });
   void operator.loadFile(operatorPath);
 
   const lifecycle = createWindowLifecycle<BrowserWindow>({
@@ -96,6 +120,12 @@ if (!app.requestSingleInstanceLock()) {
         webPreferences: { preload: publicPreload, contextIsolation: true, nodeIntegration: false, sandbox: true },
       });
       const contents = window.webContents;
+      // Main-frame navigation start (reload included) detaches delivery and voids a pending receipt; subframe and
+      // same-document navigations leave the document alone. The finished load re-attaches static state only.
+      contents.on('did-start-navigation', (details) => {
+        if (details.isMainFrame && !details.isSameDocument)
+          publicDelivery.navigationStarted(contents);
+      });
       contents.on('did-finish-load', () => publicDelivery.attachAfterLoad(contents));
       window.on('closed', () => {
         publicDelivery.detachIfCurrent(contents);

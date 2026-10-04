@@ -306,15 +306,17 @@ async function smoke() {
     await step('receive-only public boundary and bridge-free simulator', async () => {
       // The simulator is the production public page with no privileged bridge at all.
       assert.deepEqual(await simulator.evaluate(() => ({
-        own: ['desktop', 'publicEvent', 'publicTheme', 'publicEventMeta', 'publicEventPrizes', 'publicPresentation'].filter((name) => name in window),
+        own: ['desktop', 'publicEvent', 'publicTheme', 'publicEventMeta', 'publicEventPrizes', 'publicLineAward', 'publicPresentation',
+          'publicLineReceipt'].filter((name) => name in window),
         parentDesktop: (() => { try { return 'desktop' in window.parent; } catch { return 'blocked'; } })(),
       })), { own: [], parentDesktop: 'blocked' });
       // The public window can only subscribe.
       assert.deepEqual(await publicWindow.evaluate(() => ({
         desktop: 'desktop' in window, require: typeof require,
-        bridges: ['publicEvent', 'publicTheme', 'publicEventMeta', 'publicEventPrizes', 'publicPresentation']
-          .map((name) => Object.keys(window[name])),
-      })), { desktop: false, require: 'undefined', bridges: [['subscribe'], ['subscribe'], ['subscribe'], ['subscribe'], ['subscribe']] });
+        bridges: ['publicEvent', 'publicTheme', 'publicEventMeta', 'publicEventPrizes', 'publicLineAward', 'publicPresentation',
+          'publicLineReceipt'].map((name) => Object.keys(window[name])),
+      })), { desktop: false, require: 'undefined',
+        bridges: [['subscribe'], ['subscribe'], ['subscribe'], ['subscribe'], ['subscribe'], ['subscribe'], ['started']] });
       // The prize channel validates in the main process too: a malformed write never reaches storage.
       const rejected = await operator.evaluate(() => window.desktop.getPrizes().then(({ eventId }) =>
         window.desktop.updatePrizes(eventId, { line: { amount: 1.5, lot: '' }, bingo: { amount: 0, lot: '' } })));
