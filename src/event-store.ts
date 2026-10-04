@@ -4,13 +4,15 @@ import { DatabaseSync } from 'node:sqlite';
 import type { EventSnapshot } from './event-core';
 import { transitionPhase, type GamePhase, type PhaseTransitionIntent } from './game-phase.ts';
 import { DEFAULT_THEME, isThemeId, THEME_IDS, type ThemeId } from './theme.ts';
+import { createLineAward, isLineDeliveryResolved, transitionLinePresentation, type LineAward,
+  type LinePresentationIntent, type LinePresentationStatus } from './line-award.ts';
 import { MAX_PRIZE_AMOUNT, MAX_PRIZE_LOT, NO_PRIZES, normalizePrizes, validAmount, validLot,
   type EventPrizes } from './event-prizes.ts';
 
-// Event prizes (#71) are the only v6 change and live in their own table, so the v6 step is one
-// self-contained migration chained after the v5 theme allow-list step. If another change claims this
-// version first, renumber VERSION and chain migratePrizes after that change's step.
-const VERSION = 6;
+// Event prizes (#71) are the only v6 change and the first-line award table (#26/#28) is the only v7
+// change. Each lives in its own table, so each step is one self-contained migration chained after the
+// v5 theme allow-list step. If another change claims a version first, renumber and re-chain.
+const VERSION = 7;
 export const EVENT_SCHEMA_VERSION = VERSION;
 const phases = ['drawing', 'checking_line', 'line_declared', 'checking_bingo', 'bingo_declared', 'finished'];
 const phaseCheck = `CHECK (phase IN (${phases.map((phase) => `'${phase}'`).join(', ')}))`;
@@ -76,6 +78,39 @@ const prizesTable = `CREATE TABLE event_prizes (
   event_id TEXT PRIMARY KEY REFERENCES events(id),
   ${prizeColumns('line')},
   ${prizeColumns('bingo')}
+)`;
+const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
+const MAX_AWARD_CENTS = 10_000_000;
+const LINE_PRESENTATION_MS = 4000;
+const integerRange = (name: string, low: number, high: number) =>
+  `typeof(${name}) = 'integer' AND ${name} BETWEEN ${low} AND ${high}`;
+const integerColumn = (name: string, low: number, high: number) => `CHECK (${integerRange(name, low, high)})`;
+// Optional first-line award, at most one per event, written later together with its audit row. Shares
+// use integer division so the arithmetic cannot overflow for any safe winner count; the remainder is
+// never assigned. Only a nonempty lot shared by 2+ winners needs a tie; presentation times are epoch ms.
+const lineAwardsTable = `CREATE TABLE line_awards (
+  event_id TEXT NOT NULL PRIMARY KEY REFERENCES events(id),
+  audit_sequence INTEGER NOT NULL ${integerColumn('audit_sequence', 1, MAX_SAFE_INTEGER)},
+  winner_count INTEGER NOT NULL ${integerColumn('winner_count', 1, MAX_SAFE_INTEGER)},
+  total_cents INTEGER NOT NULL ${integerColumn('total_cents', 0, MAX_AWARD_CENTS)},
+  share_cents INTEGER NOT NULL ${integerColumn('share_cents', 0, MAX_AWARD_CENTS)},
+  remainder_cents INTEGER NOT NULL ${integerColumn('remainder_cents', 0, MAX_AWARD_CENTS)},
+  lot TEXT NOT NULL CHECK (typeof(lot) = 'text' AND lot = trim(lot) AND length(lot) <= 120),
+  lot_resolution TEXT NOT NULL CHECK (lot_resolution IN ('not_required', 'pending', 'resolved')),
+  presentation_id TEXT NOT NULL UNIQUE CHECK (typeof(presentation_id) = 'text' AND length(trim(presentation_id)) > 0),
+  presentation_status TEXT NOT NULL CHECK (presentation_status IN ('pending', 'failed', 'started', 'completed')),
+  presentation_started_at INTEGER CHECK (presentation_started_at IS NULL OR
+    ${integerRange('presentation_started_at', 0, MAX_SAFE_INTEGER)}),
+  presentation_deadline INTEGER CHECK (presentation_deadline IS NULL OR
+    ${integerRange('presentation_deadline', 0, MAX_SAFE_INTEGER)}),
+  CHECK (share_cents = total_cents / winner_count AND remainder_cents = total_cents % winner_count),
+  CHECK (CASE WHEN lot = '' OR winner_count < 2 THEN lot_resolution = 'not_required'
+    ELSE lot_resolution IN ('pending', 'resolved') END),
+  CHECK (CASE WHEN presentation_status IN ('pending', 'failed')
+    THEN presentation_started_at IS NULL AND presentation_deadline IS NULL
+    ELSE presentation_started_at IS NOT NULL AND presentation_deadline IS NOT NULL AND
+      presentation_deadline > presentation_started_at END),
+  FOREIGN KEY (event_id, audit_sequence) REFERENCES phase_audit(event_id, sequence)
 )`;
 const PLACEHOLDER_NAME = 'Evento actual';
 const PLACEHOLDER_PLACE = 'Sin especificar';
@@ -503,6 +538,19 @@ function validatePrizesSchema(db: DatabaseSync): void {
   }
 }
 
+// v6 → v7: add the empty line_awards table. Older games, including declared ones, keep no award.
+function migrateLineAwards(db: DatabaseSync): void {
+  db.exec(lineAwardsTable);
+}
+
+function validateLineAwardsSchema(db: DatabaseSync): void {
+  const normalize = (sql: string) => sql.replace(/[\s"`\[\]]/g, '').toUpperCase();
+  const sql = db.prepare("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'line_awards'").get()?.sql;
+  if (typeof sql !== 'string' || normalize(sql) !== normalize(lineAwardsTable)) {
+    throw new Error('Invalid event schema: line_awards table missing or malformed');
+  }
+}
+
 // Fails closed on values that bypassed the CHECKs, like the theme; startup never reads prizes.
 function readPrizes(db: DatabaseSync, eventId: string): EventPrizes {
   const rows = db.prepare(`SELECT lineAmount, lineLot, bingoAmount, bingoLot FROM event_prizes
@@ -515,6 +563,142 @@ function readPrizes(db: DatabaseSync, eventId: string): EventPrizes {
   }
   return normalizePrizes({ line: { amount: row.lineAmount, lot: row.lineLot },
     bingo: { amount: row.bingoAmount, lot: row.bingoLot } }) as EventPrizes;
+}
+
+export type StoredLineAward = {
+  readonly eventId: string;
+  readonly award: LineAward;
+  readonly presentation: {
+    readonly id: string;
+    readonly status: LinePresentationStatus;
+    readonly startedAt: number | null;
+    readonly deadlineAt: number | null;
+  };
+};
+
+const PRESENTATION_STATUSES: readonly string[] = ['pending', 'failed', 'started', 'completed'];
+const LOT_RESOLUTIONS: readonly string[] = ['not_required', 'pending', 'resolved'];
+
+// Reads the active event's award, or null only when no row exists. A populated row is re-derived with the
+// pure rules and linked to its direct audit intent; anything else fails closed. Never repairs or writes.
+function readLineAward(db: DatabaseSync, eventId: string, audit: PhaseAuditEntry[]): StoredLineAward | null {
+  const invalid = (reason: string, cause?: unknown): never => {
+    throw new Error(`Invalid stored line award: ${reason}`, cause === undefined ? undefined : { cause });
+  };
+  let row;
+  try {
+    row = db.prepare(`SELECT event_id, audit_sequence, winner_count, total_cents, share_cents, remainder_cents,
+      lot, lot_resolution, presentation_id, presentation_status, presentation_started_at, presentation_deadline
+      FROM line_awards WHERE event_id = ?`).get(eventId);
+  } catch (error) { return invalid('unreadable row', error); }
+  if (row === undefined) return null;
+  const safe = (value: unknown, low: number): value is number =>
+    Number.isSafeInteger(value) && (value as number) >= low;
+  if (row.event_id !== eventId) invalid('event');
+  const link = safe(row.audit_sequence, 1) ? audit[row.audit_sequence - 1] : undefined;
+  if (link?.kind !== 'declare_line_directly' || link.from_phase !== 'drawing' || link.to_phase !== 'line_declared') {
+    invalid('audit link');
+  }
+  if (!safe(row.winner_count, 1) || !safe(row.total_cents, 0) || row.total_cents > 10_000_000 ||
+      row.total_cents % 100 !== 0 || typeof row.lot !== 'string' || row.lot !== row.lot.trim()) {
+    invalid('amounts');
+  }
+  let derived: LineAward;
+  try {
+    derived = createLineAward({ winnerCount: row.winner_count as number,
+      prizeEuros: (row.total_cents as number) / 100, lot: row.lot as string });
+  } catch (error) { return invalid('award rules', error); }
+  const resolution = row.lot_resolution;
+  if (row.share_cents !== derived.shareCents || row.remainder_cents !== derived.remainderCents ||
+      typeof resolution !== 'string' || !LOT_RESOLUTIONS.includes(resolution) ||
+      (resolution !== derived.lotResolution && !(derived.lotResolution === 'pending' && resolution === 'resolved'))) {
+    invalid('share, remainder or lot');
+  }
+  const status = row.presentation_status;
+  const startedAt = row.presentation_started_at;
+  const deadlineAt = row.presentation_deadline;
+  if (typeof row.presentation_id !== 'string' || row.presentation_id.trim() === '' ||
+      typeof status !== 'string' || !PRESENTATION_STATUSES.includes(status)) {
+    invalid('presentation');
+  }
+  const timed = status === 'started' || status === 'completed';
+  if (timed ? !(safe(startedAt, 0) && safe(deadlineAt, 0) && deadlineAt > startedAt)
+    : startedAt !== null || deadlineAt !== null) {
+    invalid('presentation times');
+  }
+  return Object.freeze({
+    eventId,
+    award: Object.freeze({ ...derived, lotResolution: resolution as LineAward['lotResolution'] }),
+    presentation: Object.freeze({ id: row.presentation_id as string, status: status as LinePresentationStatus,
+      startedAt: startedAt as number | null, deadlineAt: deadlineAt as number | null }),
+  });
+}
+
+export type LineDeclarationBaseline = {
+  readonly eventId: string;
+  readonly calledNumbers: readonly number[];
+  readonly phase: 'drawing';
+  readonly lastTransitionAt: string | null;
+  readonly auditSequence: number;
+  readonly linePrize: { readonly amount: number; readonly lot: string };
+};
+
+// The store-authoritative core of a future direct first-line declaration, read from one consistent snapshot. Only
+// a drawing event without an award qualifies. A legacy declaration later corrected back to drawing left no durable
+// award, so it stays eligible; any prior direct declaration audit, even corrected, refuses.
+function readLineDeclarationBaseline(db: DatabaseSync): LineDeclarationBaseline {
+  const id = readActiveEventId(db);
+  const event = id === null ? null : readEvent(db);
+  if (id === null || event === null) throw new Error('Line declaration not eligible: no current event');
+  const audit = replayAudit(db, id);
+  if (event.phase !== 'drawing' || readLineAward(db, id, audit) !== null ||
+      audit.some((entry) => entry.kind === 'declare_line_directly')) {
+    throw new Error('Line declaration not eligible: the line is already declared');
+  }
+  const { line } = readPrizes(db, id);
+  return Object.freeze({
+    eventId: id, calledNumbers: Object.freeze([...event.calledNumbers]), phase: 'drawing' as const,
+    lastTransitionAt: event.lastTransitionAt, auditSequence: audit.length,
+    linePrize: Object.freeze({ amount: line.amount, lot: line.lot }),
+  });
+}
+
+// Untrusted input (the future IPC reads JSON): exact shape and types only, never coerced.
+function parseBaseline(value: unknown): LineDeclarationBaseline {
+  const invalid = () => new Error('Invalid line declaration baseline');
+  const plain = (v: unknown): v is Record<string, unknown> =>
+    typeof v === 'object' && v !== null && !Array.isArray(v);
+  const exact = (v: Record<string, unknown>, keys: string[]) =>
+    Object.keys(v).length === keys.length && keys.every((key) => Object.hasOwn(v, key));
+  if (!plain(value) || !exact(value, ['eventId', 'calledNumbers', 'phase', 'lastTransitionAt', 'auditSequence', 'linePrize'])) {
+    throw invalid();
+  }
+  const prize = value.linePrize;
+  if (typeof value.eventId !== 'string' || !Array.isArray(value.calledNumbers) || value.phase !== 'drawing' ||
+      !(value.lastTransitionAt === null || canonicalTime(value.lastTransitionAt)) ||
+      !Number.isSafeInteger(value.auditSequence) || (value.auditSequence as number) < 0 ||
+      !plain(prize) || !exact(prize, ['amount', 'lot']) || typeof prize.lot !== 'string' || !validAmount(prize.amount)) {
+    throw invalid();
+  }
+  // Dense, ordered, valid and unique balls (the history decode rules); a hole or junk value never passes. The result
+  // is a private copy, so the caller cannot change the input between this check and the comparison.
+  const called: number[] = [];
+  const seen = new Set<number>();
+  for (let index = 0; index < value.calledNumbers.length; index += 1) {
+    const ball: unknown = Object.hasOwn(value.calledNumbers, index) ? value.calledNumbers[index] : undefined;
+    if (typeof ball !== 'number' || !Number.isInteger(ball) || ball < 1 || ball > 90 || seen.has(ball)) throw invalid();
+    seen.add(ball);
+    called.push(ball);
+  }
+  return { eventId: value.eventId, calledNumbers: called, phase: 'drawing', lastTransitionAt: value.lastTransitionAt,
+    auditSequence: value.auditSequence as number, linePrize: { amount: prize.amount, lot: prize.lot } };
+}
+
+function sameBaseline(a: LineDeclarationBaseline, b: LineDeclarationBaseline): boolean {
+  return a.eventId === b.eventId && a.phase === b.phase && a.lastTransitionAt === b.lastTransitionAt &&
+    a.auditSequence === b.auditSequence && a.linePrize.amount === b.linePrize.amount &&
+    a.linePrize.lot === b.linePrize.lot && a.calledNumbers.length === b.calledNumbers.length &&
+    b.calledNumbers.every((number, index) => a.calledNumbers[index] === number);
 }
 
 export function createEventStore(path: string) {
@@ -532,6 +716,7 @@ export function createEventStore(path: string) {
           candidate.exec(auditTableV4);
           candidate.exec(auditGuards.join(';'));
           candidate.exec(prizesTable);
+          candidate.exec(lineAwardsTable);
           candidate.exec(`PRAGMA user_version = ${VERSION}; COMMIT`);
         } catch (error) {
           try { candidate.exec('ROLLBACK'); } catch { /* Preserve the original error. */ }
@@ -554,12 +739,13 @@ export function createEventStore(path: string) {
     db.exec('BEGIN');
     try {
       const observed = db.prepare('PRAGMA user_version').get()?.user_version;
-      if (observed !== 1 && observed !== 2 && observed !== 3 && observed !== 4 && observed !== 5 && observed !== VERSION) {
+      if (observed !== 1 && observed !== 2 && observed !== 3 && observed !== 4 && observed !== 5 && observed !== 6 && observed !== VERSION) {
         throw new Error(`Unsupported event schema version: ${String(observed)}`);
       }
       if (observed === VERSION) {
         validateV4(db);
         validatePrizesSchema(db);
+        validateLineAwardsSchema(db);
         readEvent(db);
         db.exec('COMMIT');
       } else {
@@ -592,19 +778,24 @@ export function createEventStore(path: string) {
           validateV3(db);
           migrateV3ToV4(db);
           db.exec('PRAGMA user_version = 4');
-        } else if (version !== 4 && version !== 5 && version !== VERSION) {
+        } else if (version !== 4 && version !== 5 && version !== 6 && version !== VERSION) {
           throw new Error(`Unsupported event schema version: ${String(version)}`);
         }
         if (version === 1 || version === 2 || version === 3 || version === 4) {
           migrateThemeAllowList(db);
           db.exec('PRAGMA user_version = 5');
         }
-        if (version !== VERSION) {
+        if (version === 1 || version === 2 || version === 3 || version === 4 || version === 5) {
           migratePrizes(db);
+          db.exec('PRAGMA user_version = 6');
+        }
+        if (version !== VERSION) {
+          migrateLineAwards(db);
           db.exec(`PRAGMA user_version = ${VERSION}`);
         }
         validateV4(db);
         validatePrizesSchema(db);
+        validateLineAwardsSchema(db);
         readEvent(db);
         db.exec('COMMIT');
       }
@@ -628,6 +819,38 @@ export function createEventStore(path: string) {
       throw error;
     }
   }
+
+  // One explicit presentation step on the active event's award. Everything is checked under the writer lock: the id
+  // must be the current one and the pure graph must allow the step. The compare-and-set names the id and source
+  // status, must change exactly one row, and the readback must equal the intended state before COMMIT.
+  function stepPresentation(id: unknown, intent: LinePresentationIntent,
+      plan: (current: StoredLineAward['presentation']) => { startedAt: number | null; deadlineAt: number | null }) {
+    if (typeof id !== 'string' || id.trim() === '') throw new Error('Invalid line presentation id');
+    return transaction(() => {
+      const eventId = readActiveEventId(db);
+      if (eventId === null) throw new Error('Current event does not exist');
+      readEvent(db);
+      const current = readLineAward(db, eventId, replayAudit(db, eventId));
+      if (current === null || current.presentation.id !== id) throw new Error('Line presentation is not the current one');
+      const status = transitionLinePresentation({ status: current.presentation.status }, intent).status;
+      const times = plan(current.presentation);
+      const nextId = intent === 'retry' ? randomUUID() : id;
+      const result = db.prepare(`UPDATE line_awards SET presentation_id = ?, presentation_status = ?,
+        presentation_started_at = ?, presentation_deadline = ?
+        WHERE event_id = ? AND presentation_id = ? AND presentation_status = ?`)
+        .run(nextId, status, times.startedAt, times.deadlineAt, eventId, id, current.presentation.status);
+      if (result.changes !== 1) throw new Error('Line presentation changed concurrently');
+      readEvent(db);
+      const stored = readLineAward(db, eventId, replayAudit(db, eventId));
+      const p = stored?.presentation;
+      if (p === undefined || p.id !== nextId || p.status !== status || p.startedAt !== times.startedAt ||
+          p.deadlineAt !== times.deadlineAt) {
+        throw new Error('Invalid stored line award: presentation mismatch after write');
+      }
+      return stored as StoredLineAward;
+    });
+  }
+  const noTimes = () => ({ startedAt: null, deadlineAt: null });
 
   function readSnapshot<T>(action: () => T): T {
     db.exec('BEGIN');
@@ -662,6 +885,10 @@ export function createEventStore(path: string) {
       });
     },
     transitionPhase(intent: PhaseTransitionIntent, transitionAt: string): StoredEvent {
+      // Direct declarations need the atomic award path; old ones still replay from the audit.
+      if (intent === 'declare_line_directly') {
+        throw new Error('Direct line declaration requires the atomic award path');
+      }
       return transaction(() => {
         const id = readActiveEventId(db);
         if (id === null) throw new Error('Current event does not exist');
@@ -672,7 +899,16 @@ export function createEventStore(path: string) {
             (current.lastTransitionAt !== null && transitionAt <= current.lastTransitionAt)) {
           throw new Error('Invalid phase transition timestamp');
         }
-        const sequence = replayAudit(db, id).length + 1;
+        const audit = replayAudit(db, id);
+        const award = intent === 'begin_bingo_check' || intent === 'correct_line_declaration'
+          ? readLineAward(db, id, audit) : null;
+        if (award !== null && intent === 'correct_line_declaration') {
+          throw new Error('Line correction with an attached award is not supported');
+        }
+        if (award !== null && !isLineDeliveryResolved(award.award, { status: award.presentation.status })) {
+          throw new Error('Line delivery must be completed and its lot settled before the bingo check');
+        }
+        const sequence = audit.length + 1;
         db.prepare('UPDATE events SET phase = ?, lastTransitionAt = ? WHERE id = ?')
           .run(phase, transitionAt, id);
         db.prepare(`INSERT INTO phase_audit (event_id, sequence, transitionAt, kind, from_phase, to_phase)
@@ -700,6 +936,11 @@ export function createEventStore(path: string) {
         const baseline = [...current.calledNumbers];
         const phase = current.phase;
         const lastTransitionAt = current.lastTransitionAt;
+        // Authoritative draw lock: an award blocks draws until its presentation completes (a pending lot does not).
+        const award = readLineAward(db, id, replayAudit(db, id));
+        if (award !== null && award.presentation.status !== 'completed') {
+          throw new Error('Draw not allowed until the line presentation is completed');
+        }
         const proposed = transition(current);
         if (current.phase !== phase || current.lastTransitionAt !== lastTransitionAt ||
             ('phase' in proposed && proposed.phase !== phase) ||
@@ -755,6 +996,7 @@ export function createEventStore(path: string) {
           readEvent(db);
           readTheme(db);
           readPrizes(db, id);
+          readLineAward(db, id, replayAudit(db, id));
         }
         return toSummary(row, id);
       });
@@ -764,6 +1006,72 @@ export function createEventStore(path: string) {
       return readSnapshot(() => {
         const id = readActiveEventId(db);
         return id === null ? null : { eventId: id, prizes: readPrizes(db, id) };
+      });
+    },
+    // The active event's validated first-line award, or null when it has none (including legacy declared games).
+    loadLineAward(): StoredLineAward | null {
+      return readSnapshot(() => {
+        const id = readActiveEventId(db);
+        if (id === null) return null;
+        readEvent(db);
+        return readLineAward(db, id, replayAudit(db, id));
+      });
+    },
+    // Frozen store-authoritative baseline the operator confirms before declaring the first line.
+    loadLineDeclarationBaseline(): LineDeclarationBaseline {
+      return readSnapshot(() => readLineDeclarationBaseline(db));
+    },
+    // Declares the first line atomically: phase, direct audit row and the frozen award commit together or not at
+    // all. Rechecks the baseline under the writer lock; a stale or repeated declaration is refused, never replayed.
+    declareLineDirectly(expected: unknown, winnerCount: unknown, transitionAt: unknown): StoredLineAward {
+      const baseline = parseBaseline(expected);
+      if (typeof winnerCount !== 'number' || !Number.isSafeInteger(winnerCount) || winnerCount < 1) {
+        throw new Error('Winner count must be a positive safe integer');
+      }
+      if (!canonicalTime(transitionAt)) throw new Error('Invalid phase transition timestamp');
+      return transaction(() => {
+        const current = readLineDeclarationBaseline(db);
+        if (!sameBaseline(baseline, current)) throw new Error('Stale line declaration baseline');
+        if (current.lastTransitionAt !== null && transitionAt <= current.lastTransitionAt) {
+          throw new Error('Invalid phase transition timestamp');
+        }
+        const award = createLineAward({ winnerCount, prizeEuros: current.linePrize.amount, lot: current.linePrize.lot });
+        const sequence = current.auditSequence + 1;
+        db.prepare('UPDATE events SET phase = ?, lastTransitionAt = ? WHERE id = ?')
+          .run('line_declared', transitionAt, current.eventId);
+        db.prepare(`INSERT INTO phase_audit (event_id, sequence, transitionAt, kind, from_phase, to_phase)
+          VALUES (?, ?, ?, 'declare_line_directly', 'drawing', 'line_declared')`)
+          .run(current.eventId, sequence, transitionAt);
+        db.prepare(`INSERT INTO line_awards (event_id, audit_sequence, winner_count, total_cents, share_cents,
+          remainder_cents, lot, lot_resolution, presentation_id, presentation_status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`)
+          .run(current.eventId, sequence, award.winnerCount, award.totalCents, award.shareCents,
+            award.remainderCents, award.lot, award.lotResolution, randomUUID());
+        // Validate the committed state, including the new award, before COMMIT.
+        readEvent(db);
+        const stored = readLineAward(db, current.eventId, replayAudit(db, current.eventId));
+        if (stored === null) throw new Error('Invalid stored line award: missing after write');
+        return stored;
+      });
+    },
+    // Explicit presentation steps; the main process calls them, nothing here uses a clock, timer or replay. Each
+    // returns the frozen award read back inside the committing transaction and refuses stale ids and repeats.
+    startLinePresentation(id: unknown, startedAt: unknown): StoredLineAward {
+      if (typeof startedAt !== 'number' || !Number.isSafeInteger(startedAt) || startedAt < 0 ||
+          startedAt + LINE_PRESENTATION_MS > MAX_SAFE_INTEGER) {
+        throw new Error('Line presentation start must be a safe epoch millisecond whose deadline is safe');
+      }
+      return stepPresentation(id, 'start', () => ({ startedAt, deadlineAt: startedAt + LINE_PRESENTATION_MS }));
+    },
+    failLinePresentation(id: unknown): StoredLineAward { return stepPresentation(id, 'fail', noTimes); },
+    retryLinePresentation(id: unknown): StoredLineAward { return stepPresentation(id, 'retry', noTimes); },
+    completeLinePresentation(id: unknown, now: unknown): StoredLineAward {
+      if (typeof now !== 'number' || !Number.isSafeInteger(now) || now < 0) {
+        throw new Error('Line presentation completion time must be a safe epoch millisecond');
+      }
+      return stepPresentation(id, 'complete', (current) => {
+        if (current.deadlineAt === null || now < current.deadlineAt) throw new Error('Line presentation deadline not reached');
+        return { startedAt: current.startedAt, deadlineAt: current.deadlineAt };
       });
     },
     // Replaces only the active event's prizes; like updateEventMeta, a stale id never reaches another event.
