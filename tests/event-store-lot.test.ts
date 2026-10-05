@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -226,4 +227,169 @@ test('restart reads the same facts and only the active event is read', () => {
     reopened.selectEvent(first.event.id);
     assert.deepEqual(reopened.loadLineLotResult(), expected);
   } finally { reopened.close(); }
+});
+
+// LOT-02C: the guarded atomic writer. Every refusal must leave the complete durable state byte-identical.
+function durable(path: string) {
+  return withDb(path, (db) => Object.fromEntries(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+    .all().map((t) => [t.name, db.prepare(`SELECT * FROM "${t.name}" ORDER BY rowid`).all()])));
+}
+type Store = ReturnType<typeof createEventStore>;
+function identity(store: Store, over: Record<string, unknown> = {}) {
+  const read = store.loadLineLotResult()!;
+  return { eventId: read.eventId, auditSequence: read.auditSequence, presentationId: read.presentation.id, ...over };
+}
+const writer = (store: Store) => store as Store & { resolveLineLot(expected: unknown, result: unknown): unknown };
+const refuses = (action: () => unknown, label?: string) => assert.throws(action, (e: Error) => e instanceof Error && !/not a function/.test(e.message), label);
+const pick = (n: number) => ({ participantNumber: n, colorId: participantColor(n).id });
+
+test('LOT-02C commits boundary and repeated-color results and returns the committed detached snapshot', () => {
+  const max = Number.MAX_SAFE_INTEGER;
+  for (const [winners, n] of [[3, 2], [7, 7], [max, max], [max, 1]] as const) {
+    const path = fixture();
+    const { store, event } = setup(path, { ...completed, winner_count: winners, share_cents: Math.floor(1000 / winners),
+      remainder_cents: 1000 % winners });
+    try {
+      const before = durable(path);
+      const request = pick(n);
+      const committed = writer(store).resolveLineLot(identity(store), request) as ReturnType<Store['loadLineLotResult']>;
+      (request as { participantNumber: number }).participantNumber = 1;
+      assert.deepEqual(committed, store.loadLineLotResult());
+      assert.deepEqual(committed!.fact, { origin: 'numbered_v1', resolution: 'resolved', paletteVersion: 1,
+        participantNumber: n, colorId: participantColor(n).id });
+      assert.ok(Object.isFrozen(committed) && Object.isFrozen(committed!.fact) && Object.isFrozen(committed!.presentation));
+      assert.equal(committed!.eventId, event.id);
+      // Only the four result columns changed; calls, phase, audit, prize arithmetic and presentation are intact.
+      const after = durable(path);
+      const { line_awards: a, ...rest } = after;
+      const { line_awards: b, ...restBefore } = before;
+      assert.deepEqual(rest, restBefore);
+      assert.deepEqual({ ...a[0], lot_resolution: 0, lot_result_origin: 0, lot_participant_number: 0, lot_color_id: 0 },
+        { ...b[0], lot_resolution: 0, lot_result_origin: 0, lot_participant_number: 0, lot_color_id: 0 });
+      assert.equal(a[0].lot_resolution, 'resolved');
+    } finally { store.close(); }
+  }
+  assert.equal(participantColor(7).id, participantColor(1).id);
+});
+
+test('LOT-02C refuses stale, wrong, malformed or ineligible requests without any durable change', () => {
+  const states: Record<string, Record<string, unknown>> = {
+    pending: {}, started: { presentation_status: 'started', presentation_started_at: 1000, presentation_deadline: 5000 },
+    failed: { presentation_status: 'failed' }, interrupted: { ...completed, presentation_status: 'interrupted' },
+    'no lot': { ...completed, lot: '', lot_resolution: 'not_required' },
+    'one winner': { ...completed, winner_count: 1, share_cents: 1000, remainder_cents: 0, lot_resolution: 'not_required' },
+    legacy: { ...completed, lot_resolution: 'resolved', lot_result_origin: 'legacy_v8' },
+    'already numbered': numbered(2),
+  };
+  for (const [name, change] of Object.entries(states)) {
+    const path = fixture();
+    const { store } = setup(path, change);
+    try {
+      const before = durable(path);
+      refuses(() => writer(store).resolveLineLot(identity(store), pick(2)), name);
+      assert.deepEqual(durable(path), before, name);
+    } finally { store.close(); }
+  }
+  const path = fixture();
+  const { store, event } = setup(path, completed);
+  try {
+    const bad: Record<string, [unknown, unknown]> = {
+      'wrong audit': [identity(store, { auditSequence: 2 }), pick(2)],
+      'wrong presentation': [identity(store, { presentationId: 'p-2' }), pick(2)],
+      'wrong event': [identity(store, { eventId: 'other' }), pick(2)],
+      'bad audit type': [identity(store, { auditSequence: '1' }), pick(2)],
+      'unsafe audit': [identity(store, { auditSequence: 2 ** 53 }), pick(2)],
+      'extra identity key': [identity(store, { extra: 1 }), pick(2)],
+      'missing identity key': [{ eventId: event.id, auditSequence: 1 }, pick(2)],
+      'null identity': [null, pick(2)], 'array identity': [[], pick(2)],
+      'accessor identity': [Object.defineProperty({ ...identity(store) }, 'eventId', { get: () => event.id, enumerable: true }), pick(2)],
+      'number zero': [identity(store), { participantNumber: 0, colorId: 'red' }], 'above winners': [identity(store), { participantNumber: 4, colorId: 'yellow' }],
+      'fractional': [identity(store), { participantNumber: 1.5, colorId: 'red' }],
+      'string number': [identity(store), { participantNumber: '2', colorId: 'blue' }],
+      'unsafe number': [identity(store), { participantNumber: 2 ** 53, colorId: 'red' }],
+      'wrong color': [identity(store), { participantNumber: 2, colorId: 'red' }],
+      'missing color': [identity(store), { participantNumber: 2 }],
+      'extra result key': [identity(store), { ...pick(2), winner: true }],
+      'null result': [identity(store), null], 'array result': [identity(store), []],
+      'accessor result': [identity(store), Object.defineProperty({ colorId: 'blue' }, 'participantNumber', { get: () => 2, enumerable: true })],
+    };
+    const before = durable(path);
+    for (const [name, [expected, result]] of Object.entries(bad)) {
+      refuses(() => writer(store).resolveLineLot(expected, result), name);
+      assert.deepEqual(durable(path), before, name);
+    }
+    // A switched active event refuses the old identity, and the old event is untouched.
+    const expected = identity(store);
+    store.selectEvent(store.createEvent({ name: 'B', date: '2025-01-02', place: 'Y' }).id);
+    const switched = durable(path);
+    refuses(() => writer(store).resolveLineLot(expected, pick(2)));
+    assert.deepEqual(durable(path), switched);
+  } finally { store.close(); }
+});
+
+test('LOT-02C a repeated attempt and a stale second connection fail after the first commit', () => {
+  const path = fixture();
+  const { store: first } = setup(path, completed);
+  const second = createEventStore(path);
+  try {
+    const expected = identity(first);
+    assert.equal(identity(second).presentationId, expected.presentationId);
+    writer(first).resolveLineLot(expected, pick(3));
+    const committed = durable(path);
+    refuses(() => writer(second).resolveLineLot(expected, pick(2)));
+    refuses(() => writer(first).resolveLineLot(expected, pick(3)));
+    assert.deepEqual(durable(path), committed);
+    assert.deepEqual(second.loadLineLotResult()!.fact, first.loadLineLotResult()!.fact);
+  } finally { first.close(); second.close(); }
+});
+
+test('LOT-02C a held writer lock refuses without change and the same request then succeeds', () => {
+  const path = fixture();
+  const { store } = setup(path, completed);
+  const blocker = new DatabaseSync(path);
+  try {
+    const expected = identity(store);
+    const before = durable(path);
+    blocker.exec('BEGIN IMMEDIATE');
+    assert.throws(() => writer(store).resolveLineLot(expected, pick(2)), /locked|busy/i);
+    blocker.exec('ROLLBACK');
+    assert.deepEqual(durable(path), before);
+    assert.equal((writer(store).resolveLineLot(expected, pick(2)) as { fact: { participantNumber: number } }).fact.participantNumber, 2);
+  } finally { blocker.close(); store.close(); }
+});
+
+test('LOT-02C an update failure or tampered readback rolls back everything', () => {
+  const triggers = {
+    'update failure': "CREATE TRIGGER t BEFORE UPDATE OF lot_resolution ON line_awards BEGIN SELECT RAISE(ABORT, 'injected'); END",
+    // Number 1 shares number 7's color, so this tamper passes every CHECK and only the readback can catch it.
+    'tampered number': `CREATE TRIGGER t AFTER UPDATE OF lot_resolution ON line_awards
+      BEGIN UPDATE line_awards SET lot_participant_number = 1 WHERE event_id = NEW.event_id; END`,
+  };
+  for (const [name, sql] of Object.entries(triggers)) {
+    const path = fixture();
+    const { store } = setup(path, { ...completed, winner_count: 7, share_cents: 142, remainder_cents: 6 });
+    try {
+      const expected = identity(store);
+      withDb(path, (db) => db.exec(sql));
+      const before = durable(path);
+      refuses(() => writer(store).resolveLineLot(expected, pick(7)), name);
+      assert.deepEqual(durable(path), before, name);
+      withDb(path, (db) => db.exec('DROP TRIGGER t'));
+      assert.equal((writer(store).resolveLineLot(expected, pick(7)) as { fact: { participantNumber: number } }).fact.participantNumber, 7);
+    } finally { store.close(); }
+  }
+});
+
+test('LOT-02C the committed result survives reopening and a fresh process', () => {
+  const path = fixture();
+  const { store } = setup(path, completed);
+  const committed = writer(store).resolveLineLot(identity(store), pick(2));
+  store.close();
+  const reopened = createEventStore(path);
+  try { assert.deepEqual(reopened.loadLineLotResult(), committed); } finally { reopened.close(); }
+  const script = `import { createEventStore } from ${JSON.stringify(new URL('../src/event-store.ts', import.meta.url).href)};
+    const s = createEventStore(${JSON.stringify(path)}); process.stdout.write(JSON.stringify(s.loadLineLotResult())); s.close();`;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8' });
+  assert.equal(child.status, 0, child.stderr);
+  assert.deepEqual(JSON.parse(child.stdout), committed);
 });

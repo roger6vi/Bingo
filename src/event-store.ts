@@ -699,6 +699,25 @@ function decodeLotFact(row: Record<string, unknown>, winnerCount: number, lot: s
   } catch (error) { return invalid('lot result', error); }
 }
 
+type LineAwardRecord = NonNullable<ReturnType<typeof readLineAwardRecord>>;
+function lotSnapshot(eventId: string, record: LineAwardRecord): LineLotSnapshot {
+  const { award, presentation } = record.stored;
+  return Object.freeze({ eventId, auditSequence: record.auditSequence, winnerCount: award.winnerCount,
+    lot: award.lot, presentation: Object.freeze({ id: presentation.id, status: presentation.status }),
+    fact: record.fact });
+}
+
+// Untrusted writer input (future IPC JSON): a plain object with exactly these own data properties, copied once so
+// getters, prototypes or later mutation can never alter the intent.
+function exactPlain(value: unknown, keys: readonly string[], name: string): Record<string, unknown> {
+  const proto = typeof value === 'object' && value !== null ? Object.getPrototypeOf(value) : undefined;
+  if (proto !== Object.prototype && proto !== null || Array.isArray(value)) throw new Error(`Invalid ${name}`);
+  const own = Object.getOwnPropertyDescriptors(value as object);
+  if (Object.keys(own).sort().join() !== [...keys].sort().join() || Reflect.ownKeys(own).length !== keys.length ||
+      Object.values(own).some((d) => !('value' in d) || !d.enumerable)) throw new Error(`Invalid ${name}`);
+  return Object.fromEntries(keys.map((key) => [key, own[key].value]));
+}
+
 function readLineAwardRecord(db: DatabaseSync, eventId: string, audit: PhaseAuditEntry[]):
     { stored: StoredLineAward; auditSequence: number; fact: LineLotFact } | null {
   const invalid = (reason: string, cause?: unknown): never => {
@@ -1158,10 +1177,49 @@ export function createEventStore(path: string) {
         readEvent(db);
         const record = readLineAwardRecord(db, id, replayAudit(db, id));
         if (record === null) return null;
-        const { award, presentation } = record.stored;
-        return Object.freeze({ eventId: id, auditSequence: record.auditSequence, winnerCount: award.winnerCount,
-          lot: award.lot, presentation: Object.freeze({ id: presentation.id, status: presentation.status }),
-          fact: record.fact });
+        return lotSnapshot(id, record);
+      });
+    },
+    // Commits the one manual lot result. The expected identity and the result are untrusted and copied first. Under
+    // the writer lock the active event, audit link and current completed presentation are re-read; only a pending,
+    // never-resolved tied lot qualifies. The compare-and-set touches the four result columns of exactly one row, and
+    // the strict reread must equal the intent before COMMIT, so a mismatch rolls back and nothing speculative returns.
+    resolveLineLot(expected: unknown, result: unknown): LineLotSnapshot {
+      const want = exactPlain(expected, ['eventId', 'auditSequence', 'presentationId'], 'lot identity');
+      const pickRaw = exactPlain(result, ['participantNumber', 'colorId'], 'lot result');
+      if (typeof want.eventId !== 'string' || want.eventId === '' || typeof want.presentationId !== 'string' ||
+          want.presentationId.trim() === '' || !Number.isSafeInteger(want.auditSequence) || (want.auditSequence as number) < 1) {
+        throw new Error('Invalid lot identity');
+      }
+      parseLineLotResolution(MAX_SAFE_INTEGER, 'resolved', pickRaw);
+      const { eventId, auditSequence, presentationId } = want as { eventId: string; auditSequence: number; presentationId: string };
+      const { participantNumber, colorId } = pickRaw as { participantNumber: number; colorId: string };
+      return transaction(() => {
+        if (readActiveEventId(db) !== eventId) throw new Error('Line lot event is not the active event');
+        readEvent(db);
+        const current = readLineAwardRecord(db, eventId, replayAudit(db, eventId));
+        if (current === null || current.auditSequence !== auditSequence || current.stored.presentation.id !== presentationId ||
+            current.stored.presentation.status !== 'completed') throw new Error('Line lot identity is stale');
+        if (current.stored.award.lot === '' || current.stored.award.winnerCount < 2 || current.fact.origin !== 'none' ||
+            current.fact.resolution !== 'pending') throw new Error('Line lot is not pending');
+        parseLineLotResolution(current.stored.award.winnerCount, 'resolved', pickRaw);
+        const update = db.prepare(`UPDATE line_awards SET lot_resolution = 'resolved', lot_result_origin = 'numbered_v1',
+          lot_participant_number = ?, lot_color_id = ? WHERE event_id = ? AND audit_sequence = ? AND presentation_id = ?
+          AND presentation_status = 'completed' AND lot_resolution = 'pending' AND lot_result_origin = 'none'`)
+          .run(participantNumber, colorId, eventId, auditSequence, presentationId);
+        if (update.changes !== 1) throw new Error('Line lot changed concurrently');
+        readEvent(db);
+        const committed = readLineAwardRecord(db, eventId, replayAudit(db, eventId));
+        const fact = committed?.fact;
+        if (committed === null || fact?.origin !== 'numbered_v1' || fact.participantNumber !== participantNumber ||
+            fact.colorId !== colorId || committed.auditSequence !== auditSequence ||
+            committed.stored.presentation.id !== presentationId ||
+            JSON.stringify({ ...committed.stored.award, lotResolution: 0 }) !==
+              JSON.stringify({ ...current.stored.award, lotResolution: 0 }) ||
+            JSON.stringify(committed.stored.presentation) !== JSON.stringify(current.stored.presentation)) {
+          throw new Error('Invalid stored line award: lot mismatch after write');
+        }
+        return lotSnapshot(eventId, committed);
       });
     },
     // Frozen store-authoritative baseline the operator confirms before declaring the first line.
