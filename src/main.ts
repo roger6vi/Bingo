@@ -10,6 +10,7 @@ import { registerThemeIpc } from './theme-ipc';
 import { registerTongoIpc } from './tongo-ipc';
 import { registerPrizeIpc } from './prize-ipc';
 import { registerLineIpc } from './line-ipc';
+import { registerLineLotIpc } from './line-lot-ipc';
 import { createLinePresentationCoordinator } from './line-presentation';
 import { createPublicEventDelivery, PUBLIC_LINE_RECEIPT_CHANNEL } from './public-event-delivery';
 import { createWindowLifecycle } from './window-lifecycle';
@@ -95,6 +96,7 @@ if (!app.requestSingleInstanceLock()) {
   const line = registerLineIpc(ipcMain, store, { authorize: operatorOnly, now: () => new Date(),
     publish: publicDelivery.publishCommitted, committed: presentation.begin, retry: presentation.retry,
     repeat: presentation.repeat, busy: presentation.busy, tongoPlaying: tongo.playing });
+  registerLineLotIpc(ipcMain, store, { authorize: operatorOnly, busy: presentation.busy, tongoPlaying: tongo.playing });
   registerEventCatalogIpc(ipcMain, store, operatorOnly, () => publicDelivery.publishActive(theme.reload()),
     publicDelivery.publishMeta, line.active, presentation.busy);
   registerPrizeIpc(ipcMain, store, operatorOnly, publicDelivery.publishPrizes, line.active);

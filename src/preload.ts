@@ -19,6 +19,9 @@ contextBridge.exposeInMainWorld('desktop', Object.freeze({
   cancelLineSetup: (sessionId: string, eventId: string) => ipcRenderer.invoke('line:cancel', sessionId, eventId),
   confirmLine: (sessionId: string, eventId: string, winnerCount: number) =>
     ipcRenderer.invoke('line:confirm', sessionId, eventId, winnerCount),
+  readLineLot: () => ipcRenderer.invoke('line:lot:read'),
+  drawLineLot: (expected: { eventId: string; auditSequence: number; presentationId: string }) =>
+    ipcRenderer.invoke('line:lot:draw', expected),
   getTheme: () => ipcRenderer.invoke('theme:get'),
   setTheme: (theme: string) => ipcRenderer.invoke('theme:set', theme),
   retryLinePresentation: (id: string) => ipcRenderer.invoke('line:retry-presentation', id),
