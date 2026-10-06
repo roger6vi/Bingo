@@ -143,7 +143,12 @@ const tongoControl = required('tongo-control', HTMLElement);
 const tongoError = required('tongo-error', HTMLElement);
 const lotPanel = required('line-lot', HTMLElement);
 // The lot controller only talks to the preload API. The panel is shown for a valid tied declaration of the active event.
-const lotController = createLineLotController(desktop, { render: (state) => { lotPanel.state = state; } });
+// Only the controller's own committed draw is offered to the private presentation host, once and best effort: the stored
+// winner and the panel never depend on the answer, and nothing is retried.
+const presentLot = (snapshot) => {
+  try { Promise.resolve(desktop.presentLineLot?.(snapshot)).catch(() => {}); } catch { /* presentation is not lot state */ }
+};
+const lotController = createLineLotController(desktop, { render: (state) => { lotPanel.state = state; } }, { onCommitted: presentLot });
 const lotAward = () => {
   const award = lineState.mode === 'declared' && !lineMismatch() ? lineState.award : null;
   return award && activeEventId !== null && award.eventId === activeEventId && award.award?.lotResolution !== 'not_required' ? award : null;

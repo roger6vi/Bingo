@@ -268,6 +268,8 @@ test('source boundary: operator-named preload only, no public permission, no cel
   const preload = read('../src/preload.ts');
   assert.match(preload, /readLineLot: \(\) => ipcRenderer\.invoke\('line:lot:read'\)/);
   assert.match(preload, /drawLineLot: \(expected: \{[^}]*\}\) =>\s+ipcRenderer\.invoke\('line:lot:draw', expected\)/);
+  assert.match(preload, /import type \{ LineLotSnapshot \} from '\.\/event-store';/);
+  assert.match(preload, /presentLineLot: \(snapshot: LineLotSnapshot\) => ipcRenderer\.invoke\('line:lot:present', snapshot\)/);
   assert.doesNotMatch(read('../src/public-preload.ts'), /LineLot|line:lot/);
   const main = read('../src/main.ts');
   assert.match(main, /registerLineLotPresentation\(ipcMain, store, \{ authorize: operatorOnly,/);
