@@ -54,21 +54,27 @@ const unsubscribePrizes = bridges.prizes.subscribe((value) => { prizes.prizes = 
 
 // Static committed award text only: no animation, timer or presentation state, so a late attach or reload shows
 // the same facts and never implies that a celebration played. Invalid or cleared payloads remove it.
+// The server sends the award before every event frame, so an award seen since the last frame is fresh for this one.
 let awardFacts = '';
+let awardFresh = false;
 const lineAward = document.createElement('p');
 lineAward.id = 'line-award';
 lineAward.lang = 'es';
 lineAward.hidden = true;
 prizes.parentElement.append(lineAward);
-const unsubscribeLineAward = bridges.lineAward.subscribe((award) => {
+function showAward(award) {
   const valid = validLineAward(award);
-  lineAward.textContent = valid ? describeLineAward(award) : '';
-  lineAward.hidden = !valid;
   awardFacts = valid ? describeLineAward(award) : '';
+  lineAward.textContent = awardFacts;
+  lineAward.hidden = !valid;
+}
+const unsubscribeLineAward = bridges.lineAward.subscribe((award) => {
+  awardFresh = true;
+  showAward(award);
 });
 
 const controller = createPublicController(bridges.event, {
-  render: (state) => {
+  render: (state, frame) => {
     latest.latest = state.latest;
     latest.loaded = state.loaded;
     latestNumber.value = state.latest;
@@ -87,6 +93,11 @@ const controller = createPublicController(bridges.event, {
     eventError.message = state.error ?? '';
     eventError.tone = 'error';
     eventError.hidden = !state.error;
+    // An unusable frame, or a new event without a fresh award, must not keep the previous event's facts.
+    if (frame !== undefined) {
+      if (state.error || (frame.eventChanged && !awardFresh)) showAward(null);
+      awardFresh = false;
+    }
   },
 });
 // Transient: only signals received by this page play, so a reload or reopen never replays one.

@@ -36,6 +36,22 @@ export function validSnapshot(snapshot, previous = null) {
 }
 
 const lotResolutions = new Set(['not_required', 'pending', 'resolved']);
+// Palette v1 ids in canonical order (mirrors line-lot-contract.ts; the renderer cannot import it) with Spanish labels.
+const paletteV1 = [['red', 'Rojo'], ['blue', 'Azul'], ['green', 'Verde'], ['yellow', 'Amarillo'],
+  ['purple', 'Morado'], ['orange', 'Naranja']];
+
+// The optional strict stored winner fact must agree with the root award; anything else is rejected, never repaired.
+function validLotResult(result, award) {
+  if (result === null || typeof result !== 'object' || Array.isArray(result)) return false;
+  if (result.origin === 'none') {
+    return (result.resolution === 'pending' || result.resolution === 'not_required') && result.resolution === award.lotResolution;
+  }
+  if (result.resolution !== 'resolved' || award.lotResolution !== 'resolved') return false;
+  if (result.origin === 'legacy_v8') return result.winner === 'unknown';
+  const { participantNumber: number } = result;
+  return result.origin === 'numbered_v1' && result.paletteVersion === 1 && Number.isSafeInteger(number) &&
+    number >= 1 && number <= award.winnerCount && result.colorId === paletteV1[(number - 1) % paletteV1.length][0];
+}
 
 // Committed first-line award shape and arithmetic, mirroring line-award.ts (renderer cannot import it).
 // Static state only: it carries no presentation identity, so receiving it never starts a celebration.
@@ -46,6 +62,7 @@ export function validLineAward(award) {
       !Number.isSafeInteger(totalCents) || totalCents < 0 || totalCents > 10_000_000 || totalCents % 100 !== 0 ||
       shareCents !== Math.floor(totalCents / winnerCount) || remainderCents !== totalCents % winnerCount ||
       typeof lot !== 'string' || lot !== lot.trim() || lot.length > 120 || !lotResolutions.has(lotResolution)) return false;
+  if (award.lotResult !== undefined && !validLotResult(award.lotResult, award)) return false;
   return (lot !== '' && winnerCount >= 2) === (lotResolution !== 'not_required');
 }
 
@@ -60,6 +77,11 @@ export function describeLineAward(award) {
     award.winnerCount === 1 ? centsText(award.shareCents) : `${centsText(award.shareCents)} cada uno`];
   if (award.remainderCents > 0) parts.push(`${award.remainderCents} ${award.remainderCents === 1 ? 'céntimo' : 'céntimos'} sin repartir`);
   if (award.lot !== '') parts.push(`Lote: ${award.lot}${award.lotResolution === 'pending' ? ' (pendiente de desempate)' : ''}`);
+  const { lotResult } = award;
+  if (lotResult?.origin === 'legacy_v8') parts.push('Ganador del lote desconocido (registro anterior)');
+  if (lotResult?.origin === 'numbered_v1') {
+    parts.push(`Ganador del lote: nº ${lotResult.participantNumber} · ${paletteV1.find(([id]) => id === lotResult.colorId)[1]}`);
+  }
   return parts.join(' · ');
 }
 
@@ -71,16 +93,17 @@ export function createPublicController(api, view) {
   let stale = false;
   let error = null;
 
-  function render() {
+  // The optional second argument exists only for event frames, so the view can tell them from the initial render.
+  function render(changed = null) {
     view.render({ loaded, calledNumbers: [...calledNumbers],
       latest: calledNumbers.at(-1) ?? null, count: calledNumbers.length,
-      remaining: 90 - calledNumbers.length, phase, stale, error });
+      remaining: 90 - calledNumbers.length, phase, stale, error }, changed === null ? undefined : { eventChanged: changed });
   }
 
   function reject(message) {
     stale = loaded;
     error = message;
-    render();
+    render(false);
   }
 
   function receive(result) {
@@ -107,7 +130,7 @@ export function createPublicController(api, view) {
     loaded = true;
     stale = false;
     error = null;
-    render();
+    render(result.eventChanged === true);
   }
 
   render();
