@@ -363,6 +363,26 @@ committed persistence snapshots (presentation never acknowledges its own intent)
   the progress bar is labelled.
 - **Tokens:** `color.accent`, `color.surface`, `font.emphasis`, `radius.control`, `space.small`.
 
+### `bingo-line-lot` (operator)
+- **Purpose:** the operator panel for the first-line tie-break lot. It renders only the controller state
+  it is given: status, the supplied durable winner (participant number and color), lot context and a
+  message. It never reads, draws or recomputes a winner. **Anatomy:** polite live region → optional
+  `progress` while busy → "Sortear lote" and "Releer estado" buttons.
+- **Properties:** `state` (controller-shaped object or `null`; anything absent or malformed is
+  `unknown`). **States:** unknown, loading, pending, actionable, resolved, recovery, error, busy.
+- **Events:** payloadless, bubbling, composed `line-lot-draw` (only when `actionable`, `canDraw` is
+  `true` and not busy) and `line-lot-resync` (manual, when settled or in `recovery`/`error`). There is
+  no IPC: the owner decides what each event does.
+- **Outcomes:** a winner is shown only from the supplied durable state, identically for current,
+  committed and recovered sources. Legacy results without number or color read as unknown; not
+  required reads as resolved without a draw. There is no animation.
+- **Accessibility:** one persistent `aria-live="polite"` atomic region, `aria-busy` while drawing, and
+  native buttons that are disabled rather than hidden. Lot and message text render literally.
+- **Tokens:** `border-width.default`, `border-width.focus`, `color.accent`, `color.border`,
+  `color.border-strong`, `color.disabled`, `color.disabled-surface`, `color.focus`, `color.surface`,
+  `color.text`, `font.emphasis`, `opacity.disabled`, `radius.control`, `space.inset-compact`,
+  `space.inset-inline`, `space.small`.
+
 ### Specified, not implemented
 
 These entries fix the contract for roadmap components; they are not built yet.
