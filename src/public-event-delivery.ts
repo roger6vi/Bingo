@@ -7,6 +7,7 @@ import type { GamePhase } from './game-phase';
 import type { ThemeId } from './theme';
 import type { TongoPresentation } from './tongo-ipc';
 import type { LinePresentationSignal } from './line-presentation';
+import type { LineLotSignal } from './line-lot-presentation.ts';
 
 type PhaseSnapshot = EventSnapshot & { readonly phase: GamePhase; readonly lastTransitionAt: string | null };
 
@@ -16,6 +17,7 @@ export const PUBLIC_META_CHANNEL = 'public:event-meta';
 export const PUBLIC_PRESENTATION_CHANNEL = 'public:presentation';
 export const PUBLIC_PRIZES_CHANNEL = 'public:event-prizes';
 export const PUBLIC_LINE_AWARD_CHANNEL = 'public:line-award';
+export const PUBLIC_LINE_LOT_CHANNEL = 'public:line-lot';
 // Renderer -> main, the only send of the public window: the line overlay has actually started rendering.
 export const PUBLIC_LINE_RECEIPT_CHANNEL = 'public:line-presentation-started';
 
@@ -39,7 +41,7 @@ export type PublicLineLotResult =
 type CommittedLineAward = Pick<StoredLineAward, 'eventId' | 'award' | 'presentation'> | null;
 type CommittedLineLot = Pick<LineLotSnapshot, 'eventId' | 'winnerCount' | 'lot' | 'presentation' | 'fact'> | null;
 type Payload = PublicEventResult | ThemeId | PublicEventMeta | PublicEventPrizes | PublicLineAward | TongoPresentation
-  | LinePresentationSignal;
+  | LinePresentationSignal | LineLotSignal;
 
 export type PublicEventResult =
   | { ok: true; snapshot: PhaseSnapshot; eventChanged?: true }
@@ -84,6 +86,12 @@ export function createPublicEventDelivery(
 ) {
   let current: Target | null = null;
   // The one line signal whose receipt may still arrive: the exact window and main frame it was sent to.
+  // Bumped whenever the attached document changes (attach or navigation), so a reattach of the same window and
+  // frame during a static publication is still seen as a different document.
+  let generation = 0;
+  // Bumped on every active-event publication, before any callback runs, so a pending lot signal is cancelled even
+  // when the event went away and back to the same current facts.
+  let activeEpoch = 0;
   let lineBinding: { id: string; target: Target; frame: { readonly url: string } } | null = null;
 
   function send(target: Target, result: Payload, channel = PUBLIC_EVENT_CHANNEL): void {
@@ -156,6 +164,7 @@ export function createPublicEventDelivery(
     attachAfterLoad(target: Target): void {
       if (target.isDestroyed()) return;
       current = target;
+      generation++;
       // Theme first, so the page is revealed in the committed theme.
       if (committedTheme !== undefined) send(target, committedTheme(), PUBLIC_THEME_CHANNEL);
       if (current !== target || !sendMeta(target) || !sendPrizes(target) || !sendLineAward(target)) return;
@@ -174,6 +183,7 @@ export function createPublicEventDelivery(
     navigationStarted(target: Target): void {
       if (current !== target) return;
       current = null;
+      generation++;
       lineBinding = null;
     },
     publishCommitted(snapshot: PhaseSnapshot): void {
@@ -211,6 +221,30 @@ export function createPublicEventDelivery(
       if (frame !== undefined && frame !== null) lineBinding = { id: presentation.id, target, frame };
       return true;
     },
+    // The manual lot result: its own transient channel, never the presentation or receipt path and never resent on
+    // attach. The window, main frame and exact page URL are captured before the static award and history refresh;
+    // all three and the attached document must be unchanged afterwards or the signal is dropped, never retried.
+    publishLineLot(signal: LineLotSignal, expectedPublicUrl: string): boolean {
+      const target = current;
+      const epoch = generation;
+      const active = activeEpoch;
+      if (target === null) return false;
+      let frame: { readonly url: string } | null | undefined;
+      const live = (): boolean => {
+        try {
+          return current === target && generation === epoch && activeEpoch === active && !target.isDestroyed() &&
+            target.mainFrame === frame && frame != null && frame.url === expectedPublicUrl;
+        } catch { return false; }
+      };
+      try { frame = target.mainFrame; } catch { return false; }
+      if (!live() || !sendLineAward(target) || !live()) return false;
+      const result = loadResult();
+      if (!live()) return false;
+      send(target, result);
+      if (!live()) return false;
+      send(target, { id: signal.id, participantNumber: signal.participantNumber, colorId: signal.colorId }, PUBLIC_LINE_LOT_CHANNEL);
+      return current === target;
+    },
     // Authorizes one start receipt: the id must be the bound signal's, from the same window and the very frame it
     // was sent to, which must still be that window's current main frame at the exact page URL. Rejections keep
     // the binding; an accepted receipt consumes it, so the same signal can never be receipted twice.
@@ -226,6 +260,7 @@ export function createPublicEventDelivery(
     },
     // After the active event changes, resend its theme, metadata, prizes, and committed state in reveal order.
     publishActive(theme: ThemeId): void {
+      activeEpoch++;
       const target = current;
       if (target === null) return;
       send(target, theme, PUBLIC_THEME_CHANNEL);

@@ -270,7 +270,7 @@ test('source boundary: operator-named preload only, no public permission, no cel
   assert.match(preload, /drawLineLot: \(expected: \{[^}]*\}\) =>\s+ipcRenderer\.invoke\('line:lot:draw', expected\)/);
   assert.doesNotMatch(read('../src/public-preload.ts'), /LineLot|line:lot/);
   const main = read('../src/main.ts');
-  assert.match(main, /registerLineLotIpc\(ipcMain, store, \{ authorize: operatorOnly,/);
+  assert.match(main, /registerLineLotPresentation\(ipcMain, store, \{ authorize: operatorOnly,/);
   const ipc = read('../src/line-lot-ipc.ts');
   assert.doesNotMatch(ipc, /line-presentation|\bpublish\w*\(|\.begin\(|committed\?\./);
 });
