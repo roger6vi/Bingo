@@ -26,6 +26,9 @@ type Ports = {
   select?(winnerCount: number): LineLotResult;
   busy?(): boolean;
   tongoPlaying?(): boolean;
+  // Static public refresh after a verified permanent numbered result; receives a private copy. Its failure is
+  // swallowed, so it can never change the outcome, select again, or write again. It carries no live authority.
+  refresh?(snapshot: LineLotSnapshot): void;
 };
 type Identity = { eventId: string; auditSequence: number; presentationId: string };
 
@@ -54,8 +57,13 @@ const matches = (s: LineLotSnapshot, id: Identity): boolean =>
   s.eventId === id.eventId && s.auditSequence === id.auditSequence && s.presentation.id === id.presentationId;
 
 // Operator-only manual lot draw. Main selects once and the store commits atomically; any failure rereads the
-// store and never selects again. Nothing here starts a celebration or publishes to the public window.
+// store and never selects again. Nothing here starts a celebration; at most it asks for a static refresh.
 export function registerLineLotIpc(registrar: Registrar, store: LotStore, ports: Ports): void {
+  // Only a strict stored numbered result, already authorized and verified against the store, is worth refreshing.
+  const refresh = (snapshot: LineLotSnapshot): void => {
+    if (snapshot.fact.origin !== 'numbered_v1' || snapshot.fact.resolution !== 'resolved') return;
+    try { ports.refresh?.(copy(snapshot)); } catch { /* Static refresh is best effort and never retried. */ }
+  };
   let drawing = false;
   // Set when an uncertain write could not be confirmed by a strict reread; only a successful read clears it.
   let readRequired = false;
@@ -69,6 +77,7 @@ export function registerLineLotIpc(registrar: Registrar, store: LotStore, ports:
       if (snapshot === null) return fail('not_available', 'No first-line lot is available.');
       const detached = copy(snapshot);
       if (!drawing) readRequired = false;
+      refresh(snapshot);
       return { ok: true, kind: 'current', snapshot: detached };
     } catch { return fail('storage_failure', 'Could not read the lot state. Try again.'); }
   });
@@ -88,7 +97,11 @@ export function registerLineLotIpc(registrar: Registrar, store: LotStore, ports:
       catch { return fail('storage_failure', 'Could not read the lot state. Try again.'); }
       if (current === null) return fail('not_available', 'No first-line lot is available.');
       if (!matches(current, expected)) return stale();
-      if (current.fact.resolution === 'resolved') return { ok: true, kind: 'current', snapshot: copy(current) };
+      if (current.fact.resolution === 'resolved') {
+        const detached = copy(current);
+        refresh(current);
+        return { ok: true, kind: 'current', snapshot: detached };
+      }
       if (current.presentation.status !== 'completed') return celebrating();
       if (current.lot === '' || current.winnerCount < 2 || current.fact.origin !== 'none' ||
           current.fact.resolution !== 'pending') return fail('ineligible', 'This lot cannot be drawn.');
@@ -104,13 +117,17 @@ export function registerLineLotIpc(registrar: Registrar, store: LotStore, ports:
         const fact = written.fact;
         if (matches(written, expected) && fact.origin === 'numbered_v1' &&
             fact.participantNumber === pick.participantNumber && fact.colorId === pick.colorId) {
-          return { ok: true, kind: 'committed', snapshot: copy(written) };
+          const detached = copy(written);
+          refresh(written);
+          return { ok: true, kind: 'committed', snapshot: detached };
         }
       } catch { /* The acknowledgement is uncertain: reread below; never select again. */ }
       try {
         const reread = store.loadLineLotResult();
         if (reread === null || !matches(reread, expected)) return stale();
-        return { ok: true, kind: 'recovered', snapshot: copy(reread) };
+        const detached = copy(reread);
+        refresh(reread);
+        return { ok: true, kind: 'recovered', snapshot: detached };
       } catch { readRequired = true; return mustRead(); }
     } finally { drawing = false; }
   });
