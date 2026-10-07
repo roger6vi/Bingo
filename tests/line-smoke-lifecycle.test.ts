@@ -238,14 +238,14 @@ const rawCapabilities = () => {
   const events = [];
   const context = { newPage: async () => { events.push('newPage'); }, close: async () => { events.push('context.close'); } };
   const child = { kill: () => { events.push('kill'); } };
-  const page = (extra = {}) => ({ click: async () => {}, fill: async () => {}, evaluate: async () => 1, waitForFunction: async () => ({ jsHandle: true }),
+  const page = (extra = {}) => ({ click: async () => {}, emulateMedia: async () => {}, fill: async () => {}, evaluate: async () => 1, waitForFunction: async () => ({ jsHandle: true }),
     reload: async () => ({ response: true }), close: async () => {}, locator: () => locatorOf(), context: () => context, ...extra });
   const locatorOf = () => ({ click: async () => {}, fill: async () => {}, evaluate: async () => 1, waitFor: async () => {}, page: () => page(), evaluateHandle: async () => ({}) });
   const app = { evaluate: async () => 1, waitForEvent: async () => page(), context: () => context, process: () => child, windows: () => [page()],
     on() {}, evaluateHandle: async () => ({}), browserWindow: async () => ({}), contextProperty: context, get liveChild() { return child; } };
   return { events, context, child, page, app, locatorOf };
 };
-const ALLOWED = { app: ['evaluate', 'waitForEvent'], page: ['click', 'close', 'evaluate', 'fill', 'locator', 'reload', 'waitForFunction'],
+const ALLOWED = { app: ['evaluate', 'waitForEvent'], page: ['click', 'close', 'emulateMedia', 'evaluate', 'fill', 'locator', 'reload', 'waitForFunction'],
   locator: ['click', 'evaluate', 'fill', 'waitFor'] };
 test('body-facing facades expose only an allowlist per type: no context, process, handles, windows or capability properties', () => {
   const raw = rawCapabilities();

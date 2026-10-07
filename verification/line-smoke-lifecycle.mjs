@@ -200,7 +200,7 @@ export function createScope() {
 // This is not a sandbox for the arbitrary code an evaluate callback runs inside the page or main process.
 const FACADES = {
   app: { evaluate: 'data', waitForEvent: 'page' },
-  page: { evaluate: 'data', waitForFunction: 'void', reload: 'void', close: 'void', locator: 'locator', click: 'void', fill: 'void' },
+  page: { evaluate: 'data', waitForFunction: 'void', reload: 'void', emulateMedia: 'void', close: 'void', locator: 'locator', click: 'void', fill: 'void' },
   locator: { click: 'void', fill: 'void', evaluate: 'data', waitFor: 'void' },
 };
 
