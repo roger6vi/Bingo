@@ -14,6 +14,7 @@ import { publicBridges, validEventMeta } from './public-bridge.mjs';
 import { validPrizes } from './prize-format.mjs';
 import { createTongoPlayback } from './tongo.mjs';
 import { createLineCelebrationPlayback } from './line-celebration.mjs';
+import { createLineLotAdapter } from './public-line-lot-playback.mjs';
 
 const bridges = publicBridges(window);
 const unsubscribeTheme = bridges.theme.subscribe((theme) => applyTheme(document.documentElement, theme));
@@ -68,9 +69,12 @@ function showAward(award) {
   lineAward.textContent = awardFacts;
   lineAward.hidden = !valid;
 }
+// Transient winner line: created before the award subscription so a hydrated award reaches it too.
+const lotPlayback = createLineLotAdapter({ bridge: bridges.lineLot, anchor: lineAward });
 const unsubscribeLineAward = bridges.lineAward.subscribe((award) => {
   awardFresh = true;
   showAward(award);
+  lotPlayback.observeAward(award);
 });
 
 const controller = createPublicController(bridges.event, {
@@ -98,6 +102,7 @@ const controller = createPublicController(bridges.event, {
       if (state.error || (frame.eventChanged && !awardFresh)) showAward(null);
       awardFresh = false;
     }
+    lotPlayback.observeFrame(state, frame);
   },
 });
 // Transient: only signals received by this page play, so a reload or reopen never replays one.
@@ -121,6 +126,7 @@ window.addEventListener('pagehide', () => {
   controller.cleanup();
   tongoPlayback.cleanup();
   linePlayback.cleanup();
+  lotPlayback.dispose();
   unsubscribeTheme();
   unsubscribeMeta();
   unsubscribePrizes();

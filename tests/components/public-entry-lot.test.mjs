@@ -29,24 +29,46 @@ function channel(...initial) {
 }
 
 const BRIDGES = ['publicEvent', 'publicTheme', 'publicEventMeta', 'publicEventPrizes', 'publicLineAward',
-  'publicPresentation', 'publicLineReceipt'];
+  'publicPresentation', 'publicLineReceipt', 'publicLineLot'];
+// Injected before every entry import and restored on teardown: the page's media query and, when `timed`, its 4000 ms timers.
+const GLOBALS = ['Audio', 'matchMedia', 'setTimeout', 'clearTimeout'];
+const realSetTimeout = window.setTimeout;
+const realClearTimeout = window.clearTimeout;
 const cleanups = [];
 let loads = 0;
 afterEach(() => { while (cleanups.length > 0) cleanups.pop()(); });
 
-async function mount({ award: hydrated, event = frame() } = {}) {
-  const originals = new Map([...BRIDGES, 'Audio'].map((name) => [name, Object.getOwnPropertyDescriptor(window, name)]));
+async function mount({ award: hydrated, event = frame(), reduced = false, timed = false } = {}) {
+  const originals = new Map([...BRIDGES, ...GLOBALS].map((name) => [name, Object.getOwnPropertyDescriptor(window, name)]));
   const play = HTMLMediaElement.prototype.play;
   const theme = document.documentElement.dataset.theme;
   const audio = { count: 0 };
   const receipts = [];
   const ch = { event: channel(event), theme: channel('light'), meta: channel(), prizes: channel(),
-    lineAward: hydrated === undefined ? channel() : channel(hydrated), presentation: channel() };
+    lineAward: hydrated === undefined ? channel() : channel(hydrated), presentation: channel(), lot: channel() };
+  const mq = { matches: reduced, adds: 0, removes: 0, saved: [],
+    addEventListener: (type, callback) => { mq.adds++; mq.saved.push(callback); },
+    removeEventListener: () => { mq.removes++; },
+    change: (matches) => { mq.matches = matches; mq.saved.forEach((callback) => callback({ matches })); } };
+  // Only 4000 ms timers are virtual (the lot playback); every other delay stays real so settle() and the page still run.
+  const clock = { now: 0, count: 0, timers: new Map(),
+    tick(ms) {
+      clock.now += ms;
+      for (const [id, timer] of [...clock.timers]) if (timer.due <= clock.now) { clock.timers.delete(id); timer.fn(); }
+    } };
   const define = (name, value) => Object.defineProperty(window, name, { value, configurable: true, writable: true });
   [['publicEvent', ch.event], ['publicTheme', ch.theme], ['publicEventMeta', ch.meta], ['publicEventPrizes', ch.prizes],
     ['publicLineAward', ch.lineAward], ['publicPresentation', ch.presentation],
-    ['publicLineReceipt', { started: (id) => receipts.push(id) }],
-    ['Audio', function Audio() { audio.count++; }]].forEach(([name, value]) => define(name, value));
+    ['publicLineReceipt', { started: (id) => receipts.push(id) }], ['publicLineLot', ch.lot],
+    ['matchMedia', () => mq], ['Audio', function Audio() { audio.count++; }]].forEach(([name, value]) => define(name, value));
+  if (timed) {
+    define('setTimeout', (fn, delay, ...args) => {
+      if (delay !== 4000) return realSetTimeout(fn, delay, ...args);
+      clock.timers.set(-(++clock.count), { fn, due: clock.now + delay });
+      return -clock.count;
+    });
+    define('clearTimeout', (id) => { if (!clock.timers.delete(id)) realClearTimeout(id); });
+  }
   HTMLMediaElement.prototype.play = () => { audio.count++; return Promise.resolve(); };
 
   const parsed = new DOMParser().parseFromString(await (await fetch('/src/public.html')).text(), 'text/html');
@@ -67,7 +89,7 @@ async function mount({ award: hydrated, event = frame() } = {}) {
   cleanups.push(destroy);
   await import(`/src/public-ui.mjs?entry=${++loads}`);
   await settle();
-  return { ch, receipts, audio, dispose, destroy };
+  return { ch, receipts, audio, dispose, destroy, mq, clock };
 }
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -217,11 +239,148 @@ it('keeps ordinary declaration, draw, history and explicit celebration behaviour
 it('unsubscribes every bridge once on pagehide and ignores later deliveries', async () => {
   const m = await mount({ award: withResult(numbered(3)) });
   const counts = () => Object.values(m.ch).map((ch) => [ch.subs, ch.unsubs, ch.listeners.size]);
-  expect(counts()).to.deep.equal([[1, 0, 1], [1, 0, 1], [1, 0, 1], [1, 0, 1], [1, 0, 1], [2, 0, 2]]);
+  expect(counts()).to.deep.equal([[1, 0, 1], [1, 0, 1], [1, 0, 1], [1, 0, 1], [1, 0, 1], [2, 0, 2], [1, 0, 1]]);
   m.dispose();
   m.dispose();
-  expect(counts()).to.deep.equal([[1, 1, 0], [1, 1, 0], [1, 1, 0], [1, 1, 0], [1, 1, 0], [2, 2, 0]]);
+  expect(counts()).to.deep.equal([[1, 1, 0], [1, 1, 0], [1, 1, 0], [1, 1, 0], [1, 1, 0], [2, 2, 0], [1, 1, 0]]);
   const before = lineAward().textContent;
   m.ch.lineAward.emit(null);
   expect(lineAward().textContent).to.equal(before);
+});
+
+// Transient lot playback: a hidden Spanish line beside the static award, started only by a matching live signal.
+const lot = () => document.getElementById('line-lot-playback');
+const WINNER = 'Ganador del lote: nº 7 · Rojo';
+const expectLot = (text) => { expect(lot().hidden).to.equal(text === null); expect(lot().textContent).to.equal(text ?? ''); };
+const lotSignal = (id, n = 7) => ({ id, participantNumber: n, colorId: IDS[colorIndex(n)] });
+const stored = withResult(numbered(7));
+const unavailable = { ok: false, code: 'storage_failure', message: 'x' };
+
+it('never animates for a stored winner at startup, reconnect, recovery or an award and frame alone', async () => {
+  const first = await mount({ award: stored, timed: true });
+  expectLot(null);
+  first.ch.lineAward.emit(stored);
+  first.ch.event.emit(frame());
+  first.ch.event.emit(unavailable);
+  first.ch.event.emit(frame());
+  expectLot(null);
+  expect(first.clock.timers.size).to.equal(0);
+  first.destroy();
+  const second = await mount({ award: stored, timed: true });
+  expectLot(null);
+  expect([second.clock.timers.size, second.audio.count, second.receipts, celebration().active]).to.deep.equal([0, 0, [], false]);
+});
+
+it('ignores early, mismatched and malformed signals', async () => {
+  const m = await mount({ timed: true });
+  m.ch.lot.emit(lotSignal('no-award'));
+  m.ch.lineAward.emit(stored);
+  m.ch.lot.emit(lotSignal('before-frame'));
+  m.ch.event.emit(frame());
+  const bad = [lotSignal('other-number', 3), { ...lotSignal('other-colour'), colorId: 'blue' }, { ...lotSignal('extra'), extra: 1 },
+    lotSignal(''), lotSignal('zero', 0), { id: 'partial' }, null, 'signal'];
+  bad.forEach((value) => m.ch.lot.emit(value));
+  expectLot(null);
+  expect(m.clock.timers.size).to.equal(0);
+  m.ch.lot.emit(lotSignal('valid'));
+  expectLot(WINNER);
+});
+
+it('shows the known winner for exactly four seconds with no audio, receipt or history change', async () => {
+  const m = await mount({ award: stored, timed: true });
+  const before = lineAward().textContent;
+  m.ch.lot.emit(lotSignal('live'));
+  expectLot(WINNER);
+  expect(lot().lang).to.equal('es');
+  m.clock.tick(3999);
+  expectLot(WINNER);
+  m.clock.tick(1);
+  expectLot(null);
+  expect([lineAward().textContent, m.audio.count, m.receipts, celebration().active]).to.deep.equal([before, 0, [], false]);
+  expect(document.getElementById('called-count').value).to.equal('0');
+});
+
+it('neither extends nor queues a duplicate or overlapping signal', async () => {
+  const m = await mount({ award: stored, timed: true });
+  m.ch.lot.emit(lotSignal('first'));
+  m.clock.tick(1000);
+  m.ch.lot.emit(lotSignal('first'));
+  m.ch.lot.emit(lotSignal('second'));
+  m.clock.tick(2999);
+  expectLot(WINNER);
+  m.clock.tick(1);
+  expectLot(null);
+  m.clock.tick(4000);
+  m.ch.lot.emit(lotSignal('first'));
+  expectLot(null);
+  expect(m.clock.timers.size).to.equal(0);
+  m.ch.lot.emit(lotSignal('third'));
+  expectLot(WINNER);
+});
+
+const cancels = {
+  'an invalid award': (m) => m.ch.lineAward.emit(withResult(numbered(7, { paletteVersion: 2 }))),
+  'a null award': (m) => m.ch.lineAward.emit(null),
+  'an error frame': (m) => m.ch.event.emit(unavailable),
+  'an event change without a fresh award': (m) => m.ch.event.emit(frame(true)),
+  'a new fresh award for a new event': (m) => { m.ch.lineAward.emit({ ...stored, eventId: 'e2' }); m.ch.event.emit(frame(true)); },
+};
+for (const [name, change] of Object.entries(cancels)) {
+  it(`cancels a running lot and never replays it on ${name}`, async () => {
+    const m = await mount({ award: stored, timed: true });
+    m.ch.lot.emit(lotSignal('running'));
+    expectLot(WINNER);
+    change(m);
+    expectLot(null);
+    expect(m.clock.timers.size).to.equal(0);
+    m.ch.lot.emit(lotSignal('running'));
+    expectLot(null);
+  });
+}
+
+it('keeps the original deadline across an ordinary healthy frame', async () => {
+  const m = await mount({ award: stored, timed: true });
+  m.ch.lot.emit(lotSignal('deadline'));
+  m.clock.tick(2000);
+  m.ch.event.emit(frame());
+  m.clock.tick(1999);
+  expectLot(WINNER);
+  m.clock.tick(1);
+  expectLot(null);
+});
+
+it('consumes a signal under reduced motion, cancels when it turns on, and never replays', async () => {
+  const m = await mount({ award: stored, reduced: true, timed: true });
+  m.ch.lot.emit(lotSignal('burned'));
+  expectLot(null);
+  m.mq.change(false);
+  m.ch.lot.emit(lotSignal('burned'));
+  expectLot(null);
+  m.ch.lot.emit(lotSignal('running'));
+  expectLot(WINNER);
+  m.mq.change(true);
+  expectLot(null);
+  expect(m.clock.timers.size).to.equal(0);
+  m.ch.lot.emit(lotSignal('while-reduced'));
+  m.mq.change(false);
+  m.ch.lot.emit(lotSignal('running'));
+  m.ch.lot.emit(lotSignal('while-reduced'));
+  expectLot(null);
+});
+
+it('cleans up once on pagehide: one unsubscribe, one media removal, no timer, and late callbacks are inert', async () => {
+  const m = await mount({ award: stored, timed: true });
+  const [lateSignal] = m.ch.lot.listeners;
+  m.ch.lot.emit(lotSignal('running'));
+  expect([m.ch.lot.subs, m.ch.lot.unsubs, m.ch.lot.listeners.size, m.mq.adds, m.mq.removes, m.clock.timers.size]).to.deep.equal([1, 0, 1, 1, 0, 1]);
+  m.dispose();
+  m.dispose();
+  expect([m.ch.lot.subs, m.ch.lot.unsubs, m.ch.lot.listeners.size, m.mq.adds, m.mq.removes, m.clock.timers.size]).to.deep.equal([1, 1, 0, 1, 1, 0]);
+  expectLot(null);
+  lateSignal(lotSignal('late'));
+  m.mq.change(false);
+  m.mq.change(true);
+  m.clock.tick(5000);
+  expectLot(null);
+  expect(m.clock.timers.size).to.equal(0);
 });

@@ -19,16 +19,19 @@ function frameBridges(win) {
   // Tongo plays only on the public window; the simulator's presentation input never fires.
   const inert = Object.freeze({ subscribe: () => () => {} });
   // The simulator can neither celebrate nor report a start.
+  // Nor can it play a lot: the simulator never forges a live winner signal.
+  const lineLot = inert;
   const receipt = Object.freeze({ started: () => {} });
   return { event: channel('event'), theme: channel('theme'), meta: channel('meta'), prizes: channel('prizes'),
-    lineAward: channel('lineAward'), presentation: inert, lineReceipt: receipt };
+    lineAward: channel('lineAward'), presentation: inert, lineReceipt: receipt, lineLot };
 }
 
 export function publicBridges(win = window) {
   if (win.publicEvent && win.publicTheme && win.publicEventMeta && win.publicEventPrizes &&
-      win.publicLineAward && win.publicPresentation && win.publicLineReceipt) {
+      win.publicLineAward && win.publicPresentation && win.publicLineReceipt && win.publicLineLot) {
     return { event: win.publicEvent, theme: win.publicTheme, meta: win.publicEventMeta, prizes: win.publicEventPrizes,
-      lineAward: win.publicLineAward, presentation: win.publicPresentation, lineReceipt: win.publicLineReceipt };
+      lineAward: win.publicLineAward, presentation: win.publicPresentation, lineReceipt: win.publicLineReceipt,
+      lineLot: win.publicLineLot };
   }
   if (win.parent !== win) return frameBridges(win);
   throw new Error('Missing public display bridge');
