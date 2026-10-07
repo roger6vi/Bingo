@@ -15,6 +15,8 @@ export default {
     loaded: { control: 'boolean' },
     stale: { control: 'boolean' },
     error: { control: 'text' },
+    lotWinner: { control: 'object', description: 'Stored lot winner `{ participantNumber, colorId }` shown in the award line, or `null`.' },
+    lotPlayback: { control: 'inline-radio', options: ['static', 'live', 'reduced'], description: 'Production adapter fixture: `live` plays one signal (4 s) once connected.' },
     tongo: { control: 'boolean', description: 'Transient Tongo overlay over the unchanged board (~3 s in the app).' },
   },
   render: (args) => publicScreen(args),
@@ -47,6 +49,21 @@ export const LongEventName = { name: 'Long event name', args: { meta: LONG_EVENT
 export const DraftPreview = {
   name: 'Draft preview (simulator)',
   args: { meta: { ...ACTIVE_EVENT, name: 'Bingo solidario de otoño', place: 'Parroquia de San Miguel' }, calledNumbers: draws(34) },
+};
+
+const FIXTURE_NOTE = 'Presentation fixture using production adapter; not production-entry coverage.';
+const LOT_WINNER = { participantNumber: Number.MAX_SAFE_INTEGER, colorId: 'red' };
+
+export const LotWinnerLive = {
+  name: 'Lot winner · live 4 s',
+  parameters: { docs: { description: { story: `${FIXTURE_NOTE} One fresh signal after connection; it never repeats.` } } },
+  args: { calledNumbers: draws(17), phase: 'line_declared', lotWinner: LOT_WINNER, lotPlayback: 'live' },
+};
+
+export const LotWinnerReduced = {
+  name: 'Lot winner · reduced motion (static)',
+  parameters: { docs: { description: { story: `${FIXTURE_NOTE} Forced reduced motion: the stored winner stays static, with no transient line.` } } },
+  args: { calledNumbers: draws(17), phase: 'line_declared', lotWinner: LOT_WINNER, lotPlayback: 'reduced' },
 };
 
 export const Tongo = { name: 'Tongo · invalid claim', args: { calledNumbers: draws(34), tongo: true } };
