@@ -26,16 +26,21 @@ const suffixOf = ({ participant, color }) => `Ganador del lote: nº ${participan
 const operatorText = (operator) => operator.locator('#line-lot').evaluate((el) => el.shadowRoot.textContent);
 const permanent = (page) => page.evaluate(() => document.querySelector('#line-award').textContent);
 const card = (page) => page.evaluate(() => { const el = document.querySelector('#line-lot-playback'); return { hidden: el.hidden, text: el.textContent }; });
-// Records show/hide of the playback card; epoch = performance.timeOrigin + performance.now() lets the harness compare clocks.
+// Records show/hide of the playback card.
 const trace = (page) => page.evaluate(() => {
   const el = document.querySelector('#line-lot-playback');
   window.__lotTrace = [];
-  new MutationObserver(() => window.__lotTrace.push({ t: performance.now(), epoch: performance.timeOrigin + performance.now(), hidden: el.hidden, text: el.textContent }))
+  new MutationObserver(() => window.__lotTrace.push({ t: performance.now(), hidden: el.hidden, text: el.textContent }))
     .observe(el, { attributes: true, attributeFilter: ['hidden'], childList: true, characterData: true, subtree: true });
   return el.hidden;
 });
 const records = (page) => page.evaluate(() => window.__lotTrace);
-const motion = (page) => page.emulateMedia({ reducedMotion: 'no-preference' });
+// Emulate, then reload so the page loads under normal motion; assert it in-page before tracing or drawing.
+const motion = async (page) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await page.reload();
+  assert.equal(await page.evaluate(() => matchMedia('(prefers-reduced-motion: reduce)').matches), false, 'normal motion is in effect');
+};
 
 // Asserts the permanent fact and the absence of any live card on a (re)attached public page.
 async function quietPermanent(ctx, page, suffix, label) {
@@ -54,7 +59,7 @@ async function liveHydrate(ctx) {
   await motion(first.page);
   assert.equal(await trace(first.page), true, 'card hidden before the draw');
   await first.operator.locator('#line-lot [data-intent="draw"]').waitFor({ state: 'visible' });
-  const clickAt = Date.now();
+  const clickBoundary = await first.page.evaluate(() => performance.now()); // public page clock, immediately before the click
   await first.operator.locator('#line-lot [data-intent="draw"]').click();
   await first.operator.waitForFunction(() => document.querySelector('#line-lot').shadowRoot.textContent.includes('Ganador: participante'));
   const { lot: won, audit } = await ctx.readLot();
@@ -76,9 +81,9 @@ async function liveHydrate(ctx) {
   const shown = seen.find((r) => r.hidden === false);
   const hidden = seen.find((r) => r.t > shown.t && r.hidden === true);
   assert.equal(shown.text, suffix, 'public card text equals the committed winner');
-  const latency = Math.round(shown.epoch - clickAt);
+  const latency = Math.round(shown.t - clickBoundary);
   const duration = Math.round(hidden.t - shown.t);
-  ctx.note(`live card: shown ${latency} ms after the draw click; visible ${duration} ms (nominal ${PLAYBACK_MS}, tolerance +${TOLERANCE_MS}/-500; DOM mutation times, not paint)`);
+  ctx.note(`live card: shown ${latency} ms after the public-clock pre-click boundary -> card mutation; visible ${duration} ms (nominal ${PLAYBACK_MS}, tolerance +${TOLERANCE_MS}/-500; DOM mutation times, not paint)`);
   assert.ok(latency >= -5 && latency <= SHOW_WITHIN_MS, `card shown ${latency} ms after the click`);
   assert.ok(duration >= PLAYBACK_MS - 500, `card hid after ${duration} ms, before ~3500`);
   assert.ok(duration <= PLAYBACK_MS + TOLERANCE_MS, `card stayed ${duration} ms, beyond 4000 + ${TOLERANCE_MS}`);
