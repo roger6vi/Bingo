@@ -271,10 +271,9 @@ async function receipts(ctx) {
   await ctx.seed(operator, '');
   const page = await ctx.openPublic(app, operator);
   await ctx.delayReceipt(page, 1500);
-  const [foreign] = await Promise.all([app.waitForEvent('window'), app.evaluate(({ BrowserWindow }, file) => {
-    new BrowserWindow({ show: false, webPreferences: { preload: file, contextIsolation: true, nodeIntegration: false, sandbox: true } })
-      .loadURL('data:text/html,<title>foreign</title>');
-  }, ctx.preload)]);
+  const [foreign] = await Promise.all([app.waitForEvent('window'), app.evaluate(({ BrowserWindow }, { preload, file }) => {
+    void new BrowserWindow({ show: false, webPreferences: { preload, contextIsolation: true, nodeIntegration: false, sandbox: true } }).loadFile(file);
+  }, { preload: ctx.preload, file: ctx.shipped.publicHtml })]);
   await foreign.waitForFunction(() => 'publicLineReceipt' in window);
   await ctx.declare(operator, 1);
   const pending = await ctx.waitAward('pending', (award) => award.status === 'pending');
@@ -291,7 +290,7 @@ async function receipts(ctx) {
   await page.evaluate((id) => window.publicLineReceipt.started(id), pending.id);
   await ctx.pause(300);
   assert.deepEqual(await ctx.award(), done, 'a late receipt after completion changes nothing');
-  ctx.note('operator window has no receipt API: operator-frame spoofing is not coverable without product changes');
+  ctx.note('operator window has no receipt API; operator-sender receipt rejection is covered by the unit test in tests/public-event-delivery.test.ts');
 }
 
 // 7. Navigating the public page before its receipt voids the pending run: no start, the award fails, no retry.
