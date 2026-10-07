@@ -101,8 +101,20 @@ export function createContext({ project, electron, executablePath, artifacts, na
     async shoot(label) {
       scope.check();
       let index = 0;
-      for (const app of fixture.apps) for (const page of app.windows()) {
-        await page.screenshot({ path: path.join(artifacts, `${name}-${label}-${++index}.png`), timeout: 5000 }).catch((error) => note(`screenshot ${label} failed: ${error.message}`));
+      // Authority is re-checked before every window listing and dispatch and after every capture, so a revocation
+      // during a pending screenshot (resolved or rejected) escapes and no further capture is dispatched.
+      for (const app of fixture.apps) {
+        scope.check();
+        for (const page of app.windows()) {
+          scope.check();
+          try {
+            await page.screenshot({ path: path.join(artifacts, `${name}-${label}-${++index}.png`), timeout: 5000 });
+          } catch (error) {
+            scope.check(); // revoked authority is never swallowed as a best-effort failure
+            note(`screenshot ${label} failed: ${error.message}`);
+          }
+          scope.check();
+        }
       }
     },
     drawCode: (operator) => operator.evaluate(() => window.desktop.drawDigital().then((result) => result.code ?? 'ok')),

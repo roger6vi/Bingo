@@ -63,6 +63,48 @@ test('the body-facing context cannot launch, restart or read after cancellation,
   assert.equal(launches.length, 1);
 }));
 
+test('ctx.shoot re-checks authority around every capture: a revoked scope never dispatches another screenshot and cancellation is never swallowed', () => withTemp(async (dir) => {
+  const setup = (shot) => {
+    const made = smoke.createContext({ project: { root: '/feature' }, electron: {}, executablePath: 'x', artifacts: dir, name: 't', say: () => {} });
+    const app = { windows: () => [{ screenshot: shot }, { screenshot: shot }] };
+    made.owner.fixture.track(app);
+    return made;
+  };
+  // Revoked while the first capture is pending: it resolves late, the second window is never captured.
+  const calls = [];
+  let release;
+  const first = setup((options) => { calls.push(options.path); return new Promise((resolve) => { release = resolve; }); });
+  const shooting = first.ctx.shoot('a');
+  assert.equal(calls.length, 1);
+  first.scope.cancel('timed out');
+  release();
+  await assert.rejects(shooting, /cancelled/);
+  assert.equal(calls.length, 1, 'no second capture after revocation');
+  // A capture that rejects because of the revocation still surfaces the cancellation, not the screenshot error.
+  const failing = [];
+  let fail;
+  const second = setup((options) => { failing.push(options.path); return new Promise((_resolve, reject) => { fail = reject; }); });
+  const pending = second.ctx.shoot('b');
+  second.scope.cancel('timed out');
+  fail(new Error('page closed'));
+  await assert.rejects(pending, /scenario cancelled: timed out/);
+  assert.equal(failing.length, 1);
+  // Revoked before the call: nothing is dispatched.
+  await assert.rejects(second.ctx.shoot('c'), /cancelled/);
+  assert.equal(failing.length, 1);
+  // An ordinary screenshot failure under live authority stays best-effort and the next window is still captured.
+  const ordinary = [];
+  const third = setup((options) => { ordinary.push(options.path); return ordinary.length === 1 ? Promise.reject(new Error('boom')) : Promise.resolve(); });
+  await third.ctx.shoot('d');
+  assert.equal(ordinary.length, 2);
+  // The owner's post-revocation screenshots are a separate capability and still run.
+  const owned = [];
+  const fourth = setup((options) => { owned.push(options.path); return Promise.resolve(); });
+  fourth.scope.cancel('timed out');
+  await fourth.owner.screenshots();
+  assert.equal(owned.length, 2);
+}));
+
 test('packaged mode reads the foreign-window preload from inside the package; default mode keeps dist', () => {
   const packaged = { executable: '/r/Bingo', appPath: '/r/Resources/app.asar' };
   assert.equal(smoke.preloadFor({ root: '/feature', packaged }), path.join(packaged.appPath, 'dist', 'public-preload.js'));
