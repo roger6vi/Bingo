@@ -2,6 +2,7 @@
 // the run-authority scope, allowlist facades and the scenario runner. Import-safe: nothing runs on import. It never builds
 // or installs, only launches the built app of an explicit worktree on harness-created bingo-smoke-* profiles.
 import { existsSync, lstatSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -93,7 +94,8 @@ export function createFixture({ tmp = tmpdir(), mkdtemp = mkdtempSync, rm = rmSy
   if (realpathSync(created) !== created) throw new Error(`Refusing ${created}: profile is not canonical`);
   if (path.dirname(created) !== base) throw new Error(`Refusing ${created}: profile is not directly under ${base}`);
   if (!path.basename(created).startsWith(profilePrefix)) throw new Error(`Refusing ${created}: profile is not a ${profilePrefix}* directory`);
-  const state = { apps: new Set(), launches: new Set(), verified: false, closing: false, disposal: null, active: null, root: null };
+  const state = { apps: new Set(), launches: new Set(), verified: false, closing: false, disposal: null, active: null, root: null,
+    bootstrap: null, packaged: false, pending: 0, seeding: false, seeded: false, seed: null };
   const stop = async (app, options) => {
     await terminateApp(app, { closeMs, killMs, ...options });
     state.apps.delete(app);
@@ -113,14 +115,19 @@ export function createFixture({ tmp = tmpdir(), mkdtemp = mkdtempSync, rm = rmSy
     closeAll,
     async restart(app, launch, options) {
       assertOpen(state, 'restart');
+      if (state.seeding) throw new Error('fixture is seeding: refusing to restart');
       await stop(app, options);
       assertOpen(state, 'restart');
       return launch();
     },
+    // Fixed-purpose capability: seeds ONE legacy checking_line into this fixture's own database, never any other file.
+    // It takes no path, SQL or write callback (only an optional scope guard that can throw). See seedLegacy below.
+    seedLegacyLineCheck(options) { return seedLegacy(state, created, options); },
     dispose() {
       state.closing = true;
       state.disposal ??= (async () => {
         await Promise.allSettled([...state.launches]);
+        if (state.seed !== null) await state.seed; // a seed in flight finishes (or aborts before writing) before the profile goes
         await closeAll();
         rm(created, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
       })();
@@ -149,12 +156,15 @@ async function readMainPaths(app, attempts = 3) {
 export async function launchVerified({ electron, executablePath, project, fixture, timeout = 30_000, onLaunch }) {
   const state = stateOf(fixture);
   assertOpen(state, 'launch');
+  if (state.seeding) throw new Error('fixture is seeding: refusing to launch');
   const expectedApp = project.packaged ? project.packaged.appPath : project.root;
   if (project.packaged && path.basename(expectedApp) !== 'app.asar') throw new Error(`packaged appPath ${expectedApp} is not an app.asar`);
+  state.pending++;
   const launching = Promise.resolve(electron.launch({ executablePath, args: launchArgs(project, fixture), timeout }))
     .then((app) => { state.apps.add(app); return app; });
   state.launches.add(launching.catch(() => {}));
-  const app = await launching;
+  let app;
+  try { app = await launching; } finally { state.pending--; }
   try {
     onLaunch?.(app);
     assertOpen(state, 'verify a launch');
@@ -166,6 +176,8 @@ export async function launchVerified({ electron, executablePath, project, fixtur
     state.verified = true;
     state.active = app;
     state.root = expectedApp; // the reader re-checks the runtime appPath against this value
+    state.bootstrap = { root: expectedApp }; // proof that this fixture really ran the verified project on its own profile
+    state.packaged = Boolean(project.packaged);
     return { app, operator: await app.firstWindow() };
   } catch (error) {
     await terminateApp(app).then(() => { state.apps.delete(app); }, () => {});
@@ -180,6 +192,91 @@ export function verifiedRuntime(fixture, action) {
   assertOpen(state, action);
   if (!state.verified || state.active === null) throw new Error('runtime profile not verified: refusing to read the database');
   return { app: state.active, root: state.root };
+}
+
+// ---- legacy line-check seeding -------------------------------------------------------------------------------
+// Fixed facts for the REC02B recovery scenario. Everything is written through the real store API of the verified
+// project's own built modules, never through SQL, onto <fixture>/current-event.sqlite.
+const SEED_PRIZES = Object.freeze({ line: Object.freeze({ amount: 25, lot: 'Cesta' }), bingo: Object.freeze({ amount: 100, lot: 'Jamón' }) });
+const SEED_META = Object.freeze({ name: 'Recuperación línea', date: '2026-01-15', place: 'Sala de pruebas' });
+const json = (value) => JSON.parse(JSON.stringify(value));
+const inside = (parent, child) => child.startsWith(parent + path.sep);
+
+function ownedFile(file) {
+  const stat = lstatSync(file);
+  if (stat.isSymbolicLink() || !stat.isFile()) throw new Error(`Refusing ${file}: a symlink or non-regular file is not a seed target`);
+  if (realpathSync(file) !== file) throw new Error(`Refusing ${file}: not canonical`);
+  return file;
+}
+function projectModule(root, name) {
+  const file = path.join(root, 'dist', name);
+  if (!existsSync(file)) throw new Error(`Refusing to seed: ${name} is missing from the verified project's dist`);
+  const stat = lstatSync(file);
+  if (stat.isSymbolicLink() || !stat.isFile() || !inside(path.join(root, 'dist'), realpathSync(file))) {
+    throw new Error(`Refusing to seed: ${name} is not a regular file inside the verified project's dist`);
+  }
+  return file;
+}
+
+// Synchronous claims first (an async function runs to its first await before the caller can interleave); then one
+// yield, after which disposal, a revoked scope or a late app are re-checked BEFORE the database is opened.
+function seedLegacy(state, created, options) {
+  return (async () => {
+    assertOpen(state, 'seed');
+    const keys = options === undefined ? [] : options !== null && typeof options === 'object' ? Object.keys(options) : ['?'];
+    if (keys.some((key) => key !== 'guard')) throw new Error('Refusing: seedLegacyLineCheck accepts only an optional scope guard');
+    const guard = options?.guard ?? (() => {});
+    if (typeof guard !== 'function') throw new Error('Refusing: the scope guard must be a function');
+    if (state.bootstrap === null) throw new Error('Refusing to seed: no bootstrap launch was verified on this fixture');
+    if (state.packaged) throw new Error('Refusing to seed: packaged mode is unsupported');
+    if (state.apps.size > 0 || state.active !== null) throw new Error('Refusing to seed: a live app is still tracked; close and await every app first');
+    if (state.pending > 0) throw new Error('Refusing to seed: a launch is pending');
+    if (state.seeding || state.seeded) throw new Error('Refusing to seed: this fixture was already seeded or is seeding');
+    guard();
+    state.seeding = state.seeded = true;
+    const running = (async () => {
+      await sleep(0);
+      assertOpen(state, 'seed');
+      guard();
+      if (state.apps.size > 0 || state.pending > 0) throw new Error('Refusing to seed: an app appeared');
+      return writeLegacySeed(state.bootstrap.root, created, guard);
+    })();
+    state.seed = running.then(() => {}, () => {}).finally(() => { state.seeding = false; });
+    return running;
+  })();
+}
+
+function writeLegacySeed(root, created, guard) {
+  const file = ownedFile(path.join(created, 'current-event.sqlite'));
+  const modules = createRequire(path.join(root, 'dist', 'seed.cjs'));
+  const { createEventStore } = modules(projectModule(root, 'event-store.js'));
+  const { drawManual } = modules(projectModule(root, 'event-core.js'));
+  if (typeof createEventStore !== 'function' || typeof drawManual !== 'function') throw new Error('Refusing to seed: the project modules do not export the store API');
+  const store = createEventStore(file);
+  try {
+    const pristine = store.load();
+    if (pristine === null || pristine.calledNumbers.length !== 0 || pristine.phase !== 'drawing' || pristine.lastTransitionAt !== null ||
+        store.readAudit().length !== 0 || store.loadLineAward() !== null) {
+      throw new Error('Refusing to seed: the bootstrap database is not a pristine drawing baseline');
+    }
+    const prizes = store.loadPrizes();
+    if (prizes === null) throw new Error('Refusing to seed: no active event');
+    const eventId = prizes.eventId;
+    guard();
+    store.updateEventMeta(eventId, SEED_META);
+    store.updateEventPrizes(eventId, SEED_PRIZES);
+    guard();
+    store.update((event) => drawManual(drawManual(event, 7), 42));
+    guard();
+    const head = store.load().lastTransitionAt;
+    const now = Date.now();
+    const at = new Date(head === null ? now : Math.max(now, Date.parse(head) + 1)).toISOString();
+    store.transitionPhase('begin_line_check', at);
+    const after = store.load();
+    return json({ eventId, calledNumbers: after.calledNumbers, phase: after.phase, lastTransitionAt: after.lastTransitionAt,
+      audit: store.readAudit(), prizes: store.loadPrizes().prizes, meta: { name: SEED_META.name, date: SEED_META.date, place: SEED_META.place },
+      check: store.loadLegacyLineCheck(), award: store.loadLineAward() });
+  } finally { store.close(); }
 }
 
 // ---- run authority -------------------------------------------------------------------------------------------
