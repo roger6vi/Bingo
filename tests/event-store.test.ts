@@ -1313,7 +1313,7 @@ function v5(path: string) {
     store.createEvent({ name: 'A', date: '2025-01-01', place: 'X' });
     store.update((event) => drawManual(event, 7));
   } finally { store.close(); }
-  withDb(path, (db) => db.exec('DROP TABLE line_awards; DROP TABLE event_prizes; PRAGMA user_version = 5'));
+  withDb(path, (db) => db.exec('DROP TABLE bingo_awards; DROP TABLE line_awards; DROP TABLE event_prizes; PRAGMA user_version = 5'));
 }
 
 test('v5 migrates through v6 to v7 once, adding empty event_prizes and line_awards tables and keeping every event unchanged', (t) => {
@@ -1502,17 +1502,17 @@ function v6(path: string) {
     store.transitionPhase('begin_line_check', '2025-01-01T00:00:01.000Z');
     store.updateEventPrizes(event.id, prizes(150, 'Jamón', 20, ''));
   } finally { store.close(); }
-  withDb(path, (db) => db.exec('DROP TABLE line_awards; PRAGMA user_version = 6'));
+  withDb(path, (db) => db.exec('DROP TABLE bingo_awards; DROP TABLE line_awards; PRAGMA user_version = 6'));
 }
 
 const lineAwards = (db: DatabaseSync) => db.prepare('SELECT count(*) AS count FROM line_awards').get()?.count;
 
-test('a fresh database is schema v9 with an empty line_awards table', (t) => {
+test('a fresh database is schema v10 with an empty line_awards table', (t) => {
   const path = fixture(t);
   createEventStore(path).close();
-  assert.equal(EVENT_SCHEMA_VERSION, 9);
+  assert.equal(EVENT_SCHEMA_VERSION, 10);
   withDb(path, (db) => {
-    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 9);
+    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, EVENT_SCHEMA_VERSION);
     assert.equal(lineAwards(db), 0);
   });
 });
@@ -1533,16 +1533,16 @@ test('v6 migrates through v7 and v8 to v9 once, keeping prizes, audit, history a
     assert.deepEqual(store.loadPrizes()?.prizes, prizes(150, 'Jamón', 20, ''));
   } finally { store.close(); }
   withDb(path, (db) => {
-    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 9);
+    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, EVENT_SCHEMA_VERSION);
     assert.deepEqual([db.prepare('SELECT * FROM events').all(), db.prepare('SELECT * FROM event_prizes').all(),
       db.prepare('SELECT * FROM phase_audit').all(), db.prepare('SELECT * FROM active_event').all()], before);
     assert.equal(lineAwards(db), 0);
   });
   createEventStore(path).close();
-  withDb(path, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 9));
+  withDb(path, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, EVENT_SCHEMA_VERSION));
 });
 
-test('every older schema reaches exactly the fresh v9 schema', (t) => {
+test('every older schema reaches exactly the fresh v10 schema', (t) => {
   const fresh = fixture(t);
   createEventStore(fresh).close();
   let expected: unknown;
@@ -1556,7 +1556,7 @@ test('every older schema reaches exactly the fresh v9 schema', (t) => {
     build(path);
     createEventStore(path).close();
     withDb(path, (db) => {
-      assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 9, name);
+      assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, EVENT_SCHEMA_VERSION, name);
       assert.deepEqual(schemaOf(db), expected, name);
     });
   }
@@ -1584,11 +1584,11 @@ test('v9 rejects a missing or unconstrained line_awards table without writing', 
     const file = join(directory, `awards-${name}.sqlite`);
     createEventStore(file).close();
     withDb(file, (db) => {
-      db.exec('DROP TABLE line_awards');
+      db.exec('DROP TABLE bingo_awards; DROP TABLE line_awards');
       if (sql !== null) db.exec(sql);
     });
     assert.throws(() => createEventStore(file), /invalid event schema: line_awards/i, name);
-    withDb(file, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 9));
+    withDb(file, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, EVENT_SCHEMA_VERSION));
   }
 });
 
@@ -1645,7 +1645,7 @@ function downgradeToV7(path: string, corrupt = '') {
   withDb(path, (db) => {
     db.exec('PRAGMA foreign_keys = OFF');
     const rows = db.prepare(`SELECT ${ORIGINAL_AWARD_COLUMNS} FROM line_awards`).all();
-    db.exec(`DROP TABLE line_awards; ${V7_LINE_AWARDS}`);
+    db.exec(`DROP TABLE bingo_awards; DROP TABLE line_awards; ${V7_LINE_AWARDS}`);
     for (const row of rows) {
       const names = Object.keys(row);
       db.prepare(`INSERT INTO line_awards (${names.join(', ')}) VALUES (${names.map((n) => `:${n}`).join(', ')})`).run(row as never);
@@ -1661,7 +1661,7 @@ function frozenV8(path: string, resolved = true) {
   store.close();
   withDb(path, (db) => {
     const rows = db.prepare(`SELECT ${ORIGINAL_AWARD_COLUMNS} FROM line_awards`).all();
-    db.exec(`DROP TABLE line_awards; ${V8_LINE_AWARDS}`);
+    db.exec(`DROP TABLE bingo_awards; DROP TABLE line_awards; ${V8_LINE_AWARDS}`);
     for (const row of rows) {
       const names = Object.keys(row);
       db.prepare(`INSERT INTO line_awards (${names.join(', ')}) VALUES (${names.map((n) => `:${n}`).join(', ')})`)
@@ -1703,7 +1703,7 @@ test('LOT-02A frozen v8 resolved rows preserve all facts, remain readable and re
     withDb(path, (db) => {
       const original = (before as Array<Array<Record<string, unknown>>>)[4][0];
       db.prepare('UPDATE active_event SET event_id = ?').run(original.event_id as string);
-      assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 9);
+      assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, EVENT_SCHEMA_VERSION);
       assert.deepEqual(schemaOf(db), expected);
       assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
       for (const row of resultRows(db)) assert.deepEqual({ ...row }, { lot_resolution: 'resolved',
@@ -1837,13 +1837,13 @@ test('v7 migrates through v8 to v9 once, keeping every award row, id, time and s
     assert.deepEqual(reopened.loadLineAward()?.presentation, { id: 'p-2', status: 'started', startedAt: 1000, deadlineAt: 5000 });
   } finally { reopened.close(); }
   withDb(path, (db) => {
-    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 9);
+    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, EVENT_SCHEMA_VERSION);
     assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
     assert.deepEqual(db.prepare('SELECT presentation_status AS s FROM line_awards ORDER BY presentation_id').all().map((r) => r.s),
       ['pending', 'failed', 'started', 'completed']);
   });
   createEventStore(path).close();
-  withDb(path, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 9));
+  withDb(path, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, EVENT_SCHEMA_VERSION));
 });
 
 test('a migrated v7 awards table equals the fresh v9 table and enforces the same foreign key and unique id', (t) => {

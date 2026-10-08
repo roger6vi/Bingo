@@ -6,13 +6,14 @@ import { transitionPhase, type GamePhase, type PhaseTransitionIntent } from './g
 import { DEFAULT_THEME, isThemeId, THEME_IDS, type ThemeId } from './theme.ts';
 import { createLineAward, isLineDeliveryResolved, transitionLinePresentation, type LineAward,
   type LinePresentationIntent, type LinePresentationStatus } from './line-award.ts';
+import { createBingoAward } from './bingo-award.ts';
 import { parseLineLotResolution } from './line-lot-contract.ts';
 import { MAX_PRIZE_AMOUNT, MAX_PRIZE_LOT, NO_PRIZES, normalizePrizes, validAmount, validLot,
   type EventPrizes } from './event-prizes.ts';
 
-// v6 adds prizes, v7 adds first-line awards, v8 adds interrupted presentations and v9 adds
-// numbered lot provenance. Keep each historical definition and migration step independent.
-const VERSION = 9;
+// v6 adds prizes, v7 adds first-line awards, v8 adds interrupted presentations, v9 adds
+// numbered lot provenance and v10 adds direct Bingo awards. Keep each historical definition and migration step independent.
+const VERSION = 10;
 export const EVENT_SCHEMA_VERSION = VERSION;
 const phases = ['drawing', 'checking_line', 'line_declared', 'checking_bingo', 'bingo_declared', 'finished'];
 const phaseCheck = `CHECK (phase IN (${phases.map((phase) => `'${phase}'`).join(', ')}))`;
@@ -153,6 +154,9 @@ const lineAwardGuards = [
         .map((name) => `NEW.${name} IS NOT OLD.${name}`).join(' OR ')}))
     BEGIN SELECT RAISE(ABORT, 'cannot introduce or retarget legacy lot provenance'); END`,
 ];
+// Optional direct Bingo award, one per event, written with its audit row. Same money, lot and presentation columns
+// and checks as a first-line award; no lot provenance yet (a later unit settles it) and never any claimant identity.
+const bingoAwardsTable = lineAwardsTableV8.replace('line_awards', 'bingo_awards');
 const PLACEHOLDER_NAME = 'Evento actual';
 const PLACEHOLDER_PLACE = 'Sin especificar';
 
@@ -451,6 +455,7 @@ function readEvent(db: DatabaseSync): StoredEvent | null {
       row.lastTransitionAt !== (last?.transitionAt ?? null)) {
     throw new Error('Invalid phase audit: current state does not match history');
   }
+  checkBingoAward(db, id, audit);
   return { calledNumbers: history.calledNumbers, phase: row.phase as GamePhase,
     lastTransitionAt: row.lastTransitionAt as string | null };
 }
@@ -606,6 +611,20 @@ function migrateLotProvenance(db: DatabaseSync): void {
       THEN 'legacy_v8' ELSE 'none' END FROM line_awards_migration`);
   db.exec('DROP TABLE line_awards_migration');
   db.exec(lineAwardGuards.join(';'));
+}
+
+// v9 → v10: add the empty bingo_awards table. Existing audit, line awards, calls and prizes are untouched, and a
+// legacy checking_bingo opening stays as it is (explicit recovery is a separate unit).
+function migrateBingoAwards(db: DatabaseSync): void {
+  db.exec(bingoAwardsTable);
+}
+
+function validateBingoAwardsSchema(db: DatabaseSync): void {
+  const normalize = (sql: string) => sql.replace(/[\s"`\[\]]/g, '').toUpperCase();
+  const sql = db.prepare("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'bingo_awards'").get()?.sql;
+  if (typeof sql !== 'string' || normalize(sql) !== normalize(bingoAwardsTable)) {
+    throw new Error('Invalid event schema: bingo_awards table missing or malformed');
+  }
 }
 
 function validateLineAwardsSchema(db: DatabaseSync, expected = lineAwardsTable): void {
@@ -775,6 +794,68 @@ function readLineAwardRecord(db: DatabaseSync, eventId: string, audit: PhaseAudi
   return { stored, auditSequence: row.audit_sequence as number, fact };
 }
 
+export type StoredBingoAward = StoredLineAward;
+
+// Strict read of the active event's Bingo award, or null only when no row exists. The row is re-derived with the pure
+// rules and must link to the one direct bingo audit entry; anything else fails closed. Never repairs or writes.
+function readBingoAward(db: DatabaseSync, eventId: string, audit: PhaseAuditEntry[]): StoredBingoAward | null {
+  const invalid = (reason: string, cause?: unknown): never => {
+    throw new Error(`Invalid stored bingo award: ${reason}`, cause === undefined ? undefined : { cause });
+  };
+  let row;
+  try {
+    row = db.prepare(`SELECT event_id, audit_sequence, winner_count, total_cents, share_cents, remainder_cents,
+      lot, lot_resolution, presentation_id, presentation_status, presentation_started_at, presentation_deadline
+      FROM bingo_awards WHERE event_id = ?`).get(eventId);
+  } catch (error) { return invalid('unreadable row', error); }
+  if (row === undefined) return null;
+  const safe = (value: unknown, low: number): value is number => Number.isSafeInteger(value) && (value as number) >= low;
+  if (row.event_id !== eventId) invalid('event');
+  const link = safe(row.audit_sequence, 1) ? audit[row.audit_sequence - 1] : undefined;
+  if (link?.kind !== 'declare_bingo_directly' || link.from_phase !== 'line_declared' || link.to_phase !== 'bingo_declared') {
+    invalid('audit link');
+  }
+  if (!safe(row.winner_count, 1) || !safe(row.total_cents, 0) || row.total_cents > MAX_AWARD_CENTS ||
+      row.total_cents % 100 !== 0 || typeof row.lot !== 'string' || row.lot !== row.lot.trim()) invalid('amounts');
+  let derived: LineAward;
+  try {
+    derived = createBingoAward({ winnerCount: row.winner_count as number,
+      prizeEuros: (row.total_cents as number) / 100, lot: row.lot as string });
+  } catch (error) { return invalid('award rules', error); }
+  const resolution = row.lot_resolution;
+  if (row.share_cents !== derived.shareCents || row.remainder_cents !== derived.remainderCents ||
+      typeof resolution !== 'string' || !LOT_RESOLUTIONS.includes(resolution) ||
+      (resolution !== derived.lotResolution && !(derived.lotResolution === 'pending' && resolution === 'resolved'))) {
+    invalid('share, remainder or lot');
+  }
+  const status = row.presentation_status;
+  const startedAt = row.presentation_started_at;
+  const deadlineAt = row.presentation_deadline;
+  if (typeof row.presentation_id !== 'string' || row.presentation_id.trim() === '' ||
+      typeof status !== 'string' || !PRESENTATION_STATUSES.includes(status)) invalid('presentation');
+  const timed = status !== 'pending' && status !== 'failed';
+  if (timed ? !(safe(startedAt, 0) && safe(deadlineAt, 0) && deadlineAt > startedAt)
+    : startedAt !== null || deadlineAt !== null) invalid('presentation times');
+  return Object.freeze({
+    eventId,
+    award: Object.freeze({ ...derived, lotResolution: resolution as LineAward['lotResolution'] }),
+    presentation: Object.freeze({ id: row.presentation_id as string, status: status as LinePresentationStatus,
+      startedAt: startedAt as number | null, deadlineAt: deadlineAt as number | null }),
+  });
+}
+
+// Every load validates the bingo award against the audit: a direct bingo audit entry without exactly its award, or
+// an award elsewhere, is corrupt. Legacy declare_bingo entries never have an award.
+function checkBingoAward(db: DatabaseSync, eventId: string, audit: PhaseAuditEntry[]): void {
+  const award = readBingoAward(db, eventId, audit);
+  const direct = audit.filter((entry) => entry.kind === 'declare_bingo_directly');
+  const sequence = db.prepare('SELECT audit_sequence FROM bingo_awards WHERE event_id = ?').get(eventId)?.audit_sequence;
+  if (direct.length > 1 || (direct.length === 1) !== (award !== null) ||
+      (direct.length === 1 && direct[0].sequence !== sequence)) {
+    throw new Error('Invalid stored bingo award: audit and award do not match');
+  }
+}
+
 export type LineDeclarationBaseline = {
   readonly eventId: string;
   readonly calledNumbers: readonly number[];
@@ -901,6 +982,7 @@ export function createEventStore(path: string) {
           candidate.exec(prizesTable);
           candidate.exec(lineAwardsTable);
           candidate.exec(lineAwardGuards.join(';'));
+          candidate.exec(bingoAwardsTable);
           candidate.exec(`PRAGMA user_version = ${VERSION}; COMMIT`);
         } catch (error) {
           try { candidate.exec('ROLLBACK'); } catch { /* Preserve the original error. */ }
@@ -923,13 +1005,14 @@ export function createEventStore(path: string) {
     db.exec('BEGIN');
     try {
       const observed = db.prepare('PRAGMA user_version').get()?.user_version;
-      if (observed !== 1 && observed !== 2 && observed !== 3 && observed !== 4 && observed !== 5 && observed !== 6 && observed !== 7 && observed !== 8 && observed !== VERSION) {
+      if (observed !== 1 && observed !== 2 && observed !== 3 && observed !== 4 && observed !== 5 && observed !== 6 && observed !== 7 && observed !== 8 && observed !== 9 && observed !== VERSION) {
         throw new Error(`Unsupported event schema version: ${String(observed)}`);
       }
       if (observed === VERSION) {
         validateV4(db);
         validatePrizesSchema(db);
         validateLineAwardsSchema(db);
+        validateBingoAwardsSchema(db);
         readEvent(db);
         db.exec('COMMIT');
       } else {
@@ -962,7 +1045,7 @@ export function createEventStore(path: string) {
           validateV3(db);
           migrateV3ToV4(db);
           db.exec('PRAGMA user_version = 4');
-        } else if (version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== VERSION) {
+        } else if (version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== VERSION) {
           throw new Error(`Unsupported event schema version: ${String(version)}`);
         }
         if (version === 1 || version === 2 || version === 3 || version === 4) {
@@ -973,23 +1056,29 @@ export function createEventStore(path: string) {
           migratePrizes(db);
           db.exec('PRAGMA user_version = 6');
         }
-        if (version !== 7 && version !== 8 && version !== VERSION) {
+        if (version !== 7 && version !== 8 && version !== 9 && version !== VERSION) {
           migrateLineAwards(db);
           db.exec('PRAGMA user_version = 7');
         }
-        if (version !== 8 && version !== VERSION) {
+        if (version !== 8 && version !== 9 && version !== VERSION) {
           validateLineAwardsSchema(db, lineAwardsTableV7);
           migrateInterruptedPresentation(db);
           db.exec('PRAGMA user_version = 8');
         }
-        if (version !== VERSION) {
+        if (version !== 9 && version !== VERSION) {
           validateLineAwardsSchema(db, lineAwardsTableV8);
           migrateLotProvenance(db);
+          db.exec('PRAGMA user_version = 9');
+        }
+        if (version !== VERSION) {
+          validateLineAwardsSchema(db);
+          migrateBingoAwards(db);
           db.exec(`PRAGMA user_version = ${VERSION}`);
         }
         validateV4(db);
         validatePrizesSchema(db);
         validateLineAwardsSchema(db);
+        validateBingoAwardsSchema(db);
         readEvent(db);
         db.exec('COMMIT');
       }
@@ -1302,6 +1391,15 @@ export function createEventStore(path: string) {
         const stored = readLineAward(db, current.eventId, replayAudit(db, current.eventId));
         if (stored === null) throw new Error('Invalid stored line award: missing after write');
         return stored;
+      });
+    },
+    // The active event's validated Bingo award, or null when it has none. Detached, frozen copy of one snapshot.
+    loadBingoAward(): StoredBingoAward | null {
+      return readSnapshot(() => {
+        const id = readActiveEventId(db);
+        if (id === null) return null;
+        readEvent(db);
+        return readBingoAward(db, id, replayAudit(db, id));
       });
     },
     loadLegacyLineCheck(): LegacyLineCheck { return readSnapshot(() => readLegacyLineCheck(db)); },

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test, { after } from 'node:test';
-import { createEventStore } from '../src/event-store.ts';
+import { createEventStore, EVENT_SCHEMA_VERSION } from '../src/event-store.ts';
 import { participantColor } from '../src/line-lot-contract.ts';
 
 const directories: string[] = [];
@@ -126,7 +126,7 @@ function frozenV8(path: string): string[] {
   withDb(path, (db) => {
     db.exec('PRAGMA foreign_keys = OFF');
     const rows = db.prepare(`SELECT event_id, ${COLUMNS.join(', ')} FROM line_awards`).all();
-    db.exec(`DROP TABLE line_awards; ${V8_LINE_AWARDS}`);
+    db.exec(`DROP TABLE bingo_awards; DROP TABLE line_awards; ${V8_LINE_AWARDS}`);
     for (const row of rows) {
       db.prepare(`INSERT INTO line_awards (${Object.keys(row).join(', ')})
         VALUES (${Object.keys(row).map((n) => `:${n}`).join(', ')})`).run({ ...row, lot_resolution: 'resolved' } as never);
@@ -155,7 +155,8 @@ test('a genuine v8 to v9 migration keeps legacy resolved facts with an unknown w
   const first = read();
   assert.deepEqual(first.map((r) => (r as { presentation: { status: string } }).presentation.status), ['pending', 'completed']);
   withDb(path, (db) => {
-    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 9);
+    // Opening fully migrates the database, so it reports the current version; the v9 provenance facts follow.
+    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, EVENT_SCHEMA_VERSION);
     assert.match(String(db.prepare("SELECT sql FROM sqlite_master WHERE name = 'line_awards'").get()?.sql), /lot_result_origin/);
     for (const row of dump()) assert.deepEqual([row.lot_result_origin, row.lot_participant_number, row.lot_color_id],
       ['legacy_v8', null, null]);
