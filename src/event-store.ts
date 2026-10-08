@@ -1527,6 +1527,61 @@ export function createEventStore(path: string) {
         return stored;
       });
     },
+    // Authoritative reread after an uncertain declaration, bound to ONE snapshot: the active event, its audit length,
+    // phase head, calls and award must all be this exact declaration. Read-only; it can never declare. A foreign event
+    // or any difference is 'stale'; the untouched baseline state is 'unchanged'.
+    confirmBingoDeclaration(expected: unknown, winnerCount: unknown, transitionAt: unknown):
+        { state: 'declared'; award: StoredBingoAward } | { state: 'unchanged' | 'stale' } {
+      const baseline = parseBingoBaseline(expected);
+      if (typeof winnerCount !== 'number' || !Number.isSafeInteger(winnerCount) || winnerCount < 1 ||
+          !canonicalTime(transitionAt)) throw new Error('Invalid bingo declaration confirmation');
+      return readSnapshot(() => {
+        const id = readActiveEventId(db);
+        const event = id === null ? null : readEvent(db);
+        if (id === null || event === null || id !== baseline.eventId) return { state: 'stale' as const };
+        const audit = replayAudit(db, id);
+        const sameCalls = event.calledNumbers.length === baseline.calledNumbers.length &&
+          baseline.calledNumbers.every((n, i) => event.calledNumbers[i] === n);
+        if (audit.length === baseline.auditSequence + 1) {
+          const entry = audit[baseline.auditSequence];
+          const award = readBingoAward(db, id, audit);
+          const line = readLineAwardRecord(db, id, audit);
+          if (award === null || line === null || !sameCalls || entry.kind !== 'declare_bingo_directly' ||
+              entry.transitionAt !== transitionAt || event.phase !== 'bingo_declared' ||
+              event.lastTransitionAt !== transitionAt ||
+              audit[baseline.auditSequence - 1]?.transitionAt !== baseline.lastTransitionAt) return { state: 'stale' as const };
+          // The stored award is frozen: compare it with the arithmetic of the EXPECTED prize and count, never with the
+          // editable current prize. The line it followed must be the expected, fully delivered one.
+          let expectedAward: LineAward;
+          try {
+            expectedAward = createBingoAward({ winnerCount, prizeEuros: baseline.bingoPrize.amount, lot: baseline.bingoPrize.lot });
+          } catch { return { state: 'stale' as const }; }
+          const a = award.award;
+          const lotMatches = a.lotResolution === expectedAward.lotResolution ||
+            (expectedAward.lotResolution === 'pending' && a.lotResolution === 'resolved');
+          if (a.winnerCount !== winnerCount || a.totalCents !== expectedAward.totalCents ||
+              a.shareCents !== expectedAward.shareCents || a.remainderCents !== expectedAward.remainderCents ||
+              a.lot !== expectedAward.lot || !lotMatches ||
+              line.auditSequence !== baseline.line.auditSequence || line.stored.presentation.id !== baseline.line.presentationId ||
+              line.stored.award.lotResolution !== baseline.line.lotResolution ||
+              !isLineDeliveryResolved(line.stored.award, { status: line.stored.presentation.status })) {
+            return { state: 'stale' as const };
+          }
+          return { state: 'declared' as const, award };
+        }
+        if (audit.length === baseline.auditSequence && event.phase === 'line_declared') {
+          // Untouched: the complete eligible baseline (prize, line identity and resolution included) must still match.
+          let current: BingoDeclarationBaseline;
+          try { current = readBingoDeclarationBaseline(db); }
+          catch (error) {
+            if ((error as { code?: unknown }).code === 'bingo_not_eligible') return { state: 'stale' as const };
+            throw error;
+          }
+          return sameBingoBaseline(baseline, current) ? { state: 'unchanged' as const } : { state: 'stale' as const };
+        }
+        return { state: 'stale' as const };
+      });
+    },
     loadLegacyLineCheck(): LegacyLineCheck { return readSnapshot(() => readLegacyLineCheck(db)); },
     // Cancels a legacy line check through the existing reject_line_claim transition, never an award. The exact
     // event, phase head and audit length are revalidated under the writer lock; a stale identity or a head not
