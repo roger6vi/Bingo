@@ -1317,13 +1317,21 @@ export function createEventStore(path: string) {
         if (id === null || event === null || id !== identity.eventId) return 'stale';
         const audit = replayAudit(db, id);
         const row = audit[identity.auditSequence];
+        // Same snapshot: award validation throws on corrupt rows; neither outcome may coexist with any award.
+        const noAward = () => {
+          if (readLineAward(db, id, audit) !== null) throw new Error('Invalid stored line award: unexpected award');
+        };
         if (audit.length === identity.auditSequence + 1 && audit[identity.auditSequence - 1].transitionAt ===
               identity.lastTransitionAt && row.kind === 'reject_line_claim' &&
             row.transitionAt === transitionAt && event.phase === 'drawing' && event.lastTransitionAt === transitionAt) {
+          noAward();
           return 'recovered';
         }
         if (audit.length === identity.auditSequence && event.phase === 'checking_line' &&
-            event.lastTransitionAt === identity.lastTransitionAt) return 'unchanged';
+            event.lastTransitionAt === identity.lastTransitionAt) {
+          noAward();
+          return 'unchanged';
+        }
         return 'stale';
       });
     },
