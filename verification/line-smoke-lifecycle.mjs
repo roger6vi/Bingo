@@ -159,8 +159,9 @@ export async function launchVerified({ electron, executablePath, project, fixtur
   if (state.seeding) throw new Error('fixture is seeding: refusing to launch');
   const expectedApp = project.packaged ? project.packaged.appPath : project.root;
   if (project.packaged && path.basename(expectedApp) !== 'app.asar') throw new Error(`packaged appPath ${expectedApp} is not an app.asar`);
+  state.bootstrap = null; // a new launch revokes any earlier proof until its runtime identity is verified
   state.pending++;
-  const launching = Promise.resolve(electron.launch({ executablePath, args: launchArgs(project, fixture), timeout }))
+  const launching = Promise.resolve().then(() => electron.launch({ executablePath, args: launchArgs(project, fixture), timeout }))
     .then((app) => { state.apps.add(app); return app; });
   state.launches.add(launching.catch(() => {}));
   let app;
