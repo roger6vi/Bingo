@@ -20,6 +20,9 @@ contextBridge.exposeInMainWorld('desktop', Object.freeze({
   cancelLineSetup: (sessionId: string, eventId: string) => ipcRenderer.invoke('line:cancel', sessionId, eventId),
   confirmLine: (sessionId: string, eventId: string, winnerCount: number) =>
     ipcRenderer.invoke('line:confirm', sessionId, eventId, winnerCount),
+  readLegacyLineCheck: () => ipcRenderer.invoke('line:legacy-check:read'),
+  cancelLegacyLineCheck: (eventId: string, auditSequence: number, lastTransitionAt: string) =>
+    ipcRenderer.invoke('line:legacy-check:cancel', eventId, auditSequence, lastTransitionAt),
   readLineLot: () => ipcRenderer.invoke('line:lot:read'),
   drawLineLot: (expected: { eventId: string; auditSequence: number; presentationId: string }) =>
     ipcRenderer.invoke('line:lot:draw', expected),
