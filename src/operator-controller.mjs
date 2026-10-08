@@ -351,7 +351,7 @@ export function createLineController(api, view, { committed = () => {} } = {}) {
     legacyCheck = null;
     if (result?.ok === false && result.code === 'not_available') { legacyUncertain = false; return; }
     legacyUncertain = true;
-    error = result === null ? legacyConnectionError : result.ok === false ? refusalOr(result, legacyInvalidUpdate) : legacyInvalidUpdate;
+    error = result === null ? legacyConnectionError : result?.ok === false ? refusalOr(result, legacyInvalidUpdate) : legacyInvalidUpdate;
   }
   const legacyDue = () => legacyRead === 'unread' && legacyEvent !== null && legacyEvent === context && mode === 'idle' &&
     refreshState === 'none' && !legacyRecovered && !legacyUncertain && !disposed;
