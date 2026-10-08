@@ -11,6 +11,7 @@ import './components/bingo-draw-controls.mjs';
 import './components/bingo-dialog.mjs';
 import './components/bingo-event-list.mjs';
 import './components/bingo-tongo-control.mjs';
+import './components/bingo-line-lot.mjs';
 import { BingoButton } from './components/bingo-button.mjs';
 import { BingoTextField } from './components/bingo-text-field.mjs';
 import { BingoDateField } from './components/bingo-date-field.mjs';
@@ -24,6 +25,7 @@ import { applyTheme, createThemeController, DEFAULT_THEME, revealAfter } from '.
 import { operatorMessage, lineAwardSummary, linePrizeSummary, LINE_REFRESH_FAILED_ES, PHASE_LABELS_ES, THEME_NAMES_ES } from './operator-copy.mjs';
 import { bindSettings } from './settings-ui.mjs';
 import { bindCueControls } from './cue-ui.mjs';
+import { createLineLotController } from './line-lot-controller.mjs';
 import { createTongoController, tongoPlayable } from './tongo.mjs';
 import { validPrizes } from './prize-format.mjs';
 
@@ -107,6 +109,7 @@ let activating = false;
 let drawLocks = { manualDisabled: true, digitalDisabled: true, reloadDisabled: false, pending: false };
 let themePending = true;
 let eventsPending = false;
+let eventsStale = false;
 let eventListRef = null;
 // While Tongo is requested or playing, every other live action waits; it is offered only during play.
 let tongoBusy = false;
@@ -138,6 +141,30 @@ function lineClaimDisabled() {
 }
 const tongoControl = required('tongo-control', HTMLElement);
 const tongoError = required('tongo-error', HTMLElement);
+const lotPanel = required('line-lot', HTMLElement);
+// The lot controller only talks to the preload API. The panel is shown for a valid tied declaration of the active event.
+const lotController = createLineLotController(desktop, { render: (state) => { lotPanel.state = { ...state, message: operatorMessage(state.message) }; } });
+const lotAward = () => {
+  const award = lineState.mode === 'declared' && !lineMismatch() ? lineState.award : null;
+  return award && activeEventId !== null && award.eventId === activeEventId && award.award?.lotResolution !== 'not_required' ? award : null;
+};
+// A lot draw needs what ordinary drawing needs: a completed, refreshed celebration and a current accepted event.
+const lotBusy = () => selecting || activating || tongoBusy || eventsPending || eventsStale || lineState.pending || drawingBlocked()
+  || !gameState?.snapshot || gameState.stale || gameState.pending || Boolean(gameState.error);
+let lotKey = null;
+let lotContext = null;
+// Reads happen only when the declaration or its completion changes; the context itself never reads.
+function syncLot() {
+  const award = lotAward();
+  const key = award && `${award.eventId}|${award.presentation?.id}|${award.presentation?.status === 'completed'}`;
+  if (key !== lotKey) { lotController.setContext(null); lotContext = null; }
+  const next = award && JSON.stringify({ eventId: award.eventId, busy: lotBusy() });
+  if (next !== lotContext) { lotContext = next; lotController.setContext(award && { eventId: award.eventId, busy: lotBusy() }); }
+  if (key !== lotKey) { lotKey = key; if (key) void lotController.start(); }
+  lotPanel.hidden = award === null;
+  // The panel's own display rule would otherwise override the hidden attribute.
+  lotPanel.style.display = award === null ? 'none' : '';
+}
 function applyLocks() {
   // An open or in-flight first-line setup blocks the same writes main refuses.
   const lineLocked = lineBlocked();
@@ -158,6 +185,7 @@ function applyLocks() {
   // Main refuses a create during a setup; reload stays available as the recovery path.
   if (createSubmitRef !== null) createSubmitRef.disabled = eventsPending || lineLocked;
   paintLineActions();
+  syncLot();
 }
 
 openPublic.addEventListener('click', () => window.desktop.openPublic());
@@ -177,7 +205,7 @@ controls.addEventListener('mode-change', () => { board.readonly = controls.mode 
 const controller = createOperatorController(desktop, {
   bind: ({ manual, digital, reload: reloadEvent }) => {
     // Reload only reads; after a failed post-celebration refresh it is also the explicit recovery.
-    const reload = () => { reloadEvent(); void rereadLine(); line.retryRefresh(); };
+    const reload = () => { reloadEvent(); void rereadLine(); line.retryRefresh(); void lotController.resync(); };
     // The board only requests a call; it shows the number called once the acknowledged snapshot arrives.
     board.addEventListener('number-select', (event) => {
       if (selecting || activating || tongoBusy || drawingBlocked() || controls.mode === 'digital') return;
@@ -288,7 +316,9 @@ const presentationClick = (status, run) => () => {
 };
 lineRetry.addEventListener('click', presentationClick('failed', (id) => line.retry(id)));
 lineRepeat.addEventListener('click', presentationClick('interrupted', (id) => line.repeat(id)));
-window.addEventListener('pagehide', () => line.dispose());
+lotPanel.addEventListener('line-lot-draw', () => { if (!lotPanel.hidden) void lotController.draw(); });
+lotPanel.addEventListener('line-lot-resync', () => { if (!lotPanel.hidden) void lotController.resync(); });
+window.addEventListener('pagehide', () => { line.dispose(); lotController.dispose(); });
 claimLine.addEventListener('click', () => { if (!claimLine.disabled) void line.open(); });
 lineDialog.addEventListener('dismiss', () => { lineDialogShown = false; void line.cancel(); });
 lineDialog.addEventListener('confirm', () => { lineDialogShown = false; void line.confirm(lineWinners.value); });
@@ -358,6 +388,7 @@ const events = createEventsController(desktop, {
     eventList.loaded = loaded;
     selecting = pending === 'select';
     eventsPending = pending !== null;
+    eventsStale = stale;
     applyLocks();
     reloadEvents.disabled = pending !== null;
     if (!stale) {
@@ -396,7 +427,7 @@ eventList.addEventListener('event-select', async (event) => {
     applyLocks();
   }
 });
-reloadEvents.addEventListener('click', () => { void events.start(); void loadPrizes(); void rereadLine(); line.retryRefresh(); });
+reloadEvents.addEventListener('click', () => { void events.start(); void loadPrizes(); void rereadLine(); line.retryRefresh(); void lotController.resync(); });
 createForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   if (lineBlocked()) return;
