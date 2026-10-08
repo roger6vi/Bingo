@@ -64,6 +64,11 @@ export const MESSAGES_ES = Object.freeze({
   'Enter a whole number of winners, 1 or more.': 'Escribe un número entero de ganadores, 1 o más.',
   'Could not confirm the line celebration. Check the line and try again.':
     'No se pudo confirmar el estado de la celebración de la línea. Pulsa «Comprobar línea» para leerlo; no se repite sola.',
+  // Line lot controller (src/line-lot-controller.mjs)
+  'Lot unavailable.': 'El lote no está disponible ahora. Pulsa «Releer estado» para intentarlo de nuevo.',
+  'Lot state needs a fresh read.': 'El estado del lote no es fiable. Pulsa «Releer estado» para leerlo de nuevo.',
+  'Draw result uncertain; read the lot to continue.':
+    'No se pudo confirmar el resultado del sorteo del lote. Pulsa «Releer estado» para leerlo; no se repite solo.',
   // Renderer controllers
   'Could not connect to the event. Reload and try again.': 'No se pudo conectar con el evento. Recarga e inténtalo de nuevo.',
   'Invalid event update. Reload and try again.': 'Actualización del evento no válida. Recarga e inténtalo de nuevo.',

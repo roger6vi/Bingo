@@ -143,7 +143,7 @@ const tongoControl = required('tongo-control', HTMLElement);
 const tongoError = required('tongo-error', HTMLElement);
 const lotPanel = required('line-lot', HTMLElement);
 // The lot controller only talks to the preload API. The panel is shown for a valid tied declaration of the active event.
-const lotController = createLineLotController(desktop, { render: (state) => { lotPanel.state = state; } });
+const lotController = createLineLotController(desktop, { render: (state) => { lotPanel.state = { ...state, message: operatorMessage(state.message) }; } });
 const lotAward = () => {
   const award = lineState.mode === 'declared' && !lineMismatch() ? lineState.award : null;
   return award && activeEventId !== null && award.eventId === activeEventId && award.award?.lotResolution !== 'not_required' ? award : null;
