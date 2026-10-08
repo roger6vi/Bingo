@@ -202,6 +202,17 @@ export function createPublicEventDelivery(
     publishPrizes(): void {
       if (current !== null) sendPrizes(current);
     },
+    // Static only: resends the strict award for the one authorized event after its lot result was verified. It
+    // sends nothing when the window, event, or strict fact does not line up, so a stale page is never cleared, and
+    // it never touches presentation channels, receipt bindings, or history.
+    refreshLineAward(eventId: string): boolean {
+      const target = current;
+      if (target === null || committedLineAward === undefined) return false;
+      const award = loadLineAward();
+      if (award === null || award.eventId !== eventId) return false;
+      send(target, award, PUBLIC_LINE_AWARD_CHANNEL);
+      return current === target;
+    },
     // Transient and never resent on attach, so a reloaded or reopened window cannot replay it.
     // Reports whether the current window accepted it.
     publishPresentation(presentation: TongoPresentation | LinePresentationSignal): boolean {

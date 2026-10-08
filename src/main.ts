@@ -99,7 +99,8 @@ if (!app.requestSingleInstanceLock()) {
     repeat: presentation.repeat, busy: presentation.busy, tongoPlaying: tongo.playing });
   // The manual lot draw plus its one-shot public handoff; any operator document or active-event change voids a pending one.
   const lotPresentation = registerLineLotPresentation(ipcMain, store, { authorize: operatorOnly, busy: presentation.busy,
-    tongoPlaying: tongo.playing, publish: (signal) => publicDelivery.publishLineLot(signal, publicUrl) });
+    tongoPlaying: tongo.playing, publish: (signal) => publicDelivery.publishLineLot(signal, publicUrl),
+    refresh: (lot) => { publicDelivery.refreshLineAward(lot.eventId); } });
   operator.webContents.on('did-start-navigation', (details) => {
     if (details.isMainFrame && !details.isSameDocument) lotPresentation.invalidate();
   });

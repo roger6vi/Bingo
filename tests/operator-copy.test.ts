@@ -32,6 +32,21 @@ test('operatorMessage translates known messages, keeps Spanish, and never shows 
   assert.equal(operatorMessage(undefined), null);
 });
 
+test('line lot controller messages are translated without mutating the controller state', () => {
+  const expected = {
+    'Lot unavailable.': 'El lote no está disponible ahora. Pulsa «Releer estado» para intentarlo de nuevo.',
+    'Lot state needs a fresh read.': 'El estado del lote no es fiable. Pulsa «Releer estado» para leerlo de nuevo.',
+    'Draw result uncertain; read the lot to continue.':
+      'No se pudo confirmar el resultado del sorteo del lote. Pulsa «Releer estado» para leerlo; no se repite solo.',
+  };
+  for (const [english, spanish] of Object.entries(expected)) assert.equal(operatorMessage(english), spanish);
+  const state = Object.freeze({ status: 'error', message: 'Lot unavailable.' });
+  const view = { ...state, message: operatorMessage(state.message) };
+  assert.equal(state.message, 'Lot unavailable.');
+  assert.notEqual(view.message, state.message);
+  assert.equal(operatorMessage('Lot exploded: ENOENT /db'), UNKNOWN_ERROR_ES);
+});
+
 test('phase and theme names cover every phase and registered theme', () => {
   assert.deepEqual(Object.keys(PHASE_LABELS_ES),
     ['drawing', 'checking_line', 'line_declared', 'checking_bingo', 'bingo_declared', 'finished']);
