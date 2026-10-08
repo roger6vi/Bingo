@@ -96,6 +96,8 @@ export function createOperatorController(api, view) {
 const lineConnectionError = 'Could not connect to the first-line setup. Check the state and try again.';
 const lineInvalidUpdate = 'Invalid first-line update. Check the state and try again.';
 const presentationUnknown = 'Could not confirm the line celebration. Check the line and try again.';
+const legacyConnectionError = 'Could not connect to the line check. Read it again before trying.';
+const legacyInvalidUpdate = 'Invalid line check update. Read it again before trying.';
 const invalidCount = 'Enter a whole number of winners, 1 or more.';
 const LINE_SIGNAL_MS = 4000;
 
@@ -128,6 +130,11 @@ const validAwardParts = (award) => {
 // A missing presentation is the legacy shape (shown, never actionable); a present one must be fully valid.
 const validLineAward = (value) => value !== null && typeof value === 'object' && typeof value.eventId === 'string' &&
   validAwardParts(value.award) && (value.presentation === undefined || validPresentation(value.presentation));
+
+// The exact identity main reports for a legacy checking_line; the cancellation sends it back unchanged.
+const validLegacyCheck = (value, eventId) => value !== null && typeof value === 'object' && !Array.isArray(value) &&
+  Object.keys(value).length === 4 && value.eventId === eventId && value.phase === 'checking_line' &&
+  typeof value.lastTransitionAt === 'string' && value.lastTransitionAt !== '' && safeCount(value.auditSequence, 1);
 
 // Only a positive safe integer typed in full digits is a winner count.
 function parseCount(text) {
@@ -164,11 +171,24 @@ export function createLineController(api, view, { committed = () => {} } = {}) {
   let generation = 0;
   let action = null;
   let disposed = false;
+  // Legacy checking_line recovery. `legacyEvent` is the page's known, fresh checking_line event; the check, the
+  // uncertainty and the recovered mark all belong to it and are dropped whenever it changes.
+  let legacyEvent = null;
+  let legacyCheck = null;
+  let legacyUncertain = false;
+  let legacyRecovered = false;
+  let legacyRead = 'unread';
+  let legacyEpoch = 0;
   const retired = new Set();
 
   const mismatch = () => award !== null && context !== null && award.eventId !== context;
+  // A held check exists only beside an idle line state; a setup or award always wins over it.
+  const legacyStatus = () => {
+    if (legacyEvent === null || mode !== 'idle') return 'none';
+    return legacyUncertain ? 'uncertain' : legacyRecovered ? 'recovered' : legacyCheck !== null ? 'available' : 'none';
+  };
   const drawBlocked = () => {
-    if (mode === 'idle') return false;
+    if (mode === 'idle') return legacyStatus() !== 'none' || refreshState !== 'none';
     if (mode !== 'declared' || mismatch()) return true;
     return award.presentation?.status !== 'completed' || refreshState !== 'none';
   };
@@ -179,6 +199,7 @@ export function createLineController(api, view, { committed = () => {} } = {}) {
   function render() {
     view.render({ mode, pending, error, countError, dialogOpen, refresh: refreshState,
       drawBlocked: drawBlocked(), liveBlocked: liveBlocked(),
+      legacy: { status: legacyStatus(), check: legacyStatus() === 'available' ? { ...legacyCheck } : null },
       session: session === null ? null : structuredClone(session), award: award === null ? null : structuredClone(award) });
   }
 
@@ -205,7 +226,7 @@ export function createLineController(api, view, { committed = () => {} } = {}) {
     error = null;
     render();
     inFlight = (async () => {
-      try { await work(); } finally {
+      try { await work(); await legacyIfNeeded(); } finally {
         pending = false;
         render();
         flushRefresh();
@@ -220,7 +241,8 @@ export function createLineController(api, view, { committed = () => {} } = {}) {
     try { result = await operation(); } catch { result = null; }
     return asked === generation ? result : STALE;
   };
-  const refusal = (result) => (result?.ok === false && typeof result.message === 'string' ? result.message : lineInvalidUpdate);
+  const refusalOr = (result, fallback) => (result?.ok === false && typeof result.message === 'string' ? result.message : fallback);
+  const refusal = (result) => refusalOr(result, lineInvalidUpdate);
 
   // Fails closed: nothing held about the award can unlock drawing until an explicit read.
   function uncertain(message) {
@@ -310,7 +332,63 @@ export function createLineController(api, view, { committed = () => {} } = {}) {
     return uncertain(refusal(result));
   }
 
-  const start = () => guarded(() => readState(false, false));
+  // The dedicated read of a legacy check. It never overrides a held setup or award, is never retried by itself,
+  // and an answer that predates a change of event, phase or line state is dropped.
+  async function readLegacy() {
+    const epoch = legacyEpoch;
+    const eventId = legacyEvent;
+    legacyRead = 'done';
+    const result = await ask(() => api.readLegacyLineCheck());
+    if (result === STALE || epoch !== legacyEpoch) return;
+    if (mode !== 'idle' || eventId !== context) { legacyRead = 'unread'; return; }
+    legacyRecovered = false;
+    if (result?.ok === true && result.state === 'legacy_check' && validLegacyCheck(result.check, eventId)) {
+      legacyCheck = { ...result.check };
+      legacyUncertain = false;
+      error = null;
+      return;
+    }
+    legacyCheck = null;
+    if (result?.ok === false && result.code === 'not_available') { legacyUncertain = false; return; }
+    legacyUncertain = true;
+    error = result === null ? legacyConnectionError : result.ok === false ? refusalOr(result, legacyInvalidUpdate) : legacyInvalidUpdate;
+  }
+  const legacyDue = () => legacyRead === 'unread' && legacyEvent !== null && legacyEvent === context && mode === 'idle' &&
+    refreshState === 'none' && !legacyRecovered && !legacyUncertain && !disposed;
+  const legacyIfNeeded = () => (legacyDue() ? readLegacy() : undefined);
+
+  const start = () => guarded(async () => {
+    await readState(false, false);
+    legacyRead = 'unread';
+  });
+
+  // Explicit recovery of an uncertain check: one authoritative read, never a write.
+  const checkLegacy = () => guarded(async () => {
+    if (legacyEvent === null || legacyEvent !== context || mode !== 'idle' || refreshState !== 'none') return;
+    legacyUncertain = false;
+    await readLegacy();
+  });
+
+  // The operator-confirmed cancellation. The identity is revalidated here, sent once, and consumed whatever the answer;
+  // only a read can establish a new one. A recovered acknowledgement refreshes the event; nothing is awarded or shown.
+  const cancelLegacy = () => guarded(async () => {
+    if (legacyStatus() !== 'available' || legacyEvent !== context || legacyCheck.eventId !== context || refreshState !== 'none' || disposed) return;
+    const { eventId, auditSequence, lastTransitionAt } = legacyCheck;
+    const epoch = legacyEpoch;
+    const result = await ask(() => api.cancelLegacyLineCheck(eventId, auditSequence, lastTransitionAt));
+    // A same-event phase change resets the legacy context without a new generation: that reply is not for this context.
+    if (result === STALE || epoch !== legacyEpoch) return;
+    legacyCheck = null;
+    if (result?.ok === true && result.state === 'recovered') {
+      legacyUncertain = false;
+      legacyRecovered = true;
+      refreshState = 'pending';
+      needRefresh = true;
+      return;
+    }
+    legacyUncertain = true;
+    error = result === null ? legacyConnectionError : result?.ok === false ? refusalOr(result, legacyInvalidUpdate) : legacyInvalidUpdate;
+  });
 
   const open = () => guarded(async () => {
     if (mode === 'setup') { countError = null; dialogOpen = true; return undefined; }
@@ -394,7 +472,29 @@ export function createLineController(api, view, { committed = () => {} } = {}) {
   // The page's active event. Leaving an event drops everything held and invalidates answers still in flight.
   // Until an event has ever been named, the context only fills in: a read begun before it is still the initial one.
   // Every later change, including one through a null context, invalidates what was asked under the previous context.
-  function setEvent(id) {
+  function setEvent(id, phase = null) {
+    switchEvent(id);
+    syncLegacy(id !== null && phase === 'checking_line' ? id : null);
+  }
+
+  // The legacy context is the exact event the page knows, fresh, to be in checking_line. Any change drops what was held.
+  function syncLegacy(eventId) {
+    if (eventId === legacyEvent) return;
+    resetLegacy();
+    legacyEvent = eventId;
+    render();
+    if (eventId !== null && !pending) void guarded(() => undefined);
+  }
+  function resetLegacy() {
+    legacyEpoch += 1;
+    legacyEvent = null;
+    legacyCheck = null;
+    legacyUncertain = false;
+    legacyRecovered = false;
+    legacyRead = 'unread';
+  }
+
+  function switchEvent(id) {
     if (contextSet && id === context) return;
     const initial = !named;
     contextSet = true;
@@ -408,6 +508,7 @@ export function createLineController(api, view, { committed = () => {} } = {}) {
       return;
     }
     generation += 1;
+    resetLegacy();
     mode = 'unknown';
     session = null;
     award = null;
@@ -439,6 +540,6 @@ export function createLineController(api, view, { committed = () => {} } = {}) {
   }
 
   render();
-  return { start, open, cancel, confirm, setEvent, retryRefresh, dispose,
+  return { start, open, cancel, confirm, setEvent, retryRefresh, dispose, checkLegacy, cancelLegacy,
     retry: (id) => present('retry', id), repeat: (id) => present('repeat', id) };
 }

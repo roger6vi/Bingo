@@ -80,3 +80,31 @@ test('the controller messages for a lost celebration action are translated', () 
   assert.ok(source('src/operator-controller.mjs').includes(message));
   assert.match(operatorMessage(message), /Comprobar línea/);
 });
+
+import * as copy from '../src/operator-copy.mjs';
+
+test('legacy line check recovery messages from main and the controller are translated to Spanish', () => {
+  const english = ['There is no line check to cancel.', 'Could not read the line check. Try again or review the event storage.',
+    'Could not cancel the line check. Try again.', 'Could not confirm the line check state. Read it again before trying.',
+    'A first-line setup is already open. Close it first.', 'Could not connect to the line check. Read it again before trying.',
+    'Invalid line check update. Read it again before trying.'];
+  for (const text of english) {
+    assert.notEqual(operatorMessage(text), UNKNOWN_ERROR_ES, text);
+    assert.notEqual(operatorMessage(text), text);
+    assert.match(operatorMessage(text) as string, /[áéíóúñ¿«]|línea|comprobación/, text);
+  }
+  assert.match(operatorMessage('Could not confirm the line check state. Read it again before trying.') as string, /Releer comprobación de línea/);
+});
+
+test('legacy recovery copy names the action, keeps numbers and prizes, and never claims a line was declared', () => {
+  const text = (copy as unknown as { LEGACY_CHECK_ES?: Record<string, string> }).LEGACY_CHECK_ES;
+  assert.ok(text, 'LEGACY_CHECK_ES is exported');
+  assert.equal(text.action, 'Cancelar comprobación de línea');
+  assert.equal(text.reread, 'Releer comprobación de línea');
+  assert.equal(text.back, 'Volver');
+  assert.equal(text.confirm, 'Volver a cantar números');
+  assert.match(text.dialog, /números cantados/);
+  assert.match(text.dialog, /premios/);
+  assert.doesNotMatch(Object.values(text).join(' '), /línea declarada|Línea declarada|ganador/);
+  for (const key of ['available', 'recovered', 'refreshFailed']) assert.ok(text[key], key);
+});
