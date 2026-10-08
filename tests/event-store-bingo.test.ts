@@ -4,9 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test, { after } from 'node:test';
-import { drawManual } from '../src/event-core.ts';
+import { drawDigital, drawManual } from '../src/event-core.ts';
 import { createEventStore, EVENT_SCHEMA_VERSION } from '../src/event-store.ts';
 import { participantColor } from '../src/line-lot-contract.ts';
+import { transitionPhase } from '../src/game-phase.ts';
 
 const directories: string[] = [];
 const stores: Array<{ close(): void }> = [];
@@ -31,7 +32,12 @@ function withDb<T>(path: string, action: (db: DatabaseSync) => T): T {
 }
 
 type Store = ReturnType<typeof createEventStore>;
-type Bingo = Store & { loadBingoAward(): any };
+// The bingo API under test is looked up dynamically so the first RED run reports behaviour, not a type error.
+type Bingo = Store & {
+  loadBingoDeclarationBaseline(): any;
+  declareBingoDirectly(expected: unknown, winnerCount: unknown, at: unknown): any;
+  loadBingoAward(): any;
+};
 const LINE_AT = '2025-01-01T00:00:01.000Z';
 const BINGO_AT = '2025-01-01T00:00:02.000Z';
 
@@ -153,3 +159,228 @@ test('read validation: corrupt or missing award/audit linkage fails closed on re
     SELECT event_id, 1, 1, 1000, 1000, 0, 'Jamón', 'not_required', 'x', 'pending' FROM line_awards`).run());
   assert.throws(() => createEventStore(path));
 });
+
+test('one winner commits phase, audit and award atomically from the persisted prize', () => {
+  const path = fixture();
+  const { store, event } = resolvedLine(path);
+  const baseline = store.loadBingoDeclarationBaseline();
+  assert.ok(Object.isFrozen(baseline) && Object.isFrozen(baseline.calledNumbers));
+  assert.deepEqual(baseline.calledNumbers, [7, 3]);
+  const award = store.declareBingoDirectly(baseline, 1, BINGO_AT);
+  assert.ok(Object.isFrozen(award) && Object.isFrozen(award.award) && Object.isFrozen(award.presentation));
+  assert.equal(award.eventId, event.id);
+  assert.deepEqual({ ...award.award }, { winnerCount: 1, totalCents: 1000, shareCents: 1000, remainderCents: 0,
+    lot: 'Jamón', lotResolution: 'not_required' });
+  assert.equal(award.presentation.status, 'pending');
+  assert.ok(award.presentation.id.length > 0);
+  assert.equal(JSON.stringify(Object.keys(award)), JSON.stringify(['eventId', 'award', 'presentation']));
+  assert.deepEqual(store.load(), { calledNumbers: [7, 3], phase: 'bingo_declared', lastTransitionAt: BINGO_AT });
+  assert.deepEqual(store.readAudit().at(-1), { sequence: 2, transitionAt: BINGO_AT, kind: 'declare_bingo_directly',
+    from_phase: 'line_declared', to_phase: 'bingo_declared' });
+  store.close();
+  const again = open(path);
+  assert.deepEqual(again.loadBingoAward(), award);
+  assert.notEqual(again.loadBingoAward(), again.loadBingoAward());
+  assert.equal(again.loadLineAward()?.presentation.status, 'completed');
+  assert.equal(bingoRow(path).length, 1);
+  assert.equal(Object.keys(bingoRow(path)[0]).some((k) => /claimant|name|winner_id/.test(k)), false);
+});
+
+test('three winners split cents deterministically and persist a pending indivisible lot', () => {
+  const { store } = resolvedLine(fixture());
+  const award = store.declareBingoDirectly(store.loadBingoDeclarationBaseline(), 3, BINGO_AT);
+  assert.deepEqual({ ...award.award }, { winnerCount: 3, totalCents: 1000, shareCents: 333, remainderCents: 1,
+    lot: 'Jamón', lotResolution: 'pending' });
+  assert.equal(award.presentation.status, 'pending');
+  assert.equal(store.loadBingoAward().award.lotResolution, 'pending');
+});
+
+test('a zero-history event with a valid resolved line may declare bingo', () => {
+  const { store } = resolvedLine(fixture(), { calls: [], lineWinners: 2, resolve: true });
+  const award = store.declareBingoDirectly(store.loadBingoDeclarationBaseline(), 1, BINGO_AT);
+  assert.equal(award.award.winnerCount, 1);
+  assert.deepEqual(store.load()?.calledNumbers, []);
+});
+
+test('missing, unresolved, tied-pending and legacy lines refuse and leave storage unchanged', () => {
+  const drawing = open(fixture());
+  drawing.create();
+  assert.throws(() => drawing.loadBingoDeclarationBaseline(), /not eligible/i);
+
+  const legacyPath = fixture();
+  const legacy = open(legacyPath);
+  legacy.create();
+  legacy.transitionPhase('begin_line_check', LINE_AT);
+  legacy.transitionPhase('declare_line', BINGO_AT);
+  assert.equal(legacy.load()?.phase, 'line_declared');
+  const legacyState = state(legacy);
+  assert.throws(() => legacy.loadBingoDeclarationBaseline(), /not eligible/i);
+  assert.equal(state(legacy), legacyState);
+
+  for (const over of [{ complete: false }, { lineWinners: 2 }]) {
+    const { store } = resolvedLine(fixture(), over);
+    const snapshot = state(store);
+    assert.throws(() => store.loadBingoDeclarationBaseline(), /not eligible/i);
+    assert.equal(state(store), snapshot);
+  }
+  // A forged baseline cannot bypass the gate.
+  const { store } = resolvedLine(fixture(), { lineWinners: 2 });
+  const good = resolvedLine(fixture()).store.loadBingoDeclarationBaseline();
+  assert.throws(() => store.declareBingoDirectly({ ...good }, 1, BINGO_AT));
+  assert.equal(store.loadBingoAward(), null);
+});
+
+test('stale event, prize, calls, phase/audit and line-resolution baselines refuse unchanged', () => {
+  const mutations: Array<[string, (store: Bingo, path: string) => void]> = [
+    ['calls', (store) => { store.update((c) => drawManual(c, 40)); }],
+    ['prizes', (store) => { store.updateEventPrizes(store.loadBingoDeclarationBaseline().eventId,
+      { line: { amount: 5, lot: 'Cesta' }, bingo: { amount: 11, lot: 'Jamón' } }); }],
+    ['phase and audit', (store) => { store.transitionPhase('begin_bingo_check', BINGO_AT); }],
+    ['line resolution', (_s, path) => withDb(path, (db) => db.exec("UPDATE line_awards SET presentation_id = 'other'"))],
+    ['event', (store) => { store.createEvent({ name: 'B', date: '2025-01-02', place: 'Y' });
+      store.selectEvent(store.listEvents().find((e) => !e.active)?.id); }],
+  ];
+  for (const [label, mutate] of mutations) {
+    const path = fixture();
+    const { store } = resolvedLine(path);
+    const baseline = store.loadBingoDeclarationBaseline();
+    mutate(store, path);
+    const snapshot = state(store);
+    assert.throws(() => store.declareBingoDirectly(baseline, 1, BINGO_AT), undefined, label);
+    assert.equal(state(store), snapshot, label);
+    assert.equal(bingoRow(path).length, 0, label);
+  }
+});
+
+test('invalid inputs and non-advancing timestamps refuse unchanged', () => {
+  const { store } = resolvedLine(fixture());
+  const baseline = store.loadBingoDeclarationBaseline();
+  const snapshot = state(store);
+  for (const count of [0, -1, 1.5, Number.NaN, '1', Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(() => store.declareBingoDirectly(baseline, count, BINGO_AT));
+  }
+  for (const at of [LINE_AT, '2024-01-01T00:00:00.000Z', 'nope', 3]) {
+    assert.throws(() => store.declareBingoDirectly(baseline, 1, at));
+  }
+  assert.throws(() => store.declareBingoDirectly({ ...baseline, extra: 1 }, 1, BINGO_AT));
+  assert.equal(state(store), snapshot);
+});
+
+test('phase, audit and award write failures each roll everything back', () => {
+  const failures: Array<[string, string]> = [
+    ['phase', "CREATE TRIGGER boom BEFORE UPDATE ON events WHEN NEW.phase = 'bingo_declared' BEGIN SELECT RAISE(ABORT, 'boom'); END"],
+    ['audit', "CREATE TRIGGER boom BEFORE INSERT ON phase_audit WHEN NEW.kind = 'declare_bingo_directly' BEGIN SELECT RAISE(ABORT, 'boom'); END"],
+    ['award', 'CREATE TRIGGER boom BEFORE INSERT ON bingo_awards BEGIN SELECT RAISE(ABORT, \'boom\'); END'],
+  ];
+  for (const [label, trigger] of failures) {
+    const path = fixture();
+    const { store } = resolvedLine(path);
+    const baseline = store.loadBingoDeclarationBaseline();
+    const snapshot = state(store);
+    withDb(path, (db) => db.exec(trigger));
+    assert.throws(() => store.declareBingoDirectly(baseline, 3, BINGO_AT), /boom/, label);
+    assert.equal(state(store), snapshot, label);
+    withDb(path, (db) => db.exec('DROP TRIGGER boom'));
+    assert.equal(store.declareBingoDirectly(baseline, 3, BINGO_AT).award.winnerCount, 3, label);
+  }
+});
+
+test('SQLite writer contention fails closed and a later attempt succeeds exactly once', () => {
+  const path = fixture();
+  const { store } = resolvedLine(path);
+  const baseline = store.loadBingoDeclarationBaseline();
+  const snapshot = state(store);
+  const other = new DatabaseSync(path);
+  try {
+    other.exec('BEGIN IMMEDIATE');
+    assert.throws(() => store.declareBingoDirectly(baseline, 1, BINGO_AT), /locked|busy/i);
+    other.exec('ROLLBACK');
+  } finally { other.close(); }
+  assert.equal(state(store), snapshot);
+  store.declareBingoDirectly(baseline, 1, BINGO_AT);
+  assert.equal(bingoRow(path).length, 1);
+});
+
+test('a duplicate declaration is refused and never adds a second audit row or award', () => {
+  const path = fixture();
+  const { store } = resolvedLine(path);
+  const baseline = store.loadBingoDeclarationBaseline();
+  const first = store.declareBingoDirectly(baseline, 3, BINGO_AT);
+  const snapshot = state(store);
+  assert.throws(() => store.declareBingoDirectly(baseline, 3, '2025-01-01T00:00:03.000Z'));
+  assert.throws(() => store.loadBingoDeclarationBaseline(), /not eligible/i);
+  assert.equal(state(store), snapshot);
+  assert.deepEqual(store.loadBingoAward(), first);
+  assert.equal(store.readAudit().filter((e) => e.kind === 'declare_bingo_directly').length, 1);
+});
+
+test('both draw modes are rejected authoritatively once bingo is declared, finished, and after restart', () => {
+  const path = fixture();
+  const { store } = resolvedLine(path);
+  store.declareBingoDirectly(store.loadBingoDeclarationBaseline(), 1, BINGO_AT);
+  const attempts = (s: Bingo) => {
+    const snapshot = state(s);
+    assert.throws(() => s.update((c) => drawManual(c, 50)), /not allowed/i);
+    assert.throws(() => s.update((c) => drawDigital(c, () => 0)), /not allowed/i);
+    // The store itself refuses, even for a transition that skips the domain draw rules.
+    assert.throws(() => s.update((c) => ({ calledNumbers: [...c.calledNumbers, 50] })), /after bingo/i);
+    assert.equal(state(s), snapshot);
+  };
+  attempts(store);
+  store.close();
+  const restarted = open(path);
+  attempts(restarted);
+  assert.equal(restarted.load()?.phase, 'bingo_declared'); // no automatic finish
+  restarted.transitionPhase('finish', '2025-01-01T00:00:05.000Z');
+  attempts(restarted);
+  assert.equal(restarted.load()?.phase, 'finished');
+});
+
+test('legacy bingo_declared events also reject both draw modes', () => {
+  const { store } = resolvedLine(fixture());
+  store.transitionPhase('begin_bingo_check', BINGO_AT);
+  store.transitionPhase('declare_bingo', '2025-01-01T00:00:03.000Z');
+  const snapshot = state(store);
+  assert.throws(() => store.update((c) => drawManual(c, 50)), /not allowed/i);
+  assert.throws(() => store.update((c) => drawDigital(c, () => 0)), /not allowed/i);
+  assert.throws(() => store.update((c) => ({ calledNumbers: [...c.calledNumbers, 50] })), /after bingo/i);
+  assert.equal(state(store), snapshot);
+});
+
+test('pure direct intent remains replayable while the generic store transition still rejects it', () => {
+  assert.equal(transitionPhase({ phase: 'line_declared' }, 'declare_bingo_directly').phase, 'bingo_declared');
+  const { store } = resolvedLine(fixture());
+  const snapshot = state(store);
+  assert.throws(() => store.transitionPhase('declare_bingo_directly', BINGO_AT), /atomic award path/);
+  assert.equal(state(store), snapshot);
+});
+
+test('COMMIT-time contention: a reader holding a shared lock fails the commit and rolls back everything', () => {
+  const path = fixture();
+  const { store } = resolvedLine(path);
+  const baseline = store.loadBingoDeclarationBaseline();
+  const before = state(store);
+  const reader = new DatabaseSync(path);
+  try {
+    reader.exec('BEGIN');
+    reader.prepare('SELECT count(*) FROM events').get(); // shared lock: the writer may stage rows but cannot COMMIT
+    assert.throws(() => store.declareBingoDirectly(baseline, 3, BINGO_AT), /locked|busy/i);
+    reader.exec('ROLLBACK');
+  } finally { reader.close(); }
+  assert.equal(state(store), before);
+  assert.equal(bingoRow(path).length, 0);
+  assert.equal(store.declareBingoDirectly(baseline, 3, BINGO_AT).award.winnerCount, 3);
+  assert.equal(bingoRow(path).length, 1);
+});
+
+// ---- the expected baseline is canonical identity: a prize lot is never silently trimmed ----
+for (const lot of [' Jamón ', 'Jamón ', ' Jamón']) {
+  const bad = (b: any) => ({ ...b, bingoPrize: { ...b.bingoPrize, lot } });
+  test(`declare: untrimmed expected prize lot ${JSON.stringify(lot)} is rejected before any write`, () => {
+    const { store } = resolvedLine(fixture());
+    const baseline = store.loadBingoDeclarationBaseline();
+    const before = state(store);
+    assert.throws(() => store.declareBingoDirectly(bad(baseline), 3, BINGO_AT), /Invalid bingo declaration baseline/);
+    assert.equal(state(store), before);
+  });
+}

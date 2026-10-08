@@ -856,6 +856,88 @@ function checkBingoAward(db: DatabaseSync, eventId: string, audit: PhaseAuditEnt
   }
 }
 
+export type BingoDeclarationBaseline = {
+  readonly eventId: string;
+  readonly calledNumbers: readonly number[];
+  readonly phase: 'line_declared';
+  readonly lastTransitionAt: string;
+  readonly auditSequence: number;
+  readonly bingoPrize: { readonly amount: number; readonly lot: string };
+  // Identity of the fully resolved line the Bingo may follow.
+  readonly line: { readonly auditSequence: number; readonly presentationId: string;
+    readonly lotResolution: 'not_required' | 'resolved' };
+};
+
+// Frozen authoritative core of a direct Bingo declaration, from one snapshot. Only a line_declared event whose
+// persisted line award is delivered (completed presentation, settled lot) and has no Bingo award qualifies. A legacy
+// line_declared without an award is never accepted.
+// Legitimate "not eligible" is typed so a reread can tell it from corrupt or unreadable storage, which stays untyped.
+function notEligibleBingo(reason: string): Error {
+  return Object.assign(new Error(`Bingo declaration not eligible: ${reason}`), { code: 'bingo_not_eligible' });
+}
+
+function readBingoDeclarationBaseline(db: DatabaseSync): BingoDeclarationBaseline {
+  const id = readActiveEventId(db);
+  const event = id === null ? null : readEvent(db);
+  if (id === null || event === null) throw notEligibleBingo('no current event');
+  const audit = replayAudit(db, id);
+  const line = readLineAwardRecord(db, id, audit);
+  if (event.phase !== 'line_declared' || event.lastTransitionAt === null || line === null ||
+      readBingoAward(db, id, audit) !== null || audit.some((entry) => entry.kind === 'declare_bingo_directly')) {
+    throw notEligibleBingo('needs a line declaration with a persisted award and no bingo');
+  }
+  if (!isLineDeliveryResolved(line.stored.award, { status: line.stored.presentation.status })) {
+    throw notEligibleBingo('line delivery must be completed and its lot settled');
+  }
+  const { bingo } = readPrizes(db, id);
+  return Object.freeze({
+    eventId: id, calledNumbers: Object.freeze([...event.calledNumbers]), phase: 'line_declared' as const,
+    lastTransitionAt: event.lastTransitionAt, auditSequence: audit.length,
+    bingoPrize: Object.freeze({ amount: bingo.amount, lot: bingo.lot }),
+    line: Object.freeze({ auditSequence: line.auditSequence, presentationId: line.stored.presentation.id,
+      lotResolution: line.stored.award.lotResolution as 'not_required' | 'resolved' }),
+  });
+}
+
+// Untrusted input: exact shape and types only, never coerced; the result is a private copy.
+function parseBingoBaseline(value: unknown): BingoDeclarationBaseline {
+  const invalid = () => new Error('Invalid bingo declaration baseline');
+  const plain = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+  const exact = (v: Record<string, unknown>, keys: string[]) =>
+    Object.keys(v).length === keys.length && keys.every((key) => Object.hasOwn(v, key));
+  if (!plain(value) || !exact(value, ['eventId', 'calledNumbers', 'phase', 'lastTransitionAt', 'auditSequence',
+    'bingoPrize', 'line'])) throw invalid();
+  const prize = value.bingoPrize;
+  const line = value.line;
+  if (typeof value.eventId !== 'string' || !Array.isArray(value.calledNumbers) || value.phase !== 'line_declared' ||
+      !canonicalTime(value.lastTransitionAt) || !Number.isSafeInteger(value.auditSequence) ||
+      (value.auditSequence as number) < 1 || !plain(prize) || !exact(prize, ['amount', 'lot']) ||
+      typeof prize.lot !== 'string' || prize.lot !== prize.lot.trim() || !validAmount(prize.amount) || !plain(line) ||
+      !exact(line, ['auditSequence', 'presentationId', 'lotResolution']) || !Number.isSafeInteger(line.auditSequence) ||
+      (line.auditSequence as number) < 1 || typeof line.presentationId !== 'string' ||
+      (line.lotResolution !== 'not_required' && line.lotResolution !== 'resolved')) throw invalid();
+  const called: number[] = [];
+  const seen = new Set<number>();
+  for (let index = 0; index < value.calledNumbers.length; index += 1) {
+    const ball: unknown = Object.hasOwn(value.calledNumbers, index) ? value.calledNumbers[index] : undefined;
+    if (typeof ball !== 'number' || !Number.isInteger(ball) || ball < 1 || ball > 90 || seen.has(ball)) throw invalid();
+    seen.add(ball);
+    called.push(ball);
+  }
+  return { eventId: value.eventId, calledNumbers: called, phase: 'line_declared', lastTransitionAt: value.lastTransitionAt,
+    auditSequence: value.auditSequence as number, bingoPrize: { amount: prize.amount, lot: prize.lot },
+    line: { auditSequence: line.auditSequence as number, presentationId: line.presentationId,
+      lotResolution: line.lotResolution } };
+}
+
+function sameBingoBaseline(a: BingoDeclarationBaseline, b: BingoDeclarationBaseline): boolean {
+  return a.eventId === b.eventId && a.phase === b.phase && a.lastTransitionAt === b.lastTransitionAt &&
+    a.auditSequence === b.auditSequence && a.bingoPrize.amount === b.bingoPrize.amount &&
+    a.bingoPrize.lot === b.bingoPrize.lot && a.line.auditSequence === b.line.auditSequence &&
+    a.line.presentationId === b.line.presentationId && a.line.lotResolution === b.line.lotResolution &&
+    a.calledNumbers.length === b.calledNumbers.length && b.calledNumbers.every((n, i) => a.calledNumbers[i] === n);
+}
+
 export type LineDeclarationBaseline = {
   readonly eventId: string;
   readonly calledNumbers: readonly number[];
@@ -1219,6 +1301,10 @@ export function createEventStore(path: string) {
         const id = readActiveEventId(db);
         const current = readEvent(db);
         if (current === null || id === null) throw new Error('Current event does not exist');
+        // Authoritative, independent of the caller's draw rules: no draw mode may change a declared Bingo's board.
+        if (current.phase === 'bingo_declared' || current.phase === 'finished') {
+          throw new Error('Draw not allowed after bingo is declared');
+        }
         const baseline = [...current.calledNumbers];
         const phase = current.phase;
         const lastTransitionAt = current.lastTransitionAt;
@@ -1400,6 +1486,45 @@ export function createEventStore(path: string) {
         if (id === null) return null;
         readEvent(db);
         return readBingoAward(db, id, replayAudit(db, id));
+      });
+    },
+    loadBingoDeclarationBaseline(): BingoDeclarationBaseline {
+      return readSnapshot(() => readBingoDeclarationBaseline(db));
+    },
+    // Declares the Bingo atomically: phase, direct audit row and the frozen award commit together or not at all.
+    // Everything frozen in the baseline is rechecked under the writer lock; a stale or repeated declaration is refused.
+    declareBingoDirectly(expected: unknown, winnerCount: unknown, transitionAt: unknown): StoredBingoAward {
+      const baseline = parseBingoBaseline(expected);
+      if (typeof winnerCount !== 'number' || !Number.isSafeInteger(winnerCount) || winnerCount < 1) {
+        throw new Error('Winner count must be a positive safe integer');
+      }
+      if (!canonicalTime(transitionAt)) throw new Error('Invalid phase transition timestamp');
+      return transaction(() => {
+        const current = readBingoDeclarationBaseline(db);
+        if (!sameBingoBaseline(baseline, current)) throw new Error('Stale bingo declaration baseline');
+        if (transitionAt <= current.lastTransitionAt) throw new Error('Invalid phase transition timestamp');
+        const award = createBingoAward({ winnerCount, prizeEuros: current.bingoPrize.amount, lot: current.bingoPrize.lot });
+        const sequence = current.auditSequence + 1;
+        const moved = db.prepare(`UPDATE events SET phase = 'bingo_declared', lastTransitionAt = ?
+          WHERE id = ? AND phase = 'line_declared' AND lastTransitionAt = ?`)
+          .run(transitionAt, current.eventId, current.lastTransitionAt);
+        if (moved.changes !== 1) throw new Error('Bingo declaration changed concurrently');
+        db.prepare(`INSERT INTO phase_audit (event_id, sequence, transitionAt, kind, from_phase, to_phase)
+          VALUES (?, ?, ?, 'declare_bingo_directly', 'line_declared', 'bingo_declared')`)
+          .run(current.eventId, sequence, transitionAt);
+        db.prepare(`INSERT INTO bingo_awards (event_id, audit_sequence, winner_count, total_cents, share_cents,
+          remainder_cents, lot, lot_resolution, presentation_id, presentation_status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`)
+          .run(current.eventId, sequence, award.winnerCount, award.totalCents, award.shareCents,
+            award.remainderCents, award.lot, award.lotResolution, randomUUID());
+        // Validate the committed state, including the new award, before COMMIT.
+        const event = readEvent(db);
+        const stored = readBingoAward(db, current.eventId, replayAudit(db, current.eventId));
+        if (stored === null || event?.phase !== 'bingo_declared' || event.lastTransitionAt !== transitionAt ||
+            JSON.stringify(stored.award) !== JSON.stringify(award) || stored.presentation.status !== 'pending') {
+          throw new Error('Invalid stored bingo award: mismatch after write');
+        }
+        return stored;
       });
     },
     loadLegacyLineCheck(): LegacyLineCheck { return readSnapshot(() => readLegacyLineCheck(db)); },
