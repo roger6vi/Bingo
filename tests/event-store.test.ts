@@ -1507,17 +1507,17 @@ function v6(path: string) {
 
 const lineAwards = (db: DatabaseSync) => db.prepare('SELECT count(*) AS count FROM line_awards').get()?.count;
 
-test('a fresh database is schema v8 with an empty line_awards table', (t) => {
+test('a fresh database is schema v9 with an empty line_awards table', (t) => {
   const path = fixture(t);
   createEventStore(path).close();
-  assert.equal(EVENT_SCHEMA_VERSION, 8);
+  assert.equal(EVENT_SCHEMA_VERSION, 9);
   withDb(path, (db) => {
-    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 8);
+    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 9);
     assert.equal(lineAwards(db), 0);
   });
 });
 
-test('v6 migrates through v7 to v8 once, keeping prizes, audit, history and the active drawing event; no awards appear', (t) => {
+test('v6 migrates through v7 and v8 to v9 once, keeping prizes, audit, history and the active drawing event; no awards appear', (t) => {
   const path = fixture(t);
   v6(path);
   let before: unknown;
@@ -1533,16 +1533,16 @@ test('v6 migrates through v7 to v8 once, keeping prizes, audit, history and the 
     assert.deepEqual(store.loadPrizes()?.prizes, prizes(150, 'Jamón', 20, ''));
   } finally { store.close(); }
   withDb(path, (db) => {
-    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 8);
+    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 9);
     assert.deepEqual([db.prepare('SELECT * FROM events').all(), db.prepare('SELECT * FROM event_prizes').all(),
       db.prepare('SELECT * FROM phase_audit').all(), db.prepare('SELECT * FROM active_event').all()], before);
     assert.equal(lineAwards(db), 0);
   });
   createEventStore(path).close();
-  withDb(path, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 8));
+  withDb(path, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 9));
 });
 
-test('every older schema reaches exactly the fresh v8 schema', (t) => {
+test('every older schema reaches exactly the fresh v9 schema', (t) => {
   const fresh = fixture(t);
   createEventStore(fresh).close();
   let expected: unknown;
@@ -1556,7 +1556,7 @@ test('every older schema reaches exactly the fresh v8 schema', (t) => {
     build(path);
     createEventStore(path).close();
     withDb(path, (db) => {
-      assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 8, name);
+      assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 9, name);
       assert.deepEqual(schemaOf(db), expected, name);
     });
   }
@@ -1575,7 +1575,7 @@ test('a failed v6 to v7 migration leaves the v6 database unchanged', (t) => {
   });
 });
 
-test('v8 rejects a missing or unconstrained line_awards table without writing', (t) => {
+test('v9 rejects a missing or unconstrained line_awards table without writing', (t) => {
   const directory = fs.realpathSync(join(fixture(t), '..'));
   for (const [name, sql] of [
     ['missing', null],
@@ -1588,7 +1588,7 @@ test('v8 rejects a missing or unconstrained line_awards table without writing', 
       if (sql !== null) db.exec(sql);
     });
     assert.throws(() => createEventStore(file), /invalid event schema: line_awards/i, name);
-    withDb(file, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 8));
+    withDb(file, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 9));
   }
 });
 
@@ -1619,6 +1619,10 @@ const V7_LINE_AWARDS = `CREATE TABLE line_awards (
       presentation_deadline > presentation_started_at END),
   FOREIGN KEY (event_id, audit_sequence) REFERENCES phase_audit(event_id, sequence)
 )`;
+const ORIGINAL_AWARD_COLUMNS = 'event_id, audit_sequence, winner_count, total_cents, share_cents, remainder_cents, lot, lot_resolution, presentation_id, presentation_status, presentation_started_at, presentation_deadline';
+const V8_LINE_AWARDS = V7_LINE_AWARDS.replace("'completed'))", "'completed', 'interrupted'))");
+const numberedResult = { lot_resolution: 'resolved', lot_result_origin: 'numbered_v1',
+  lot_participant_number: 1, lot_color_id: 'red' };
 const timedRun = { presentation_started_at: 1000, presentation_deadline: 5000 };
 const SHAPES: Record<string, Record<string, unknown>> = { pending: {}, failed: { presentation_status: 'failed' },
   started: { presentation_status: 'started', ...timedRun }, completed: { presentation_status: 'completed', ...timedRun },
@@ -1640,7 +1644,7 @@ function seedAwards(path: string, statuses: string[]) {
 function downgradeToV7(path: string, corrupt = '') {
   withDb(path, (db) => {
     db.exec('PRAGMA foreign_keys = OFF');
-    const rows = db.prepare('SELECT * FROM line_awards').all();
+    const rows = db.prepare(`SELECT ${ORIGINAL_AWARD_COLUMNS} FROM line_awards`).all();
     db.exec(`DROP TABLE line_awards; ${V7_LINE_AWARDS}`);
     for (const row of rows) {
       const names = Object.keys(row);
@@ -1651,13 +1655,175 @@ function downgradeToV7(path: string, corrupt = '') {
   });
 }
 
+// Frozen v8 rows are copied without current result columns or current provenance guards.
+function frozenV8(path: string, resolved = true) {
+  const { store } = seedAwards(path, ['pending', 'failed', 'started', 'completed', 'interrupted']);
+  store.close();
+  withDb(path, (db) => {
+    const rows = db.prepare(`SELECT ${ORIGINAL_AWARD_COLUMNS} FROM line_awards`).all();
+    db.exec(`DROP TABLE line_awards; ${V8_LINE_AWARDS}`);
+    for (const row of rows) {
+      const names = Object.keys(row);
+      db.prepare(`INSERT INTO line_awards (${names.join(', ')}) VALUES (${names.map((n) => `:${n}`).join(', ')})`)
+        .run({ ...row, lot: 'Jamón', lot_resolution: resolved ? 'resolved' : 'pending' } as never);
+    }
+    db.exec("UPDATE events SET history = '[7,42]'");
+    db.prepare('INSERT INTO event_prizes (event_id, lineAmount, lineLot, bingoAmount, bingoLot) VALUES (?, 10, ?, 20, ?)')
+      .run(rows[0].event_id as string, 'Jamón', 'Cesta');
+    db.exec('PRAGMA user_version = 8');
+  });
+}
+
+const resultRows = (db: DatabaseSync) => db.prepare(`SELECT lot_resolution, lot_result_origin,
+  lot_participant_number, lot_color_id FROM line_awards ORDER BY presentation_id`).all();
+
+test('LOT-02A frozen v8 resolved rows preserve all facts, remain readable and reopen idempotently', (t) => {
+  const path = fixture(t);
+  frozenV8(path);
+  const before = dump(path);
+  const oldSql = awardsSql(path);
+  assert.doesNotMatch(oldSql, /lot_result_origin/);
+  const fresh = fixture(t);
+  createEventStore(fresh).close();
+  let expected: unknown;
+  withDb(fresh, (db) => { expected = schemaOf(db); });
+  for (let open = 0; open < 2; open++) {
+    const store = createEventStore(path);
+    try {
+      assert.deepEqual(dump(path), before);
+      for (const event of store.listEvents()) {
+        store.selectEvent(event.id);
+        const award = store.loadLineAward();
+        assert.equal(award?.award.lotResolution, 'resolved');
+        assert.equal(award?.presentation.id, `p-${event.name.slice(1)}`);
+        assert.equal(award?.presentation.status, ['pending', 'failed', 'started', 'completed', 'interrupted'][Number(event.name.slice(1))]);
+      }
+    } finally { store.close(); }
+    // Restore the original pointer changed only by this test's explicit event selection.
+    withDb(path, (db) => {
+      const original = (before as Array<Array<Record<string, unknown>>>)[4][0];
+      db.prepare('UPDATE active_event SET event_id = ?').run(original.event_id as string);
+      assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 9);
+      assert.deepEqual(schemaOf(db), expected);
+      assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
+      for (const row of resultRows(db)) assert.deepEqual({ ...row }, { lot_resolution: 'resolved',
+        lot_result_origin: 'legacy_v8', lot_participant_number: null, lot_color_id: null });
+    });
+    assert.deepEqual(dump(path), before);
+  }
+  withDb(path, (db) => {
+    db.exec("UPDATE line_awards SET presentation_status = 'started', presentation_started_at = 2000, presentation_deadline = 6000 WHERE presentation_id = 'p-0'");
+    db.exec("UPDATE line_awards SET presentation_status = 'completed' WHERE presentation_id = 'p-0'");
+    for (const set of ["lot_result_origin = 'none', lot_resolution = 'pending'", "lot_result_origin = 'numbered_v1', lot_participant_number = 1, lot_color_id = 'red'",
+      'winner_count = 4, share_cents = 250, remainder_cents = 0', "lot = 'Otro'", 'audit_sequence = 2', "event_id = 'ghost'"]) {
+      assert.throws(() => db.exec(`UPDATE line_awards SET ${set} WHERE presentation_id = 'p-0'`), /legacy/i, set);
+    }
+    assert.throws(() => db.exec(`INSERT INTO line_awards SELECT * FROM line_awards WHERE presentation_id = 'p-0'`), /legacy/i);
+  });
+  const lifecycle = createEventStore(path);
+  try {
+    for (const [name, id, intent] of [['E1', 'p-1', 'retry'], ['E4', 'p-4', 'replay']] as const) {
+      lifecycle.selectEvent(lifecycle.listEvents().find((e) => e.name === name)!.id);
+      const pending = intent === 'retry' ? lifecycle.retryLinePresentation(id) : lifecycle.replayLinePresentation(id);
+      assert.notEqual(pending.presentation.id, id);
+      lifecycle.startLinePresentation(pending.presentation.id, 10000);
+      const completed = lifecycle.completeLinePresentation(pending.presentation.id, 14000);
+      assert.equal(completed.award.lotResolution, 'resolved');
+      assert.equal(completed.presentation.status, 'completed');
+    }
+  } finally { lifecycle.close(); }
+});
+
+test('LOT-02A v8 pending rows get no result; failed rebuild rolls back schema, version and rows', (t) => {
+  const pending = fixture(t);
+  frozenV8(pending, false);
+  createEventStore(pending).close();
+  withDb(pending, (db) => {
+    for (const row of resultRows(db)) assert.deepEqual({ ...row }, { lot_resolution: 'pending',
+      lot_result_origin: 'none', lot_participant_number: null, lot_color_id: null });
+  });
+  for (const corrupt of ['share_cents = 1', "event_id = 'ghost'"]) {
+    const path = fixture(t);
+    frozenV8(path);
+    withDb(path, (db) => db.exec(`PRAGMA ignore_check_constraints = ON; PRAGMA foreign_keys = OFF;
+      UPDATE line_awards SET ${corrupt} WHERE presentation_id = 'p-0'`));
+    const before = dump(path);
+    let schema: unknown;
+    withDb(path, (db) => { schema = schemaOf(db); });
+    assert.throws(() => createEventStore(path), /constraint|CHECK|FOREIGN/i);
+    withDb(path, (db) => {
+      assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 8);
+      assert.deepEqual(schemaOf(db), schema);
+    });
+    assert.deepEqual(dump(path), before);
+  }
+});
+
+test('LOT-02A fresh and migrated provenance reject NULL bypasses, forged legacy and wrong v1 mapping', (t) => {
+  for (const migrated of [false, true]) {
+    const path = fixture(t);
+    if (migrated) {
+      frozenV8(path, false);
+      createEventStore(path).close();
+      withDb(path, (db) => db.exec('DELETE FROM line_awards'));
+    }
+    const { store, event } = directEvent(path);
+    store.close();
+    const valid = { lot: 'Jamón', ...numberedResult, ...SHAPES.completed };
+    const invalid = [
+      { lot_result_origin: null }, { lot_result_origin: 'future' }, { lot_result_origin: 'legacy_v8' },
+      { lot_participant_number: null }, { lot_color_id: null }, { lot_color_id: 'blue' },
+      { lot_participant_number: 0 }, { lot_participant_number: 4 }, { lot_participant_number: 1.5 },
+      { lot_participant_number: Number.MAX_SAFE_INTEGER + 2 }, { lot_participant_number: 'one' },
+      { lot_color_id: 'future' }, { lot_result_origin: 'none' }, { lot: '' },
+      { lot_resolution: 'pending' }, { lot_resolution: 'not_required' },
+      { presentation_status: 'pending', presentation_started_at: null, presentation_deadline: null },
+      { ...SHAPES.failed, presentation_started_at: null, presentation_deadline: null },
+      SHAPES.started, SHAPES.interrupted,
+    ];
+    for (const change of invalid) assert.throws(() => insertAward(path, event.id, { ...valid, ...change }), /constraint|CHECK|legacy/i);
+    for (const resolution of ['pending', 'not_required']) {
+      for (const change of [{ lot_participant_number: 1 }, { lot_color_id: 'red' }, { ...numberedResult, lot_resolution: resolution }]) {
+        assert.throws(() => insertAward(path, event.id, { lot: resolution === 'pending' ? 'Jamón' : '',
+          lot_resolution: resolution, ...change }), /constraint|CHECK/i);
+      }
+    }
+    insertAward(path, event.id, { lot: 'Jamón', lot_resolution: 'pending' });
+    withDb(path, (db) => {
+      assert.throws(() => db.exec(`UPDATE line_awards SET lot_resolution = 'resolved', lot_result_origin = 'legacy_v8'
+        WHERE event_id = '${event.id}'`), /legacy/i);
+      db.prepare('DELETE FROM line_awards WHERE event_id = ?').run(event.id);
+    });
+    // Palette v1 is durable, including repeated colors and the full safe-integer boundary.
+    for (const [number, color] of [[1, 'red'], [2, 'blue'], [3, 'green'], [4, 'yellow'], [5, 'purple'],
+      [6, 'orange'], [7, 'red'], [Number.MAX_SAFE_INTEGER, 'red']] as const) {
+      insertAward(path, event.id, { ...valid, winner_count: Number.MAX_SAFE_INTEGER, share_cents: 0,
+        remainder_cents: 1000, lot_participant_number: number, lot_color_id: color });
+      withDb(path, (db) => {
+        assert.throws(() => db.prepare('UPDATE line_awards SET lot_color_id = ? WHERE event_id = ?')
+          .run(color === 'blue' ? 'red' : 'blue', event.id), /CHECK/i);
+      });
+      withDb(path, (db) => db.prepare('DELETE FROM line_awards WHERE event_id = ?').run(event.id));
+    }
+    for (const guard of ['line_awards_no_legacy_insert', 'line_awards_no_legacy_update']) {
+      let sql = '';
+      withDb(path, (db) => {
+        sql = db.prepare('SELECT sql FROM sqlite_schema WHERE name = ?').get(guard)?.sql as string;
+        db.exec(`DROP TRIGGER ${guard}`);
+      });
+      assert.throws(() => createEventStore(path), /schema.*guard/i);
+      withDb(path, (db) => db.exec(sql));
+    }
+  }
+});
+
 const awardsSql = (path: string) => {
   let sql: unknown;
   withDb(path, (db) => { sql = db.prepare("SELECT sql FROM sqlite_schema WHERE name = 'line_awards'").get()?.sql; });
   return String(sql);
 };
 
-test('v7 migrates to v8 once, keeping every award row, id, time and status; opening interrupts nothing', (t) => {
+test('v7 migrates through v8 to v9 once, keeping every award row, id, time and status; opening interrupts nothing', (t) => {
   const path = fixture(t);
   const { store, ids } = seedAwards(path, ['pending', 'failed', 'started', 'completed']);
   store.close();
@@ -1671,16 +1837,16 @@ test('v7 migrates to v8 once, keeping every award row, id, time and status; open
     assert.deepEqual(reopened.loadLineAward()?.presentation, { id: 'p-2', status: 'started', startedAt: 1000, deadlineAt: 5000 });
   } finally { reopened.close(); }
   withDb(path, (db) => {
-    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 8);
+    assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 9);
     assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
     assert.deepEqual(db.prepare('SELECT presentation_status AS s FROM line_awards ORDER BY presentation_id').all().map((r) => r.s),
       ['pending', 'failed', 'started', 'completed']);
   });
   createEventStore(path).close();
-  withDb(path, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 8));
+  withDb(path, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 9));
 });
 
-test('a migrated v7 awards table equals the fresh v8 table and enforces the same foreign key and unique id', (t) => {
+test('a migrated v7 awards table equals the fresh v9 table and enforces the same foreign key and unique id', (t) => {
   const fresh = fixture(t);
   createEventStore(fresh).close();
   const path = fixture(t);
@@ -1691,7 +1857,7 @@ test('a migrated v7 awards table equals the fresh v8 table and enforces the same
   assert.equal(awardsSql(path).replace(/\s/g, ''), awardsSql(fresh).replace(/\s/g, ''));
   withDb(path, (db) => {
     db.exec('PRAGMA foreign_keys = ON');
-    assert.throws(() => db.exec(`INSERT INTO line_awards SELECT 'ghost', audit_sequence, winner_count, total_cents,
+    assert.throws(() => db.exec(`INSERT INTO line_awards (${ORIGINAL_AWARD_COLUMNS}) SELECT 'ghost', audit_sequence, winner_count, total_cents,
       share_cents, remainder_cents, lot, lot_resolution, 'other', presentation_status, presentation_started_at,
       presentation_deadline FROM line_awards`), /FOREIGN/i);
     assert.throws(() => db.exec("UPDATE line_awards SET presentation_status = 'interrupted', presentation_started_at = NULL"), /CHECK/i);
@@ -1772,10 +1938,12 @@ test('the line_awards table enforces its row constraints on directly written row
     db.exec('PRAGMA foreign_keys = ON');
     const insert = (row: Record<string, unknown>) => db.prepare(`INSERT INTO line_awards
       (event_id, audit_sequence, winner_count, total_cents, share_cents, remainder_cents, lot, lot_resolution,
-       presentation_id, presentation_status, presentation_started_at, presentation_deadline)
+       presentation_id, presentation_status, presentation_started_at, presentation_deadline,
+       lot_result_origin, lot_participant_number, lot_color_id)
       VALUES (:event_id, :audit_sequence, :winner_count, :total_cents, :share_cents, :remainder_cents, :lot,
-       :lot_resolution, :presentation_id, :presentation_status, :presentation_started_at, :presentation_deadline)`)
-      .run(row as never);
+       :lot_resolution, :presentation_id, :presentation_status, :presentation_started_at, :presentation_deadline,
+       :lot_result_origin, :lot_participant_number, :lot_color_id)`)
+      .run({ lot_result_origin: 'none', lot_participant_number: null, lot_color_id: null, ...row } as never);
     for (const [name, change] of Object.entries(invalid)) {
       assert.throws(() => insert({ ...base, ...change }), /constraint|CHECK|FOREIGN/i, name);
     }
@@ -1784,7 +1952,7 @@ test('the line_awards table enforces its row constraints on directly written row
     for (const [name, change] of Object.entries({
       'maximum winners': { winner_count: MAX, share_cents: 0, remainder_cents: 1000 },
       'pending tie': lot,
-      'resolved tie': { ...lot, lot_resolution: 'resolved' },
+      'resolved tie': { ...lot, ...numberedResult, ...SHAPES.completed },
       'failed': { presentation_status: 'failed' },
       'completed': { ...started, presentation_status: 'completed' },
       'interrupted keeps its times': { ...started, presentation_status: 'interrupted' },
@@ -1811,9 +1979,12 @@ function insertAward(path: string, eventId: string, change: Record<string, unkno
     if (bypass) db.exec('PRAGMA ignore_check_constraints = 1; PRAGMA foreign_keys = OFF');
     db.prepare(`INSERT INTO line_awards (event_id, audit_sequence, winner_count, total_cents, share_cents,
       remainder_cents, lot, lot_resolution, presentation_id, presentation_status, presentation_started_at,
-      presentation_deadline) VALUES (:event_id, :audit_sequence, :winner_count, :total_cents, :share_cents,
+      presentation_deadline, lot_result_origin, lot_participant_number, lot_color_id)
+      VALUES (:event_id, :audit_sequence, :winner_count, :total_cents, :share_cents,
       :remainder_cents, :lot, :lot_resolution, :presentation_id, :presentation_status,
-      :presentation_started_at, :presentation_deadline)`).run({ ...awardRow, ...change, event_id: eventId } as never);
+      :presentation_started_at, :presentation_deadline, :lot_result_origin, :lot_participant_number, :lot_color_id)`)
+      .run({ ...awardRow, lot_result_origin: 'none', lot_participant_number: null, lot_color_id: null,
+        ...change, event_id: eventId } as never);
   });
 }
 
@@ -1883,7 +2054,7 @@ test('loadLineAward accepts every valid presentation and lot shape without chang
     ['completed keeps its deadline', { ...started, presentation_status: 'completed' },
       (v) => assert.deepEqual(v.presentation, { id: 'p-1', status: 'completed', startedAt: 1000, deadlineAt: 5000 })],
     ['pending tied lot', lot, (v) => assert.deepEqual([v.award.lot, v.award.lotResolution], ['Jamón', 'pending'])],
-    ['resolved tied lot', { ...lot, lot_resolution: 'resolved' }, (v) => assert.equal(v.award.lotResolution, 'resolved')],
+    ['resolved tied lot', { ...lot, ...numberedResult, ...SHAPES.completed }, (v) => assert.equal(v.award.lotResolution, 'resolved')],
     ['lone winner lot', { ...lot, lot_resolution: 'not_required', winner_count: 1, share_cents: 1000, remainder_cents: 0 },
       (v) => assert.deepEqual([v.award.lot, v.award.lotResolution, v.award.remainderCents], ['Jamón', 'not_required', 0])],
     ['even split', { winner_count: 4, share_cents: 250, remainder_cents: 0 },
@@ -2030,7 +2201,7 @@ const dump = (path: string) => {
   let state: unknown;
   withDb(path, (db) => {
     state = ['events', 'phase_audit', 'line_awards', 'event_prizes', 'active_event']
-      .map((table) => db.prepare(`SELECT * FROM ${table}`).all());
+      .map((table) => db.prepare(`SELECT ${table === 'line_awards' ? ORIGINAL_AWARD_COLUMNS : '*'} FROM ${table}`).all());
   });
   return state;
 };
@@ -2197,7 +2368,7 @@ test('begin_bingo_check requires a completed presentation and a settled lot for 
     }
     assert.equal(store.load()?.phase, 'line_declared');
     assert.equal(store.readAudit().length, 1);
-    setAward(path, "lot_resolution = 'resolved'");
+    setAward(path, "lot_resolution = 'resolved', lot_result_origin = 'numbered_v1', lot_participant_number = 1, lot_color_id = 'red'");
     assert.equal(store.transitionPhase('begin_bingo_check', T2).phase, 'checking_bingo');
     assert.notDeepEqual(dump(path), before);
   } finally { store.close(); }
@@ -2630,7 +2801,7 @@ test('a completed presentation unlocks draws while a tied lot still blocks bingo
     const before = JSON.stringify(dump(tie.path));
     assert.throws(() => tie.store.transitionPhase('begin_bingo_check', T2), /delivery|lot|bingo/i);
     assert.equal(JSON.stringify(dump(tie.path)), before);
-    setAward(tie.path, "lot_resolution = 'resolved'"); // Raw stand-in: no lot-resolution API exists yet (#61).
+    setAward(tie.path, "lot_resolution = 'resolved', lot_result_origin = 'numbered_v1', lot_participant_number = 1, lot_color_id = 'red'"); // Raw stand-in: no lot-resolution API exists yet (#61).
     assert.equal(tie.store.transitionPhase('begin_bingo_check', T2).phase, 'checking_bingo');
   } finally { tie.store.close(); }
   const cash = declared(t, 3);

@@ -6,14 +6,13 @@ import { transitionPhase, type GamePhase, type PhaseTransitionIntent } from './g
 import { DEFAULT_THEME, isThemeId, THEME_IDS, type ThemeId } from './theme.ts';
 import { createLineAward, isLineDeliveryResolved, transitionLinePresentation, type LineAward,
   type LinePresentationIntent, type LinePresentationStatus } from './line-award.ts';
+import { parseLineLotResolution } from './line-lot-contract.ts';
 import { MAX_PRIZE_AMOUNT, MAX_PRIZE_LOT, NO_PRIZES, normalizePrizes, validAmount, validLot,
   type EventPrizes } from './event-prizes.ts';
 
-// Event prizes (#71) are the only v6 change, the first-line award table (#26/#28) is the only v7 change and
-// the `interrupted` presentation status is the only v8 change (a transactional line_awards rebuild). Each step
-// is one self-contained migration chained after the v5 theme allow-list step. If another change claims a
-// version first, renumber and re-chain.
-const VERSION = 8;
+// v6 adds prizes, v7 adds first-line awards, v8 adds interrupted presentations and v9 adds
+// numbered lot provenance. Keep each historical definition and migration step independent.
+const VERSION = 9;
 export const EVENT_SCHEMA_VERSION = VERSION;
 const phases = ['drawing', 'checking_line', 'line_declared', 'checking_bingo', 'bingo_declared', 'finished'];
 const phaseCheck = `CHECK (phase IN (${phases.map((phase) => `'${phase}'`).join(', ')}))`;
@@ -114,7 +113,46 @@ const lineAwardsTableSql = (statuses: readonly string[]) => `CREATE TABLE line_a
   FOREIGN KEY (event_id, audit_sequence) REFERENCES phase_audit(event_id, sequence)
 )`;
 const lineAwardsTableV7 = lineAwardsTableSql(['pending', 'failed', 'started', 'completed']);
-const lineAwardsTable = lineAwardsTableSql(['pending', 'failed', 'started', 'completed', 'interrupted']);
+const lineAwardsTableV8 = lineAwardsTableSql(['pending', 'failed', 'started', 'completed', 'interrupted']);
+const originalAwardColumns = ['event_id', 'audit_sequence', 'winner_count', 'total_cents', 'share_cents',
+  'remainder_cents', 'lot', 'lot_resolution', 'presentation_id', 'presentation_status',
+  'presentation_started_at', 'presentation_deadline'];
+// Durable palette v1: never derive persisted results from a future presentation palette.
+const lotPaletteV1 = ['red', 'blue', 'green', 'yellow', 'purple', 'orange'] as const;
+const lotColorV1Sql = `CASE (lot_participant_number - 1) % 6 ${lotPaletteV1
+  .map((color, index) => `WHEN ${index} THEN '${color}'`).join(' ')} END`;
+const lineAwardsTable = lineAwardsTableV8.replace('  CHECK (share_cents', `  lot_result_origin TEXT NOT NULL DEFAULT 'none'
+    CHECK (lot_result_origin IN ('none', 'legacy_v8', 'numbered_v1')),
+  lot_participant_number INTEGER,
+  lot_color_id TEXT,
+  CHECK (CASE
+    WHEN lot_resolution IN ('pending', 'not_required') THEN lot_result_origin = 'none'
+      AND lot_participant_number IS NULL AND lot_color_id IS NULL
+    WHEN lot_resolution = 'resolved' AND lot_result_origin = 'legacy_v8'
+      THEN lot_participant_number IS NULL AND lot_color_id IS NULL
+    WHEN lot_resolution = 'resolved' AND lot_result_origin = 'numbered_v1'
+      THEN lot <> '' AND winner_count >= 2 AND presentation_status = 'completed'
+        AND lot_participant_number IS NOT NULL AND lot_color_id IS NOT NULL
+        AND ${integerRange('lot_participant_number', 1, MAX_SAFE_INTEGER)}
+        AND lot_participant_number <= winner_count AND typeof(lot_color_id) = 'text'
+        AND lot_color_id = ${lotColorV1Sql}
+    ELSE 0 END),
+  CHECK (share_cents`);
+// Migration is the sole creator of legacy provenance. Existing legacy awards may still advance
+// their presentation lifecycle, but their award identity and unknown-winner provenance are frozen.
+const legacyIdentityColumns = originalAwardColumns.filter((name) => ![
+  'presentation_id', 'presentation_status', 'presentation_started_at', 'presentation_deadline',
+].includes(name)).concat(['lot_result_origin', 'lot_participant_number', 'lot_color_id']);
+const lineAwardGuards = [
+  `CREATE TRIGGER line_awards_no_legacy_insert BEFORE INSERT ON line_awards
+    WHEN NEW.lot_result_origin = 'legacy_v8'
+    BEGIN SELECT RAISE(ABORT, 'cannot insert legacy lot provenance'); END`,
+  `CREATE TRIGGER line_awards_no_legacy_update BEFORE UPDATE ON line_awards
+    WHEN (NEW.lot_result_origin = 'legacy_v8' AND OLD.lot_result_origin IS NOT 'legacy_v8')
+      OR (OLD.lot_result_origin = 'legacy_v8' AND (${legacyIdentityColumns
+        .map((name) => `NEW.${name} IS NOT OLD.${name}`).join(' OR ')}))
+    BEGIN SELECT RAISE(ABORT, 'cannot introduce or retarget legacy lot provenance'); END`,
+];
 const PLACEHOLDER_NAME = 'Evento actual';
 const PLACEHOLDER_PLACE = 'Sin especificar';
 
@@ -552,9 +590,22 @@ function migrateLineAwards(db: DatabaseSync): void {
 function migrateInterruptedPresentation(db: DatabaseSync): void {
   db.exec('CREATE TEMP TABLE line_awards_migration AS SELECT * FROM line_awards');
   db.exec('DROP TABLE line_awards');
-  db.exec(lineAwardsTable);
+  db.exec(lineAwardsTableV8);
   db.exec('INSERT INTO line_awards SELECT * FROM line_awards_migration');
   db.exec('DROP TABLE line_awards_migration');
+}
+
+// v8 → v9: preserve every old field, label only old resolved rows and invent no winner.
+// Install guards after the copy; all DDL, data and user_version are in the caller's transaction.
+function migrateLotProvenance(db: DatabaseSync): void {
+  db.exec('CREATE TEMP TABLE line_awards_migration AS SELECT * FROM line_awards');
+  db.exec('DROP TABLE line_awards');
+  db.exec(lineAwardsTable);
+  db.exec(`INSERT INTO line_awards (${originalAwardColumns.join(', ')}, lot_result_origin)
+    SELECT ${originalAwardColumns.join(', ')}, CASE WHEN lot_resolution = 'resolved'
+      THEN 'legacy_v8' ELSE 'none' END FROM line_awards_migration`);
+  db.exec('DROP TABLE line_awards_migration');
+  db.exec(lineAwardGuards.join(';'));
 }
 
 function validateLineAwardsSchema(db: DatabaseSync, expected = lineAwardsTable): void {
@@ -562,6 +613,15 @@ function validateLineAwardsSchema(db: DatabaseSync, expected = lineAwardsTable):
   const sql = db.prepare("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'line_awards'").get()?.sql;
   if (typeof sql !== 'string' || normalize(sql) !== normalize(expected)) {
     throw new Error('Invalid event schema: line_awards table missing or malformed');
+  }
+  if (expected === lineAwardsTable) {
+    for (const guard of lineAwardGuards) {
+      const name = guard.split(' ')[2];
+      const stored = db.prepare("SELECT sql FROM sqlite_schema WHERE name = ? AND type = 'trigger'").get(name)?.sql;
+      if (typeof stored !== 'string' || normalize(stored) !== normalize(guard)) {
+        throw new Error('Invalid event schema: line_awards provenance guard missing or malformed');
+      }
+    }
   }
 }
 
@@ -590,19 +650,84 @@ export type StoredLineAward = {
   };
 };
 
+export type LineLotFact =
+  | Readonly<{ origin: 'none'; resolution: 'not_required' | 'pending' }>
+  | Readonly<{ origin: 'legacy_v8'; resolution: 'resolved'; winner: 'unknown' }>
+  | Readonly<{ origin: 'numbered_v1'; resolution: 'resolved'; paletteVersion: 1;
+    participantNumber: number; colorId: string }>;
+
+// Identity a later guarded writer must match, plus the decoded lot facts, from one active-event snapshot.
+export type LineLotSnapshot = Readonly<{
+  eventId: string; auditSequence: number; winnerCount: number; lot: string;
+  presentation: Readonly<{ id: string; status: LinePresentationStatus }>; fact: LineLotFact;
+}>;
+
 const PRESENTATION_STATUSES: readonly string[] = ['pending', 'failed', 'started', 'completed', 'interrupted'];
 const LOT_RESOLUTIONS: readonly string[] = ['not_required', 'pending', 'resolved'];
 
 // Reads the active event's award, or null only when no row exists. A populated row is re-derived with the
 // pure rules and linked to its direct audit intent; anything else fails closed. Never repairs or writes.
 function readLineAward(db: DatabaseSync, eventId: string, audit: PhaseAuditEntry[]): StoredLineAward | null {
+  return readLineAwardRecord(db, eventId, audit)?.stored ?? null;
+}
+
+// Strict provenance decode: every origin/column combination is explicit, so a legacy winner is never inferred
+// from missing data and a numbered result always passes the shared pure parser.
+function decodeLotFact(row: Record<string, unknown>, winnerCount: number, lot: string, resolution: string,
+    status: string, invalid: (reason: string, cause?: unknown) => never): LineLotFact {
+  const origin = row.lot_result_origin;
+  const number = row.lot_participant_number;
+  const color = row.lot_color_id;
+  if (origin === 'none') {
+    if (resolution === 'resolved' || number !== null || color !== null) invalid('lot result origin');
+    const parsed = parseLineLotResolution(winnerCount, resolution, null);
+    return Object.freeze({ origin, resolution: parsed.resolution as 'not_required' | 'pending' });
+  }
+  if (origin === 'legacy_v8') {
+    if (resolution !== 'resolved' || number !== null || color !== null) invalid('legacy lot result');
+    return Object.freeze({ origin, resolution: 'resolved' as const, winner: 'unknown' as const });
+  }
+  if (origin !== 'numbered_v1' || resolution !== 'resolved' || lot === '' || winnerCount < 2 ||
+      status !== 'completed') {
+    return invalid('lot result origin');
+  }
+  try {
+    const parsed = parseLineLotResolution(winnerCount, 'resolved', { participantNumber: number, colorId: color });
+    if (parsed.resolution !== 'resolved') return invalid('lot result');
+    return Object.freeze({ origin, resolution: 'resolved' as const, paletteVersion: 1 as const,
+      participantNumber: parsed.result.participantNumber, colorId: parsed.result.colorId });
+  } catch (error) { return invalid('lot result', error); }
+}
+
+type LineAwardRecord = NonNullable<ReturnType<typeof readLineAwardRecord>>;
+function lotSnapshot(eventId: string, record: LineAwardRecord): LineLotSnapshot {
+  const { award, presentation } = record.stored;
+  return Object.freeze({ eventId, auditSequence: record.auditSequence, winnerCount: award.winnerCount,
+    lot: award.lot, presentation: Object.freeze({ id: presentation.id, status: presentation.status }),
+    fact: record.fact });
+}
+
+// Untrusted writer input (future IPC JSON): a plain object with exactly these own data properties, copied once so
+// getters, prototypes or later mutation can never alter the intent.
+function exactPlain(value: unknown, keys: readonly string[], name: string): Record<string, unknown> {
+  const proto = typeof value === 'object' && value !== null ? Object.getPrototypeOf(value) : undefined;
+  if (proto !== Object.prototype && proto !== null || Array.isArray(value)) throw new Error(`Invalid ${name}`);
+  const own = Object.getOwnPropertyDescriptors(value as object);
+  if (Object.keys(own).sort().join() !== [...keys].sort().join() || Reflect.ownKeys(own).length !== keys.length ||
+      Object.values(own).some((d) => !('value' in d) || !d.enumerable)) throw new Error(`Invalid ${name}`);
+  return Object.fromEntries(keys.map((key) => [key, own[key].value]));
+}
+
+function readLineAwardRecord(db: DatabaseSync, eventId: string, audit: PhaseAuditEntry[]):
+    { stored: StoredLineAward; auditSequence: number; fact: LineLotFact } | null {
   const invalid = (reason: string, cause?: unknown): never => {
     throw new Error(`Invalid stored line award: ${reason}`, cause === undefined ? undefined : { cause });
   };
   let row;
   try {
     row = db.prepare(`SELECT event_id, audit_sequence, winner_count, total_cents, share_cents, remainder_cents,
-      lot, lot_resolution, presentation_id, presentation_status, presentation_started_at, presentation_deadline
+      lot, lot_resolution, presentation_id, presentation_status, presentation_started_at, presentation_deadline,
+      lot_result_origin, lot_participant_number, lot_color_id
       FROM line_awards WHERE event_id = ?`).get(eventId);
   } catch (error) { return invalid('unreadable row', error); }
   if (row === undefined) return null;
@@ -640,12 +765,14 @@ function readLineAward(db: DatabaseSync, eventId: string, audit: PhaseAuditEntry
     : startedAt !== null || deadlineAt !== null) {
     invalid('presentation times');
   }
-  return Object.freeze({
+  const fact = decodeLotFact(row, row.winner_count as number, row.lot as string, resolution as string, status as string, invalid);
+  const stored = Object.freeze({
     eventId,
     award: Object.freeze({ ...derived, lotResolution: resolution as LineAward['lotResolution'] }),
     presentation: Object.freeze({ id: row.presentation_id as string, status: status as LinePresentationStatus,
       startedAt: startedAt as number | null, deadlineAt: deadlineAt as number | null }),
   });
+  return { stored, auditSequence: row.audit_sequence as number, fact };
 }
 
 export type LineDeclarationBaseline = {
@@ -731,6 +858,7 @@ export function createEventStore(path: string) {
           candidate.exec(auditGuards.join(';'));
           candidate.exec(prizesTable);
           candidate.exec(lineAwardsTable);
+          candidate.exec(lineAwardGuards.join(';'));
           candidate.exec(`PRAGMA user_version = ${VERSION}; COMMIT`);
         } catch (error) {
           try { candidate.exec('ROLLBACK'); } catch { /* Preserve the original error. */ }
@@ -753,7 +881,7 @@ export function createEventStore(path: string) {
     db.exec('BEGIN');
     try {
       const observed = db.prepare('PRAGMA user_version').get()?.user_version;
-      if (observed !== 1 && observed !== 2 && observed !== 3 && observed !== 4 && observed !== 5 && observed !== 6 && observed !== 7 && observed !== VERSION) {
+      if (observed !== 1 && observed !== 2 && observed !== 3 && observed !== 4 && observed !== 5 && observed !== 6 && observed !== 7 && observed !== 8 && observed !== VERSION) {
         throw new Error(`Unsupported event schema version: ${String(observed)}`);
       }
       if (observed === VERSION) {
@@ -792,7 +920,7 @@ export function createEventStore(path: string) {
           validateV3(db);
           migrateV3ToV4(db);
           db.exec('PRAGMA user_version = 4');
-        } else if (version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== VERSION) {
+        } else if (version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== VERSION) {
           throw new Error(`Unsupported event schema version: ${String(version)}`);
         }
         if (version === 1 || version === 2 || version === 3 || version === 4) {
@@ -803,13 +931,18 @@ export function createEventStore(path: string) {
           migratePrizes(db);
           db.exec('PRAGMA user_version = 6');
         }
-        if (version !== 7 && version !== VERSION) {
+        if (version !== 7 && version !== 8 && version !== VERSION) {
           migrateLineAwards(db);
           db.exec('PRAGMA user_version = 7');
         }
-        if (version !== VERSION) {
+        if (version !== 8 && version !== VERSION) {
           validateLineAwardsSchema(db, lineAwardsTableV7);
           migrateInterruptedPresentation(db);
+          db.exec('PRAGMA user_version = 8');
+        }
+        if (version !== VERSION) {
+          validateLineAwardsSchema(db, lineAwardsTableV8);
+          migrateLotProvenance(db);
           db.exec(`PRAGMA user_version = ${VERSION}`);
         }
         validateV4(db);
@@ -1034,6 +1167,59 @@ export function createEventStore(path: string) {
         if (id === null) return null;
         readEvent(db);
         return readLineAward(db, id, replayAudit(db, id));
+      });
+    },
+    // Active-event lot facts only; null without an award. Corrupt or unknown provenance fails this read alone.
+    loadLineLotResult(): LineLotSnapshot | null {
+      return readSnapshot(() => {
+        const id = readActiveEventId(db);
+        if (id === null) return null;
+        readEvent(db);
+        const record = readLineAwardRecord(db, id, replayAudit(db, id));
+        if (record === null) return null;
+        return lotSnapshot(id, record);
+      });
+    },
+    // Commits the one manual lot result. The expected identity and the result are untrusted and copied first. Under
+    // the writer lock the active event, audit link and current completed presentation are re-read; only a pending,
+    // never-resolved tied lot qualifies. The compare-and-set touches the four result columns of exactly one row, and
+    // the strict reread must equal the intent before COMMIT, so a mismatch rolls back and nothing speculative returns.
+    resolveLineLot(expected: unknown, result: unknown): LineLotSnapshot {
+      const want = exactPlain(expected, ['eventId', 'auditSequence', 'presentationId'], 'lot identity');
+      const pickRaw = exactPlain(result, ['participantNumber', 'colorId'], 'lot result');
+      if (typeof want.eventId !== 'string' || want.eventId === '' || typeof want.presentationId !== 'string' ||
+          want.presentationId.trim() === '' || !Number.isSafeInteger(want.auditSequence) || (want.auditSequence as number) < 1) {
+        throw new Error('Invalid lot identity');
+      }
+      parseLineLotResolution(MAX_SAFE_INTEGER, 'resolved', pickRaw);
+      const { eventId, auditSequence, presentationId } = want as { eventId: string; auditSequence: number; presentationId: string };
+      const { participantNumber, colorId } = pickRaw as { participantNumber: number; colorId: string };
+      return transaction(() => {
+        if (readActiveEventId(db) !== eventId) throw new Error('Line lot event is not the active event');
+        readEvent(db);
+        const current = readLineAwardRecord(db, eventId, replayAudit(db, eventId));
+        if (current === null || current.auditSequence !== auditSequence || current.stored.presentation.id !== presentationId ||
+            current.stored.presentation.status !== 'completed') throw new Error('Line lot identity is stale');
+        if (current.stored.award.lot === '' || current.stored.award.winnerCount < 2 || current.fact.origin !== 'none' ||
+            current.fact.resolution !== 'pending') throw new Error('Line lot is not pending');
+        parseLineLotResolution(current.stored.award.winnerCount, 'resolved', pickRaw);
+        const update = db.prepare(`UPDATE line_awards SET lot_resolution = 'resolved', lot_result_origin = 'numbered_v1',
+          lot_participant_number = ?, lot_color_id = ? WHERE event_id = ? AND audit_sequence = ? AND presentation_id = ?
+          AND presentation_status = 'completed' AND lot_resolution = 'pending' AND lot_result_origin = 'none'`)
+          .run(participantNumber, colorId, eventId, auditSequence, presentationId);
+        if (update.changes !== 1) throw new Error('Line lot changed concurrently');
+        readEvent(db);
+        const committed = readLineAwardRecord(db, eventId, replayAudit(db, eventId));
+        const fact = committed?.fact;
+        if (committed === null || fact?.origin !== 'numbered_v1' || fact.participantNumber !== participantNumber ||
+            fact.colorId !== colorId || committed.auditSequence !== auditSequence ||
+            committed.stored.presentation.id !== presentationId ||
+            JSON.stringify({ ...committed.stored.award, lotResolution: 0 }) !==
+              JSON.stringify({ ...current.stored.award, lotResolution: 0 }) ||
+            JSON.stringify(committed.stored.presentation) !== JSON.stringify(current.stored.presentation)) {
+          throw new Error('Invalid stored line award: lot mismatch after write');
+        }
+        return lotSnapshot(eventId, committed);
       });
     },
     // Frozen store-authoritative baseline the operator confirms before declaring the first line.
