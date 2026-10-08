@@ -1083,6 +1083,9 @@ export function createEventStore(path: string) {
       if (intent === 'declare_line_directly') {
         throw new Error('Direct line declaration requires the atomic award path');
       }
+      if (intent === 'declare_bingo_directly') {
+        throw new Error('Direct bingo declaration requires the atomic award path');
+      }
       return transaction(() => {
         const id = readActiveEventId(db);
         if (id === null) throw new Error('Current event does not exist');

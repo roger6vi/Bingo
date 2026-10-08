@@ -2342,6 +2342,34 @@ test('legacy line correction without an award stays legal; with an attached awar
   } finally { store.close(); }
 });
 
+test('the generic transition cannot persist a bare direct bingo from any line_declared state', (t) => {
+  const legacy = fixture(t);
+  const old = createEventStore(legacy);
+  try {
+    old.create();
+    old.transitionPhase('begin_line_check', T1);
+    old.transitionPhase('declare_line', T2);
+    const before = dump(legacy);
+    assert.throws(() => old.transitionPhase('declare_bingo_directly', T3), /atomic|award|direct/i);
+    assert.deepEqual(dump(legacy), before);
+    assert.equal(old.load()?.phase, 'line_declared');
+    assert.equal(old.readAudit().length, 2);
+  } finally { old.close(); }
+  for (const withAward of [false, true]) {
+    const { path, store, event } = openDrawing(t);
+    try {
+      rawDirect(path, event.id, T1);
+      if (withAward) insertAward(path, event.id, { presentation_status: 'completed',
+        presentation_started_at: 1000, presentation_deadline: 5000 });
+      const before = dump(path);
+      assert.throws(() => store.transitionPhase('declare_bingo_directly', T2), /atomic|award|direct/i);
+      assert.deepEqual(dump(path), before);
+      assert.equal(store.load()?.phase, 'line_declared');
+      assert.equal(store.readAudit().length, 1);
+    } finally { store.close(); }
+  }
+});
+
 test('begin_bingo_check requires a completed presentation and a settled lot for an award; legacy is unchanged', (t) => {
   const legacy = fixture(t);
   const old = createEventStore(legacy);
