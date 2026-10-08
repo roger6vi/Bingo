@@ -42,7 +42,7 @@ async function loadOperator(options = {}) {
   document.head.append(screen);
   const requests = [];
   const replies = { getCurrentEvent: null, setTheme: null, updateEvent: null, drawManual: null, playTongo: null, getPrizes: null, updatePrizes: null };
-  const reads = { prizes: 0, line: 0, event: 0 };
+  const reads = { prizes: 0, line: 0, event: 0, legacy: 0 };
   // Line-lot boundary: unavailable and refusing draws unless a test scripts it; logged apart from the other requests.
   const lot = { reads: 0, draws: [], presents: [], status: null, read: async () => ({ ok: false, code: 'not_available' }),
     draw: async () => ({ ok: false, code: 'not_available' }), present: async () => ({ ok: true }), ...options.lot };
@@ -54,6 +54,9 @@ async function loadOperator(options = {}) {
   const line = { read: async () => ({ ok: true, state: 'none' }), begin: async () => ({ ok: true, session: lineSession }),
     cancel: async () => ({ ok: true }), confirm: async (count) => ({ ok: true, award: lineAward(count) }), session: lineSession,
     retry: async () => ({ ok: false, message: 'unexpected' }), repeat: async () => ({ ok: false, message: 'unexpected' }), push: null, ...options.line };
+  // Legacy checking_line boundary: nothing to cancel unless a test scripts a held check.
+  const legacy = { read: async () => ({ ok: false, code: 'not_available', message: 'There is no line check to cancel.' }),
+    cancel: async () => ({ ok: true, state: 'recovered' }), ...options.legacy };
   let theme = 'jules';
   const prizes = { a: { line: { amount: 150, lot: 'Jam\u00f3n' }, bingo: { amount: 0, lot: '' } } };
   const activeId = () => events.find((event) => event.active).id;
@@ -84,6 +87,8 @@ async function loadOperator(options = {}) {
     confirmLine: async (id, eventId, count) => { requests.push(`line:confirm:${id}:${eventId}:${count}`); return line.confirm(count); },
     retryLinePresentation: async (id) => { requests.push(`line:retry:${id}`); return line.retry(id); },
     repeatLinePresentation: async (id) => { requests.push(`line:repeat:${id}`); return line.repeat(id); },
+    readLegacyLineCheck: async () => { reads.legacy++; return legacy.read(); },
+    cancelLegacyLineCheck: async (eventId, sequence, head) => { requests.push(`legacy:cancel:${eventId}:${sequence}:${head}`); return legacy.cancel(); },
     onLinePresentation: (callback) => { line.push = callback; return () => { line.push = null; }; },
     readLineLot: async () => { lot.reads++; return lot.read(); },
     drawLineLot: async (expected) => { lot.draws.push(expected); return lot.draw(expected); },
@@ -152,7 +157,7 @@ async function loadOperator(options = {}) {
     delete window.desktop;
     delete document.documentElement.dataset.theme;
   };
-  return { main, requests, replies, reads, line, lot, simulator, cleanup };
+  return { main, requests, replies, reads, line, legacy, lot, simulator, cleanup };
 }
 
 function type(input, value) {
@@ -239,7 +244,7 @@ it('operator page is a Spanish three-tab application shell with shared panels an
     expect(page.querySelector(`footer[slot="status"] bingo-status#${id}`)).not.to.equal(null, `${id} in the status bar`);
   }
   for (const id of ['open-public', 'move-public']) expect(page.querySelector(`bingo-button#${id}`)).not.to.equal(null);
-  expect([...page.querySelectorAll('bingo-dialog')].map((dialog) => dialog.id)).to.deep.equal(['unsaved-dialog', 'line-dialog']);
+  expect([...page.querySelectorAll('bingo-dialog')].map((dialog) => dialog.id)).to.deep.equal(['unsaved-dialog', 'line-dialog', 'legacy-dialog']);
   // No English operator copy remains in the page.
   const copy = [page.title, page.body.textContent, ...[...page.querySelectorAll('[label],[heading],[message],[title],[aria-label]')]
     .flatMap((element) => ['label', 'heading', 'message', 'title', 'aria-label'].map((name) => element.getAttribute(name) ?? ''))].join(' ');
@@ -2070,4 +2075,203 @@ it('a single-winner line shows no panel and a foreign, malformed or mismatched l
     await settle();
     expect(lotText(op)).to.include('Resultado incierto').and.not.include('Ganador:');
   } finally { op.cleanup(); }
+});
+
+// Legacy checking_line recovery through the real operator page.
+const HEAD = '2026-01-01T00:00:00.000Z';
+const checking = { ok: true, snapshot: { calledNumbers: [4, 9], phase: 'checking_line', lastTransitionAt: HEAD } };
+const drawing = { ok: true, snapshot: { calledNumbers: [4, 9], phase: 'drawing', lastTransitionAt: '2026-01-01T00:00:01.000Z' } };
+const heldCheck = { ok: true, state: 'legacy_check', check: { eventId: 'a', phase: 'checking_line', lastTransitionAt: HEAD, auditSequence: 7 } };
+// The event reads checking_line until the recovery acknowledgement, then drawing, as the real main would answer.
+async function loadLegacy(extra = {}) {
+  let recovered = false;
+  const op = await loadOperator({ legacy: { read: async () => heldCheck, cancel: async () => { recovered = true; return { ok: true, state: 'recovered' }; },
+    ...extra } });
+  op.replies.getCurrentEvent = () => (recovered ? drawing : checking);
+  op.main.querySelector('#draw-controls').reloadButton.click();
+  await settle();
+  const ui = { button: op.main.querySelector('#line-recover'), dialog: op.main.querySelector('#legacy-dialog'),
+    status: op.main.querySelector('#line-status'), controls: op.main.querySelector('#draw-controls'),
+    claim: op.main.querySelector('#claim-line'), cancels: () => op.requests.filter((request) => request.startsWith('legacy:cancel')) };
+  return { op, ui, setRecovered: (value) => { recovered = value; } };
+}
+const dialogOpen = (dialog) => dialog.shadowRoot.querySelector('dialog').open;
+
+it('a held checking_line offers Cancelar comprobación de línea, locks drawing and writes nothing on load', async () => {
+  const { op, ui } = await loadLegacy();
+  try {
+    expect(ui.button).not.to.equal(null);
+    expect([ui.button.hidden, ui.button.disabled, ui.button.textContent]).to.deep.equal([false, false, 'Cancelar comprobación de línea']);
+    expect([ui.controls.manualDisabled, ui.controls.digitalDisabled]).to.deep.equal([true, true]);
+    expect(ui.status.message).to.include('comprobación de línea');
+    expect(ui.cancels()).to.deep.equal([]);
+    expect(op.reads.legacy).to.be.greaterThan(0);
+    expect(op.requests.filter((request) => request.startsWith('line:'))).to.deep.equal([]);
+  } finally { op.cleanup(); }
+});
+
+it('nothing is offered or read for a drawing event, and a not-available check keeps the page as it was', async () => {
+  const drawingOnly = await loadOperator();
+  try {
+    expect(drawingOnly.main.querySelector('#line-recover')?.hidden).to.equal(true);
+    expect(drawingOnly.reads.legacy).to.equal(0);
+  } finally { drawingOnly.cleanup(); }
+  const none = await loadOperator();
+  try {
+    none.replies.getCurrentEvent = () => checking;
+    none.main.querySelector('#draw-controls').reloadButton.click();
+    await settle();
+    expect(none.reads.legacy).to.be.greaterThan(0);
+    expect(none.main.querySelector('#line-recover')?.hidden).to.equal(true);
+    expect(none.requests.filter((request) => request.startsWith('legacy:'))).to.deep.equal([]);
+  } finally { none.cleanup(); }
+});
+
+it('the confirmation is a Spanish modal that conserves numbers and prizes; Volver, Escape and focus write nothing', async () => {
+  const { op, ui } = await loadLegacy();
+  try {
+    op.main.querySelector('#tab-bingo').click();
+    await settle();
+    for (const how of ['button', 'escape']) {
+      ui.button.button.focus();
+      ui.button.button.click();
+      await settle();
+      await ui.dialog.updateComplete;
+      expect(dialogOpen(ui.dialog)).to.equal(true);
+      expect(ui.dialog.label).to.equal('Cancelar comprobación de línea');
+      expect(ui.dialog.textContent).to.include('números cantados');
+      expect(ui.dialog.textContent).to.include('premios');
+      expect([...ui.dialog.shadowRoot.querySelectorAll('bingo-button')].map((button) => button.textContent))
+        .to.deep.equal(['Volver', 'Volver a cantar números']);
+      if (how === 'button') await expect(ui.dialog).to.be.accessible();
+      if (how === 'button') ui.dialog.shadowRoot.querySelector('[data-action="cancel"]').button.click();
+      else ui.dialog.shadowRoot.querySelector('dialog').dispatchEvent(new Event('cancel', { cancelable: true }));
+      await settle();
+      expect(dialogOpen(ui.dialog)).to.equal(false);
+      expect(ui.button.button.getRootNode().activeElement === ui.button.button).to.equal(true, 'focus returns to the opener');
+    }
+    expect(ui.cancels()).to.deep.equal([]);
+  } finally { op.cleanup(); }
+});
+
+it('confirming dispatches the exact identity once, refreshes the event and unlocks only the drawing phase, with no award or presentation', async () => {
+  const { op, ui } = await loadLegacy();
+  try {
+    op.main.querySelector('#tab-bingo').click();
+    await settle();
+    const eventReads = op.reads.event;
+    ui.button.button.click();
+    await settle();
+    const confirm = ui.dialog.shadowRoot.querySelector('[data-action="confirm"]').button;
+    confirm.click();
+    confirm.click();
+    await settle();
+    await settle();
+    expect(ui.cancels()).to.deep.equal([`legacy:cancel:a:7:${HEAD}`]);
+    expect(op.reads.event).to.be.greaterThan(eventReads, 'the committed event is read again');
+    expect(ui.button.hidden).to.equal(true);
+    expect([ui.controls.manualDisabled, ui.controls.digitalDisabled]).to.deep.equal([false, false]);
+    expect([ui.claim.disabled, ui.claim.textContent]).to.deep.equal([false, 'Línea']);
+    expect(op.requests.filter((request) => /^(line:|tongo)/.test(request))).to.deep.equal([]);
+    expect(op.lot.presents).to.deep.equal([]);
+    // A new, ordinary declaration still opens after the recovery.
+    ui.claim.button.click();
+    await settle();
+    expect(op.requests.filter((request) => request === 'line:begin')).to.have.length(1);
+  } finally { op.cleanup(); }
+});
+
+it('a failed event refresh after recovery stays locked with a Spanish message until the reload succeeds', async () => {
+  const { op, ui, setRecovered } = await loadLegacy();
+  try {
+    op.main.querySelector('#tab-bingo').click();
+    await settle();
+    let failing = true;
+    op.replies.getCurrentEvent = () => (failing ? { ok: false, code: 'storage_failure', message: 'Could not read the current event. Try again.' } : drawing);
+    ui.button.button.click();
+    await settle();
+    ui.dialog.shadowRoot.querySelector('[data-action="confirm"]').button.click();
+    await settle();
+    await settle();
+    expect([ui.controls.manualDisabled, ui.controls.digitalDisabled]).to.deep.equal([true, true]);
+    expect(ui.status.message).to.include('no se pudo releer el evento');
+    expect(ui.cancels()).to.have.length(1);
+    failing = false;
+    setRecovered(true);
+    ui.controls.reloadButton.click();
+    await settle();
+    await settle();
+    expect([ui.controls.manualDisabled, ui.status.hidden]).to.deep.equal([false, true]);
+    expect(ui.cancels()).to.have.length(1, 'reload never writes');
+  } finally { op.cleanup(); }
+});
+
+it('a lost acknowledgement hides the stale identity, never retries, and an explicit read offers it again', async () => {
+  let lost = true;
+  const { op, ui } = await loadLegacy({ cancel: async () => { if (lost) return null; return { ok: true, state: 'recovered' }; } });
+  try {
+    op.main.querySelector('#tab-bingo').click();
+    await settle();
+    ui.button.button.click();
+    await settle();
+    ui.dialog.shadowRoot.querySelector('[data-action="confirm"]').button.click();
+    await settle();
+    await settle();
+    expect(ui.button.textContent).to.equal('Releer comprobación de línea');
+    expect(ui.status.tone).to.equal('error');
+    expect(ui.status.message).to.include('Releer comprobación de línea');
+    expect([ui.controls.manualDisabled, ui.cancels().length]).to.deep.equal([true, 1]);
+    const before = op.reads.legacy;
+    lost = false;
+    ui.button.button.click();
+    await settle();
+    expect(dialogOpen(ui.dialog)).to.equal(false, 'rereading never opens the confirmation or writes');
+    expect(op.reads.legacy).to.equal(before + 1);
+    expect([ui.button.textContent, ui.cancels().length]).to.deep.equal(['Cancelar comprobación de línea', 1]);
+  } finally { op.cleanup(); }
+});
+
+it('a failed check read fails closed in Spanish and offers only a read', async () => {
+  const { op, ui } = await loadLegacy({ read: async () => ({ ok: false, code: 'storage_failure',
+    message: 'Could not read the line check. Try again or review the event storage.' }) });
+  try {
+    expect(ui.button.textContent).to.equal('Releer comprobación de línea');
+    expect(ui.status.message).to.include('almacenamiento');
+    expect([ui.controls.manualDisabled, ui.cancels().length]).to.deep.equal([true, 0]);
+  } finally { op.cleanup(); }
+});
+
+it('a recovery in flight locks the page, an ordinary reload re-reads without writing, and switching event drops the held check', async () => {
+  let release;
+  const { op, ui } = await loadLegacy({ cancel: () => new Promise((resolve) => { release = resolve; }) });
+  try {
+    op.main.querySelector('#tab-bingo').click();
+    await settle();
+    const before = op.reads.legacy;
+    ui.controls.reloadButton.click();
+    await settle();
+    expect(op.reads.legacy).to.be.greaterThan(before);
+    expect(ui.cancels()).to.deep.equal([]);
+    ui.button.button.click();
+    await settle();
+    ui.dialog.shadowRoot.querySelector('[data-action="confirm"]').button.click();
+    await settle();
+    expect(op.main.querySelector('#event-list').disabled).to.equal(true);
+    expect(ui.controls.manualDisabled).to.equal(true);
+    ui.button.button.click();
+    await settle();
+    expect(dialogOpen(ui.dialog)).to.equal(false, 'a second request cannot be made while one is in flight');
+    expect(ui.cancels()).to.have.length(1);
+    release({ ok: true, state: 'recovered' });
+    await settle();
+  } finally { op.cleanup(); }
+  const switched = await loadLegacy();
+  try {
+    switched.op.replies.getCurrentEvent = () => drawing;
+    switched.op.main.querySelector('#event-list').dispatchEvent(new CustomEvent('event-select', { detail: { id: 'b' } }));
+    await settle();
+    await settle();
+    expect(switched.ui.button.hidden).to.equal(true);
+    expect(switched.ui.cancels()).to.deep.equal([]);
+  } finally { switched.op.cleanup(); }
 });

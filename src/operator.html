@@ -139,6 +139,7 @@
               <div id="line-actions">
                 <bingo-button id="line-retry" hidden>Reintentar celebración</bingo-button>
                 <bingo-button id="line-repeat" hidden>Repetir celebración completa</bingo-button>
+                <bingo-button id="line-recover" hidden>Cancelar comprobación de línea</bingo-button>
               </div>
               <bingo-line-lot id="line-lot" hidden></bingo-line-lot>
             </section>
@@ -162,6 +163,7 @@
           <p id="line-prize" class="dialog-note"></p>
           <bingo-text-field id="line-winners" label="Número de ganadores" value="1" hint="Un número entero de 1 o más." autocomplete="off"></bingo-text-field>
         </bingo-dialog>
+        <bingo-dialog id="legacy-dialog" label="Cancelar comprobación de línea"></bingo-dialog>
       </bingo-tab-panel>
     </main>
 

@@ -22,7 +22,7 @@ import { createOperatorController, createLineController } from './operator-contr
 import { createManualDrawHandler } from './manual-draw.mjs';
 import { createEventsController, today } from './events-controller.mjs';
 import { applyTheme, createThemeController, DEFAULT_THEME, revealAfter } from './theme-controller.mjs';
-import { operatorMessage, lineAwardSummary, linePrizeSummary, LINE_REFRESH_FAILED_ES, PHASE_LABELS_ES, THEME_NAMES_ES } from './operator-copy.mjs';
+import { operatorMessage, lineAwardSummary, linePrizeSummary, LEGACY_CHECK_ES, LINE_REFRESH_FAILED_ES, PHASE_LABELS_ES, THEME_NAMES_ES } from './operator-copy.mjs';
 import { bindSettings } from './settings-ui.mjs';
 import { bindCueControls } from './cue-ui.mjs';
 import { createLineLotController } from './line-lot-controller.mjs';
@@ -115,7 +115,9 @@ let eventListRef = null;
 let tongoBusy = false;
 let gameState = null;
 // Until main's line state is read, drawing and the conflicting live actions stay locked.
-let lineState = { mode: 'unknown', pending: false, drawBlocked: true, liveBlocked: true, refresh: 'none' };
+let lineState = { mode: 'unknown', pending: false, drawBlocked: true, liveBlocked: true, refresh: 'none',
+  legacy: { status: 'none', check: null } };
+let lineRef = null;
 let activeEventId = null;
 let createSubmitRef = null;
 // Main's line state must belong to the event the page shows as active; otherwise it is not trusted.
@@ -130,6 +132,19 @@ const drawingBlocked = () => lineState.drawBlocked !== false || lineMismatch() |
 const LINE_MISMATCH = 'El estado de la línea pertenece a otro evento. Pulsa «Recargar eventos» para leerlo de nuevo.';
 const claimLine = required('claim-line', BingoButton);
 const lineRetry = required('line-retry', BingoButton);
+const lineRecover = required('line-recover', BingoButton);
+const legacyDialog = required('legacy-dialog', HTMLElement);
+legacyDialog.actions = [{ action: 'cancel', label: LEGACY_CHECK_ES.back, signal: 'dismiss' },
+  { action: 'confirm', label: LEGACY_CHECK_ES.confirm, signal: 'confirm' }];
+legacyDialog.textContent = LEGACY_CHECK_ES.dialog;
+let legacyDialogShown = false;
+// The legacy check is meaningful only for the active event the page has read, fresh, in checking_line.
+const legacyPhase = () => (gameState?.snapshot && !gameState.stale && gameState.error === null && !eventsStale ? gameState.phase : null);
+function syncLineContext() { lineRef?.setEvent(activeEventId, activeEventId === null ? null : legacyPhase()); }
+// Dispatch-time gate for the cancellation: every lock the page knows, for exactly the check held for the active event.
+const legacyActionable = () => lineState.legacy?.status === 'available' && lineState.legacy.check.eventId === activeEventId &&
+  activeEventId !== null && legacyPhase() === 'checking_line' && !lineMismatch() &&
+  !(selecting || activating || tongoBusy || eventsPending || lineState.pending || gameState.pending || lineState.mode !== 'idle');
 const lineRepeat = required('line-repeat', BingoButton);
 const LINE_LABELS = { setup: 'Reanudar línea', uncertain: 'Comprobar línea', declared: 'Línea declarada' };
 // Starting needs a fully known drawing game; recovery and resuming need only main's answer.
@@ -190,6 +205,7 @@ function applyLocks() {
   // Main refuses a create during a setup; reload stays available as the recovery path.
   if (createSubmitRef !== null) createSubmitRef.disabled = eventsPending || lineLocked;
   paintLineActions();
+  paintLegacy();
   syncLot();
 }
 
@@ -247,6 +263,7 @@ const controller = createOperatorController(desktop, {
     drawLocks = { manualDisabled: state.manualDisabled, digitalDisabled: state.digitalDisabled,
       reloadDisabled: state.reloadDisabled, pending: state.pending };
     applyLocks();
+    syncLineContext();
     cues.observe(state.snapshot, acknowledgement);
     // The simulator shows only committed history; it has no draw path of its own.
     settings.showCommitted(state.snapshot === null
@@ -272,15 +289,33 @@ function paintLineActions() {
     button.disabled = busy;
   }
 }
+// An available check can be cancelled after confirmation; an uncertain one can only be read again.
+function paintLegacy() {
+  const status = lineState.legacy?.status;
+  lineRecover.hidden = status !== 'available' && status !== 'uncertain';
+  lineRecover.textContent = status === 'uncertain' ? LEGACY_CHECK_ES.reread : LEGACY_CHECK_ES.action;
+  lineRecover.disabled = status === 'available' ? !legacyActionable()
+    : (selecting || activating || tongoBusy || eventsPending || lineState.pending);
+  // A confirmation that stopped being valid closes without writing anything.
+  if (legacyDialogShown && !legacyActionable()) {
+    legacyDialogShown = false;
+    legacyDialog.shadowRoot?.querySelector('dialog')?.close();
+  }
+}
 function paintLineStatus() {
   const state = lineState;
   const shown = lineStatus.hidden;
   const presentation = state.mode === 'declared' ? state.award?.presentation?.status : undefined;
+  const legacy = state.mode === 'idle' ? state.legacy?.status : 'none';
   lineStatus.message = state.pending ? 'Comprobando la línea' : operatorMessage(state.error)
-    ?? (lineMismatch() ? LINE_MISMATCH : state.mode === 'declared' && state.award
+    ?? (lineMismatch() ? LINE_MISMATCH : legacy === 'uncertain' ? LEGACY_CHECK_ES.uncertain
+      : legacy === 'available' ? LEGACY_CHECK_ES.available
+        : state.mode === 'idle' && state.refresh === 'failed' ? LEGACY_CHECK_ES.refreshFailed
+          : legacy === 'recovered' ? LEGACY_CHECK_ES.recovered : state.mode === 'declared' && state.award
       ? `${lineAwardSummary(state.award)}${state.refresh === 'failed' ? ` ${LINE_REFRESH_FAILED_ES}` : ''}`
       : state.mode === 'setup' && !state.dialogOpen ? 'Hay una declaración de línea abierta. Pulsa «Reanudar línea» para continuar o cancelarla.' : '');
-  lineStatus.tone = state.error ? 'error' : lineMismatch() || presentation === 'failed' || presentation === 'interrupted' || state.refresh === 'failed' ? 'warning'
+  lineStatus.tone = state.error || legacy === 'uncertain' ? 'error' : lineMismatch() || legacy === 'available' ||
+    presentation === 'failed' || presentation === 'interrupted' || state.refresh === 'failed' ? 'warning'
     : presentation === 'completed' ? 'success' : 'info';
   lineStatus.hidden = lineStatus.message === '';
   // Like Tongo's refusal, a new line message must not stay clipped at the bottom of the rail.
@@ -304,6 +339,8 @@ const line = createLineController(desktop, {
     applyLocks();
   },
 }, { committed: refreshEvent });
+lineRef = line;
+syncLineContext();
 // A completed celebration needs a fresh authoritative event. A read already in flight may predate it, so the new
 // read is queued behind it; the answer says whether the page now holds an accepted, current event.
 async function refreshEvent() {
@@ -321,6 +358,20 @@ const presentationClick = (status, run) => () => {
 };
 lineRetry.addEventListener('click', presentationClick('failed', (id) => line.retry(id)));
 lineRepeat.addEventListener('click', presentationClick('interrupted', (id) => line.repeat(id)));
+// The recovery needs two explicit steps: the button only opens the confirmation or rereads; only the dialog's
+// confirmation writes, and the controller revalidates the exact held check when it dispatches.
+lineRecover.addEventListener('click', () => {
+  if (lineRecover.disabled) return;
+  if (lineState.legacy?.status === 'uncertain') { void line.checkLegacy(); return; }
+  if (!legacyActionable()) return;
+  legacyDialogShown = true;
+  void legacyDialog.show();
+});
+legacyDialog.addEventListener('dismiss', () => { legacyDialogShown = false; });
+legacyDialog.addEventListener('confirm', () => {
+  legacyDialogShown = false;
+  if (legacyActionable()) void line.cancelLegacy();
+});
 lotPanel.addEventListener('line-lot-draw', () => { if (!lotPanel.hidden) void lotController.draw(); });
 lotPanel.addEventListener('line-lot-resync', () => { if (!lotPanel.hidden) void lotController.resync(); });
 window.addEventListener('pagehide', () => { line.dispose(); lotController.dispose(); });
@@ -398,7 +449,7 @@ const events = createEventsController(desktop, {
     reloadEvents.disabled = pending !== null;
     if (!stale) {
       activeEventId = active?.id ?? null;
-      line.setEvent(activeEventId);
+      syncLineContext();
     }
     paintLineStatus();
     applyLocks();
