@@ -268,9 +268,18 @@ test('source boundary: operator-named preload only, no public permission, no cel
   const preload = read('../src/preload.ts');
   assert.match(preload, /readLineLot: \(\) => ipcRenderer\.invoke\('line:lot:read'\)/);
   assert.match(preload, /drawLineLot: \(expected: \{[^}]*\}\) =>\s+ipcRenderer\.invoke\('line:lot:draw', expected\)/);
-  assert.doesNotMatch(read('../src/public-preload.ts'), /LineLot|line:lot/);
+  assert.match(preload, /import type \{ LineLotSnapshot \} from '\.\/event-store';/);
+  assert.match(preload, /presentLineLot: \(snapshot: LineLotSnapshot\) => ipcRenderer\.invoke\('line:lot:present', snapshot\)/);
+  // The public window's lot bridge is receive-only: no private operator channel and no invoke, only the delivery literal.
+  const publicPreload = read('../src/public-preload.ts');
+  assert.doesNotMatch(publicPreload, /line:lot:(read|draw|present)/);
+  assert.doesNotMatch(publicPreload, /ipcRenderer\.invoke/);
+  assert.match(read('../src/public-event-delivery.ts'), /PUBLIC_LINE_LOT_CHANNEL = 'public:line-lot'/);
+  assert.match(publicPreload, /const PUBLIC_LINE_LOT_CHANNEL = 'public:line-lot';/);
+  assert.match(publicPreload, /exposeInMainWorld\('publicLineLot', Object\.freeze\(\{\s+subscribe: [^]*?ipcRenderer\.on\(PUBLIC_LINE_LOT_CHANNEL, listener\);\s+return \(\) => ipcRenderer\.removeListener\(PUBLIC_LINE_LOT_CHANNEL, listener\);/);
+  assert.equal(publicPreload.match(/PUBLIC_LINE_LOT_CHANNEL/g)?.length, 3);
   const main = read('../src/main.ts');
-  assert.match(main, /registerLineLotIpc\(ipcMain, store, \{ authorize: operatorOnly,/);
+  assert.match(main, /registerLineLotPresentation\(ipcMain, store, \{ authorize: operatorOnly,/);
   const ipc = read('../src/line-lot-ipc.ts');
   assert.doesNotMatch(ipc, /line-presentation|\bpublish\w*\(|\.begin\(|committed\?\./);
 });

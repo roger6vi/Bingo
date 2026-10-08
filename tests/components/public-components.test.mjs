@@ -150,6 +150,13 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
   } };
   const receipts = [];
   window.publicLineReceipt = { started: (id) => receipts.push(id) };
+  // Receive-only live lot channel, as with the real preload: one listener, removed once however often disposed.
+  let lotListeners = 0;
+  window.publicLineLot = Object.freeze({ subscribe: () => {
+    let active = true;
+    lotListeners++;
+    return () => { if (active) { active = false; lotListeners--; unsubscribed++; } };
+  } });
   try {
     const entry = new URL('../../src/public-ui.mjs', import.meta.url);
     const response = await fetch(entry);
@@ -264,8 +271,10 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
       { kind: 'line', id: 'p3', durationMs: 1 }]) receivePresentation(ignored);
     expect(celebration.active).to.equal(false);
     expect(receipts).to.deep.equal(['p1']);
+    expect(lotListeners).to.equal(1);
     window.dispatchEvent(new Event('pagehide'));
-    expect(unsubscribed).to.equal(7);
+    expect(unsubscribed).to.equal(8);
+    expect(lotListeners).to.equal(0);
   } finally {
     shell.remove();
     delete window.publicEvent;
@@ -275,6 +284,7 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
     delete window.publicLineAward;
     delete window.publicPresentation;
     delete window.publicLineReceipt;
+    delete window.publicLineLot;
     delete document.documentElement.dataset.theme;
   }
 });

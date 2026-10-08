@@ -267,7 +267,21 @@ bingo-shell:has(.public-layout) h1 {
   .public-layout { grid-template-columns: minmax(0, 1fr); }
 }
 
+/* Lot text beside the prizes: the durable award and the transient winner line (visibility is owned by the page's 4000 ms timer). */
+.public-side #line-award, .public-side #line-lot-playback {
+  margin: var(--bingo-space-small) 0 0; min-width: 0; overflow-wrap: anywhere; border-radius: 0;
+  color: var(--bingo-color-text);
+}
+.public-side #line-award[hidden], .public-side #line-lot-playback[hidden] { display: none; }
+.public-side #line-lot-playback:not([hidden]) {
+  padding: var(--bingo-space-inset-compact); background: var(--bingo-color-surface-raised);
+  border: var(--bingo-border-width-strong) solid var(--bingo-color-prize); font-weight: var(--bingo-font-emphasis);
+  animation: line-lot-emphasis var(--bingo-motion-slow) var(--bingo-motion-easing) 2 both;
+}
+@keyframes line-lot-emphasis { from { border-color: var(--bingo-color-celebration); } to { border-color: var(--bingo-color-prize); } }
+
 @media (prefers-reduced-motion: reduce) {
   button:not(:disabled) { transition: none; }
+  .public-side #line-lot-playback:not([hidden]) { animation: none; transition: none; }
 }
 .dialog-note { margin: 0.5rem 0; color: var(--bingo-color-muted); }

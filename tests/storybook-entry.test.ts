@@ -42,3 +42,30 @@ test('no app module imports Storybook or a story', () => {
     assert.doesNotMatch(text, /import ['"](?:@?storybook|[^'"]*\.storybook\/|[^'"]*\.stories\.mjs)/, file);
   }
 });
+
+test('the public lot fixture reuses the production adapter, owns its lifecycle and ships two bounded stories', () => {
+  const screens = source('.storybook/lib/screens.mjs');
+  const stories = source('src/stories/screens/public-display.stories.mjs');
+  assert.match(screens, /import \{ createLineLotAdapter \} from '\.\.\/\.\.\/src\/public-line-lot-playback\.mjs'/);
+  assert.match(screens, /import \{ describeLineAward, validLineAward \} from '\.\.\/\.\.\/src\/public-controller\.mjs'/);
+  for (const part of [/MutationObserver/, /observer\?\.disconnect\(\)/, /cancelAnimationFrame/, /isConnected/, /crypto\.randomUUID\(\)/]) {
+    assert.match(screens, part);
+  }
+  assert.doesNotMatch(screens, /window\.public|ipcRenderer|CHANNELS|setTimeout|customElements\.define/);
+  for (const name of ['LotWinnerLive', 'LotWinnerReduced']) {
+    const block = stories.slice(stories.indexOf(`export const ${name}`)).split(/^export const /m)[1];
+    assert.match(block, /\$\{FIXTURE_NOTE\}/, name);
+  }
+  assert.match(stories, /'Presentation fixture using production adapter; not production-entry coverage\.'/);
+  assert.equal(stories.match(/lotPlayback: 'live'/g)?.length, 1);
+  assert.equal(stories.match(/lotPlayback: 'reduced'/g)?.length, 1);
+});
+
+test('the line lot playback guide is English, task-first and free of private identifiers', () => {
+  const guide = source('docs/public-line-lot-playback.md');
+  for (const heading of [/^# /m, /^## Public contract/m, /^## Lifecycle/m, /^## Privacy/m, /^## Fixture limits/m, /^## Checks/m]) {
+    assert.match(guide, heading);
+  }
+  assert.match(guide, /never replays/i);
+  assert.doesNotMatch(guide, /journal|ipcRenderer|CHANNELS/i);
+});

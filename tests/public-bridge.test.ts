@@ -18,11 +18,11 @@ test('the public window uses its preload subscriptions and never listens to fram
   Object.assign(win, { publicEvent: { subscribe: () => () => {} }, publicTheme: { subscribe: () => () => {} },
     publicEventMeta: { subscribe: () => () => {} }, publicEventPrizes: { subscribe: () => () => {} },
     publicPresentation: { subscribe: () => () => {} }, publicLineAward: { subscribe: () => () => {} },
-    publicLineReceipt: { started: () => {} } });
+    publicLineReceipt: { started: () => {} }, publicLineLot: { subscribe: () => () => {} } });
   const bridges = publicBridges(win);
   assert.deepEqual([bridges.event, bridges.theme, bridges.meta, bridges.prizes, bridges.lineAward, bridges.presentation,
-    bridges.lineReceipt], [win.publicEvent, win.publicTheme, win.publicEventMeta, win.publicEventPrizes, win.publicLineAward,
-    win.publicPresentation, win.publicLineReceipt]);
+    bridges.lineReceipt, bridges.lineLot], [win.publicEvent, win.publicTheme, win.publicEventMeta, win.publicEventPrizes,
+    win.publicLineAward, win.publicPresentation, win.publicLineReceipt, win.publicLineLot]);
   assert.equal(listeners.length, 0);
   assert.throws(() => publicBridges(fakeWindow().win), /Missing public display bridge/);
   // A top-level page missing any one preload bridge is not the public window.
@@ -35,7 +35,8 @@ test('the public window fails closed without the committed line-award bridge', (
   const { win } = fakeWindow();
   const bridge = () => ({ subscribe: () => () => {} });
   Object.assign(win, { publicEvent: bridge(), publicTheme: bridge(), publicEventMeta: bridge(),
-    publicEventPrizes: bridge(), publicPresentation: bridge(), publicLineReceipt: { started: () => {} } });
+    publicEventPrizes: bridge(), publicPresentation: bridge(), publicLineReceipt: { started: () => {} },
+    publicLineLot: bridge() });
   assert.throws(() => publicBridges(win), /Missing public display bridge/);
   win.publicLineAward = bridge();
   assert.equal(publicBridges(win).lineAward, win.publicLineAward);
@@ -116,4 +117,28 @@ test('the simulator receipt is an inert no-op that can neither send nor throw', 
   assert.deepEqual(Object.keys(lineReceipt), ['started']);
   assert.equal(Object.isFrozen(lineReceipt), true);
   assert.equal(typeof presentation.subscribe(() => {}), 'function');
+});
+
+test('the public window fails closed without the line-lot bridge', () => {
+  const { win } = fakeWindow();
+  const bridge = () => ({ subscribe: () => () => {} });
+  Object.assign(win, { publicEvent: bridge(), publicTheme: bridge(), publicEventMeta: bridge(), publicEventPrizes: bridge(),
+    publicLineAward: bridge(), publicPresentation: bridge(), publicLineReceipt: { started: () => {} } });
+  assert.throws(() => publicBridges(win), /Missing public display bridge/);
+  win.publicLineLot = bridge();
+  assert.equal(publicBridges(win).lineLot, win.publicLineLot);
+});
+
+test('the simulator line-lot input is inert: forged messages never reach it and it cannot be fed', () => {
+  const parent = {};
+  const { win, dispatch } = fakeWindow(parent);
+  const { lineLot } = publicBridges(win);
+  const received: unknown[] = [];
+  const unsubscribe = lineLot.subscribe((payload: unknown) => received.push(payload));
+  for (const channel of ['lineLot', 'line-lot', 'public:line-lot']) {
+    dispatch(parent, { type: SIMULATOR_MESSAGE, channel, payload: { id: 'forged', participantNumber: 1, colorId: 'red' } });
+  }
+  assert.equal(typeof unsubscribe, 'function');
+  assert.equal(unsubscribe(), undefined);
+  assert.deepEqual([received, Object.isFrozen(lineLot), Object.keys(lineLot)], [[], true, ['subscribe']]);
 });

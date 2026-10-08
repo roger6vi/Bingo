@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
+import type { LineLotSnapshot } from './event-store';
 
 contextBridge.exposeInMainWorld('desktop', Object.freeze({
   openPublic: () => ipcRenderer.send('open-public'),
@@ -22,6 +23,7 @@ contextBridge.exposeInMainWorld('desktop', Object.freeze({
   readLineLot: () => ipcRenderer.invoke('line:lot:read'),
   drawLineLot: (expected: { eventId: string; auditSequence: number; presentationId: string }) =>
     ipcRenderer.invoke('line:lot:draw', expected),
+  presentLineLot: (snapshot: LineLotSnapshot) => ipcRenderer.invoke('line:lot:present', snapshot),
   getTheme: () => ipcRenderer.invoke('theme:get'),
   setTheme: (theme: string) => ipcRenderer.invoke('theme:set', theme),
   retryLinePresentation: (id: string) => ipcRenderer.invoke('line:retry-presentation', id),

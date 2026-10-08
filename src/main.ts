@@ -10,7 +10,7 @@ import { registerThemeIpc } from './theme-ipc';
 import { registerTongoIpc } from './tongo-ipc';
 import { registerPrizeIpc } from './prize-ipc';
 import { registerLineIpc } from './line-ipc';
-import { registerLineLotIpc } from './line-lot-ipc';
+import { registerLineLotPresentation } from './line-lot-presentation';
 import { createLinePresentationCoordinator } from './line-presentation';
 import { createPublicEventDelivery, PUBLIC_LINE_RECEIPT_CHANNEL } from './public-event-delivery';
 import { createWindowLifecycle } from './window-lifecycle';
@@ -71,6 +71,7 @@ if (!app.requestSingleInstanceLock()) {
   const operatorPath = htmlPath('operator.html');
   const operatorFrame = () => operator.webContents.mainFrame;
   const operatorUrl = pathToFileURL(operatorPath).href;
+  const publicUrl = pathToFileURL(htmlPath('public.html')).href;
   // The public window is only attached after theme IPC is registered below.
   const activeMeta = () => {
     const active = store.listEvents().find((event) => event.active);
@@ -96,16 +97,22 @@ if (!app.requestSingleInstanceLock()) {
   const line = registerLineIpc(ipcMain, store, { authorize: operatorOnly, now: () => new Date(),
     publish: publicDelivery.publishCommitted, committed: presentation.begin, retry: presentation.retry,
     repeat: presentation.repeat, busy: presentation.busy, tongoPlaying: tongo.playing });
-  registerLineLotIpc(ipcMain, store, { authorize: operatorOnly, busy: presentation.busy, tongoPlaying: tongo.playing,
+  // The manual lot draw plus its one-shot public handoff; any operator document or active-event change voids a pending one.
+  const lotPresentation = registerLineLotPresentation(ipcMain, store, { authorize: operatorOnly, busy: presentation.busy,
+    tongoPlaying: tongo.playing, publish: (signal) => publicDelivery.publishLineLot(signal, publicUrl),
     refresh: (lot) => { publicDelivery.refreshLineAward(lot.eventId); } });
-  registerEventCatalogIpc(ipcMain, store, operatorOnly, () => publicDelivery.publishActive(theme.reload()),
+  operator.webContents.on('did-start-navigation', (details) => {
+    if (details.isMainFrame && !details.isSameDocument) lotPresentation.invalidate();
+  });
+  operator.on('close', () => lotPresentation.invalidate());
+  operator.webContents.once('destroyed', () => lotPresentation.invalidate());
+  registerEventCatalogIpc(ipcMain, store, operatorOnly, () => { lotPresentation.invalidate(); publicDelivery.publishActive(theme.reload()); },
     publicDelivery.publishMeta, line.active, presentation.busy);
   registerPrizeIpc(ipcMain, store, operatorOnly, publicDelivery.publishPrizes, line.active);
   registerEventIpc(ipcMain, store, { drawManual, drawDigital }, Math.random,
     operator.webContents, operatorFrame, operatorUrl, publicDelivery.publishCommitted, tongo.playing, line.active,
     presentation.busy);
   // The start receipt counts only from the exact public main frame the signal was sent to, still current at the page URL.
-  const publicUrl = pathToFileURL(htmlPath('public.html')).href;
   ipcMain.on(PUBLIC_LINE_RECEIPT_CHANNEL, (event, id: unknown) => {
     if (typeof id !== 'string' || !publicDelivery.acceptLineReceipt(event, id, publicUrl)) return;
     presentation.receiptStarted(id);

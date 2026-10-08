@@ -28,6 +28,8 @@ import '../../src/components/bingo-tongo-control.mjs';
 import operatorSource from '../../src/operator.html?raw';
 import publicSource from '../../src/public.html?raw';
 import { validateDraft } from '../../src/configuration-controller.mjs';
+import { createLineLotAdapter } from '../../src/public-line-lot-playback.mjs';
+import { describeLineAward, validLineAward } from '../../src/public-controller.mjs';
 import { DEFAULT_CUE_SETTINGS } from '../../src/cue-player.mjs';
 import { DEFAULT_THEME } from '../../src/theme-controller.mjs';
 import { operatorMessage, PHASE_LABELS_ES, THEME_NAMES_ES } from '../../src/operator-copy.mjs';
@@ -226,7 +228,52 @@ export function operatorScreen(options) {
 export const publicDefaults = {
   meta: ACTIVE_EVENT, calledNumbers: [], phase: 'drawing', loaded: true, stale: false, error: null, tongo: false,
   prizes: { line: { amount: 100, lot: '' }, bingo: { amount: 1500, lot: 'Cesta de productos locales' } },
+  lotWinner: null, lotPlayback: 'static',
 };
+
+// Presentation fixture, not production-entry coverage (public-ui.mjs does not run). `lotWinner` is the stored
+// { participantNumber, colorId }; `lotPlayback` is 'static' (award text only), 'live' (one fresh signal once the root
+// is connected, real media query) or 'reduced' (forced reduced-motion query). Optional ports: `onLotHydrated(emit)`
+// replaces that single automatic signal; `root.disposeLotFixture()` ends the fixture early.
+function lotFixture(container, prizes, { lotWinner: winner, lotPlayback: mode, onLotHydrated }) {
+  const winnerCount = Math.max(2, winner.participantNumber);
+  const award = { eventId: 'story-event', winnerCount, totalCents: 1000, shareCents: Math.floor(1000 / winnerCount),
+    remainderCents: 1000 % winnerCount, lot: 'Cesta de productos locales', lotResolution: 'resolved',
+    lotResult: { origin: 'numbered_v1', resolution: 'resolved', paletteVersion: 1, ...winner } };
+  if (!validLineAward(award)) throw new Error('lotWinner is not a valid stored winner');
+  const line = document.createElement('p');
+  line.id = 'line-award';
+  line.lang = 'es';
+  line.textContent = describeLineAward(award);
+  prizes.parentElement.append(line);
+  if (mode !== 'live' && mode !== 'reduced') return;
+  let stopped = false;
+  let frame = 0;
+  let listener = null;
+  let adapter = null;
+  let observer = null;
+  const dispose = () => {
+    if (stopped) return;
+    stopped = true; // first: nothing below can reach a callback again
+    cancelAnimationFrame(frame);
+    observer?.disconnect();
+    listener = null;
+    adapter?.dispose();
+  };
+  container.disposeLotFixture = dispose;
+  const emit = (id = crypto.randomUUID()) => listener?.({ id, ...winner });
+  frame = requestAnimationFrame(() => {
+    if (stopped || !container.isConnected) return; // never connected: no adapter, query or timer exists
+    const forced = { matchMedia: () => ({ matches: true, addEventListener() {}, removeEventListener() {} }) };
+    const bridge = { subscribe: (callback) => { listener = callback; return () => { listener = null; }; } };
+    adapter = createLineLotAdapter({ bridge, anchor: line, win: mode === 'reduced' ? forced : window });
+    observer = new MutationObserver(() => { if (!container.isConnected) dispose(); });
+    observer.observe(document, { childList: true, subtree: true });
+    adapter.observeAward(award);
+    adapter.observeFrame({ calledNumbers: [], loaded: true, stale: false, error: null }, { eventChanged: false });
+    (onLotHydrated ?? ((signal) => signal()))(emit);
+  });
+}
 
 export function publicScreen(options) {
   const state = { ...publicDefaults, ...options };
@@ -250,6 +297,7 @@ export function publicScreen(options) {
   $('prizes').prizes = state.prizes;
   // The transient Tongo overlay, as public-ui.mjs shows it while a signal plays.
   $('tongo').active = state.tongo;
+  if (state.lotWinner) lotFixture(container, $('prizes'), state);
   return container;
 }
 

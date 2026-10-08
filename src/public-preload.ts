@@ -7,6 +7,7 @@ const PUBLIC_META_CHANNEL = 'public:event-meta';
 const PUBLIC_PRIZES_CHANNEL = 'public:event-prizes';
 const PUBLIC_LINE_AWARD_CHANNEL = 'public:line-award';
 const PUBLIC_PRESENTATION_CHANNEL = 'public:presentation';
+const PUBLIC_LINE_LOT_CHANNEL = 'public:line-lot';
 const PUBLIC_LINE_RECEIPT_CHANNEL = 'public:line-presentation-started';
 
 contextBridge.exposeInMainWorld('publicEvent', Object.freeze({
@@ -54,6 +55,15 @@ contextBridge.exposeInMainWorld('publicPresentation', Object.freeze({
     const listener = (_event: Electron.IpcRendererEvent, presentation: unknown) => callback(presentation);
     ipcRenderer.on(PUBLIC_PRESENTATION_CHANNEL, listener);
     return () => ipcRenderer.removeListener(PUBLIC_PRESENTATION_CHANNEL, listener);
+  },
+}));
+
+// Receive-only live lot signals ({ id, participantNumber, colorId }); the page decides whether one matches its award.
+contextBridge.exposeInMainWorld('publicLineLot', Object.freeze({
+  subscribe: (callback: (signal: unknown) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, signal: unknown) => callback(signal);
+    ipcRenderer.on(PUBLIC_LINE_LOT_CHANNEL, listener);
+    return () => ipcRenderer.removeListener(PUBLIC_LINE_LOT_CHANNEL, listener);
   },
 }));
 

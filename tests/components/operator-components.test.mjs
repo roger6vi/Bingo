@@ -44,8 +44,8 @@ async function loadOperator(options = {}) {
   const replies = { getCurrentEvent: null, setTheme: null, updateEvent: null, drawManual: null, playTongo: null, getPrizes: null, updatePrizes: null };
   const reads = { prizes: 0, line: 0, event: 0 };
   // Line-lot boundary: unavailable and refusing draws unless a test scripts it; logged apart from the other requests.
-  const lot = { reads: 0, draws: [], status: null, read: async () => ({ ok: false, code: 'not_available' }),
-    draw: async () => ({ ok: false, code: 'not_available' }), ...options.lot };
+  const lot = { reads: 0, draws: [], presents: [], status: null, read: async () => ({ ok: false, code: 'not_available' }),
+    draw: async () => ({ ok: false, code: 'not_available' }), present: async () => ({ ok: true }), ...options.lot };
   // First-line boundary: the default is an idle main; a test replaces a reply to script another state.
   const lineSession = { sessionId: 's1', eventId: 'a', calledNumbers: [4, 9], linePrize: { amount: 10, lot: 'Jam\u00f3n' } };
   const lineAward = (winnerCount) => ({ eventId: 'a', award: { winnerCount, totalCents: 1000, shareCents: Math.floor(1000 / winnerCount),
@@ -87,6 +87,8 @@ async function loadOperator(options = {}) {
     onLinePresentation: (callback) => { line.push = callback; return () => { line.push = null; }; },
     readLineLot: async () => { lot.reads++; return lot.read(); },
     drawLineLot: async (expected) => { lot.draws.push(expected); return lot.draw(expected); },
+    // Private presentation request, recorded apart from draws; `omitPresent` scripts a desktop without the method.
+    ...(lot.omitPresent ? {} : { presentLineLot: (snapshot) => { lot.presents.push(snapshot); return lot.present(snapshot); } }),
     onPublicStatus: (callback) => { lot.status = callback; }, openPublic: () => {}, movePublicToSecondary: () => {},
     getTheme: async () => ({ ok: true, theme }),
     setTheme: async (next) => {
@@ -1850,10 +1852,12 @@ it('the line lot panel reads the pending lot, waits for the completed celebratio
     await settle();
     expect(op.lot.draws).to.deep.equal([{ eventId: 'a', auditSequence: 7, presentationId: 'p' }]);
     expect(lotText(op)).to.not.include('Ganador:', 'nothing is shown before the acknowledgement');
+    expect(op.lot.presents).to.deep.equal([], 'nothing is presented before the acknowledgement');
     ack.resolve(lotReply(numbered(2, 'blue'), 'committed'));
     await settle();
     expect(lotText(op)).to.include('participante 2, color Azul');
     expect([lotButton(op, 'draw').disabled, op.lot.reads, lineRequests(op)]).to.deep.equal([true, 2, []]);
+    expect(op.lot.presents).to.deep.equal([numbered(2, 'blue')], 'the own committed snapshot is presented once, unchanged');
   } finally { op.cleanup(); }
 });
 
@@ -1876,6 +1880,88 @@ it('a numbered or legacy winner restored at startup is shown as is, with no rero
       expect([lotButton(op, 'draw').disabled, op.lot.reads, op.lot.draws, lineRequests(op)]).to.deep.equal([true, 1, [], []]);
     } finally { op.cleanup(); }
   }
+});
+
+it('only an own committed draw is presented: reads, recoveries, resyncs, late, disposed and mismatched acks are not', async () => {
+  for (const kind of ['current', 'recovered']) {
+    const op = await tiedOp({ read: async () => lotReply(numbered(7, 'red'), kind) });
+    try {
+      op.lot.status(true);
+      op.main.querySelector('#reload-events').click();
+      await settle();
+      expect(op.lot.presents).to.deep.equal([], `a ${kind} read is never presented`);
+    } finally { op.cleanup(); }
+  }
+  let answer = lotReply(lotSnap());
+  const resync = await tiedOp({ read: async () => answer, draw: async () => ({ ok: false, code: 'read_required' }) });
+  try {
+    lotButton(resync, 'draw').click();
+    await settle();
+    answer = lotReply(numbered(2, 'blue'), 'recovered');
+    lotButton(resync, 'resync').click();
+    await settle();
+    expect([lotText(resync).includes('participante 2'), resync.lot.presents]).to.deep.equal([true, []]);
+  } finally { resync.cleanup(); }
+  const ack = deferred();
+  const away = await tiedOp({ read: async () => lotReply(lotSnap()), draw: () => ack.promise });
+  try {
+    lotButton(away, 'draw').click();
+    await settle();
+    away.line.read = async () => ({ ok: true, state: 'none' });
+    away.main.querySelector('#event-list').dispatchEvent(new CustomEvent('event-select', { detail: { id: 'b' } }));
+    await settle();
+    await settle();
+    ack.resolve(lotReply(numbered(2, 'blue'), 'committed'));
+    await settle();
+    expect(away.lot.presents).to.deep.equal([], 'a late acknowledgement for the previous context');
+  } finally { away.cleanup(); }
+  const late = deferred();
+  const gone = await tiedOp({ read: async () => lotReply(lotSnap()), draw: () => late.promise });
+  try {
+    lotButton(gone, 'draw').click();
+    await settle();
+    window.dispatchEvent(new Event('pagehide'));
+    late.resolve(lotReply(numbered(2, 'blue'), 'committed'));
+    await settle();
+    expect(gone.lot.presents).to.deep.equal([], 'a disposed page');
+  } finally { gone.cleanup(); }
+  for (const bad of [numbered(2, 'blue', { auditSequence: 9 }), numbered(2, 'red'), { ok: false, code: 'read_required' }]) {
+    const op = await tiedOp({ read: async () => lotReply(lotSnap()), draw: async () => (bad.ok === false ? bad : lotReply(bad, 'committed')) });
+    try {
+      lotButton(op, 'draw').click();
+      await settle();
+      expect(op.lot.presents).to.deep.equal([], 'a mismatched or failed acknowledgement');
+    } finally { op.cleanup(); }
+  }
+});
+
+it('a failing private presentation request never undoes the stored winner, retries, or blocks ordinary drawing', async () => {
+  const unhandled = [];
+  const onUnhandled = (event) => { unhandled.push(event.reason); event.preventDefault(); };
+  window.addEventListener('unhandledrejection', onUnhandled);
+  const scripts = [() => { throw new Error('sync'); }, async () => { throw new Error('async'); }, () => Promise.reject(new Error('rejected')),
+    async () => ({ ok: false, code: 'unsupported' }), null];
+  try {
+    for (const present of scripts) {
+      const op = await tiedOp({ read: async () => lotReply(lotSnap()), draw: async () => lotReply(numbered(2, 'blue'), 'committed'),
+        ...(present ? { present } : { omitPresent: true }) });
+      try {
+        lotButton(op, 'draw').click();
+        await settle();
+        await settle();
+        expect(lotText(op)).to.include('participante 2, color Azul');
+        expect(lotText(op)).to.not.include('Resultado incierto');
+        op.lot.status(true);
+        op.main.querySelector('#reload-events').click();
+        await settle();
+        const controls = op.main.querySelector('#draw-controls');
+        expect([op.lot.presents.length, op.lot.draws.length, lotText(op).includes('participante 2, color Azul'),
+          controls.manualDisabled, controls.digitalDisabled]).to.deep.equal([present ? 1 : 0, 1, true, false, false]);
+      } finally { op.cleanup(); }
+    }
+    await settle();
+    expect(unhandled).to.deep.equal([]);
+  } finally { window.removeEventListener('unhandledrejection', onUnhandled); }
 });
 
 it('a lost draw acknowledgement locks the panel until an explicit keyboard resync, whatever else updates', async () => {
