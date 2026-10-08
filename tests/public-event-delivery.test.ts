@@ -472,3 +472,149 @@ test('navigation of an unrelated window leaves the rightful receipt binding and 
 test('the receipt channel is a fixed literal', () => {
   assert.equal(PUBLIC_LINE_RECEIPT_CHANNEL, 'public:line-presentation-started');
 });
+
+// Strict lot facts (LOT05A): the winner comes only from the strict store snapshot, never from arithmetic or inference.
+type LotFact = { origin: string; resolution: string; [key: string]: unknown };
+const lotSnap = (fact: LotFact, over: Record<string, unknown> = {}) => ({ eventId: 'event-a', auditSequence: 7, winnerCount: 3,
+  lot: 'Jamón', presentation: { id: 'secret-presentation-id', status: 'completed' }, fact, ...over });
+const numbered = (participantNumber: number, colorId: string): LotFact => ({ origin: 'numbered_v1', resolution: 'resolved',
+  paletteVersion: 1, participantNumber, colorId });
+function lotFixture(award: ReturnType<typeof storedAward> | null, lot: unknown) {
+  let currentLot = lot, fail = false;
+  const delivery = createPublicEventDelivery({ load: () => snapshot([5]) }, () => 'light',
+    () => ({ name: 'N', date: '2026-01-01', place: 'P' }),
+    () => ({ line: { amount: 10, lot: '' }, bingo: { amount: 0, lot: '' } }), () => award,
+    () => { if (fail) throw new Error('private detail'); return currentLot as never; });
+  const messages: Message[] = [];
+  const target = { isDestroyed: () => false, send: (channel: string, result: unknown) => { messages.push({ channel, result }); } };
+  delivery.attachAfterLoad(target);
+  return { delivery, messages, target, set: (next: unknown) => { currentLot = next; }, fail: () => { fail = true; },
+    award: () => messages.find((m) => m.channel === PUBLIC_LINE_AWARD_CHANNEL)!.result as Record<string, unknown> | null };
+}
+const resolvedAward = (winnerCount = 3) => ({ ...storedAward('event-a', 'Jamón', winnerCount),
+  award: { ...storedAward('event-a', 'Jamón', winnerCount).award, lotResolution: 'resolved' as const } });
+
+test('a strict numbered fact is projected as a copied winner fact without presentation or audit identity', () => {
+  const snap = lotSnap(numbered(2, 'blue'));
+  const f = lotFixture(resolvedAward(), snap);
+  const award = f.award()!;
+  assert.deepEqual(award, { eventId: 'event-a', winnerCount: 3, totalCents: 1000, shareCents: 333, remainderCents: 1,
+    lot: 'Jamón', lotResolution: 'resolved', lotResult: numbered(2, 'blue') });
+  assert.notEqual(award.lotResult, snap.fact);
+  (award.lotResult as { colorId: string }).colorId = 'mutated';
+  assert.equal(snap.fact.colorId, 'blue');
+  assert.doesNotMatch(JSON.stringify(f.messages), /secret-presentation-id|auditSequence|startedAt/);
+});
+
+test('a legacy resolved fact stays an explicit unknown winner and invents no participant', () => {
+  const f = lotFixture(resolvedAward(), lotSnap({ origin: 'legacy_v8', resolution: 'resolved', winner: 'unknown' }));
+  assert.deepEqual(f.award()!.lotResult, { origin: 'legacy_v8', resolution: 'resolved', winner: 'unknown' });
+  assert.doesNotMatch(JSON.stringify(f.award()), /participantNumber|colorId/);
+});
+
+test('pending and not-required facts keep their distinction with no winner', () => {
+  const pending = lotFixture(storedAward('event-a', 'Jamón', 3), lotSnap({ origin: 'none', resolution: 'pending' }));
+  assert.deepEqual(pending.award()!.lotResult, { origin: 'none', resolution: 'pending' });
+  const none = lotFixture(storedAward('event-a', '', 3), lotSnap({ origin: 'none', resolution: 'not_required' }, { lot: '' }));
+  assert.deepEqual(none.award()!.lotResult, { origin: 'none', resolution: 'not_required' });
+});
+
+test('an unwired strict loader adds no fact field and never fabricates one', () => {
+  const f = awardFixture(storedAward()), target = f.target();
+  f.delivery.attachAfterLoad(target);
+  assert.equal(Object.hasOwn(target.messages[3].result as object, 'lotResult'), false);
+});
+
+test('an unavailable, throwing, foreign or inconsistent strict fact clears the award', () => {
+  const ok = numbered(2, 'blue');
+  const cases: [string, unknown][] = [['null', null], ['foreign event', lotSnap(ok, { eventId: 'event-b' })],
+    ['winner count', lotSnap(ok, { winnerCount: 4 })], ['lot', lotSnap(ok, { lot: 'Other' })],
+    ['presentation', lotSnap(ok, { presentation: { id: 'other', status: 'completed' } })],
+    ['wrong color', lotSnap(numbered(2, 'red'))], ['over count', lotSnap(numbered(4, 'red'), { winnerCount: 3 })],
+    ['pending vs resolved', lotSnap({ origin: 'none', resolution: 'pending' })],
+    ['unknown origin', lotSnap({ origin: 'mystery', resolution: 'resolved' })],
+    ['malformed', 'not an object']];
+  for (const [name, bad] of cases) assert.equal(lotFixture(resolvedAward(), bad).award(), null, name);
+  const thrown = lotFixture(resolvedAward(), lotSnap(ok));
+  thrown.fail();
+  thrown.messages.length = 0;
+  thrown.delivery.publishCommitted(snapshot([5, 6]));
+  assert.deepEqual(thrown.messages[0], { channel: PUBLIC_LINE_AWARD_CHANNEL, result: null });
+  assert.doesNotMatch(JSON.stringify(thrown.messages), /private detail/);
+});
+
+test('strict facts keep reveal order, hydrate no presentation, and replacement clears the old fact', () => {
+  const f = lotFixture(resolvedAward(), lotSnap(numbered(2, 'blue')));
+  assert.deepEqual(channelsOf(f.messages), [PUBLIC_THEME_CHANNEL, PUBLIC_META_CHANNEL, PUBLIC_PRIZES_CHANNEL,
+    PUBLIC_LINE_AWARD_CHANNEL, PUBLIC_EVENT_CHANNEL]);
+  f.messages.length = 0;
+  f.delivery.publishCommitted(snapshot([5, 6]));
+  assert.deepEqual(channelsOf(f.messages), [PUBLIC_LINE_AWARD_CHANNEL, PUBLIC_EVENT_CHANNEL]);
+  f.messages.length = 0;
+  f.set(null);
+  f.delivery.publishActive('jules');
+  assert.deepEqual(channelsOf(f.messages), [PUBLIC_THEME_CHANNEL, PUBLIC_META_CHANNEL, PUBLIC_PRIZES_CHANNEL,
+    PUBLIC_LINE_AWARD_CHANNEL, PUBLIC_EVENT_CHANNEL]);
+  assert.deepEqual(f.messages[3], { channel: PUBLIC_LINE_AWARD_CHANNEL, result: null });
+  assert.equal(channelsOf(f.messages).includes(PUBLIC_PRESENTATION_CHANNEL), false);
+});
+
+test('the palette repeats cyclically in constant time up to MAX_SAFE_INTEGER', () => {
+  const colors = ['red', 'blue', 'green', 'yellow', 'purple', 'orange'];
+  for (const [n, color] of [[1, 'red'], [6, 'orange'], [7, 'red'], [Number.MAX_SAFE_INTEGER, 'red']] as const) {
+    const f = lotFixture(resolvedAward(Number.MAX_SAFE_INTEGER), lotSnap(numbered(n, color), { winnerCount: Number.MAX_SAFE_INTEGER }));
+    assert.deepEqual(f.award()!.lotResult, numbered(n, color));
+  }
+  assert.equal(colors[(Number.MAX_SAFE_INTEGER - 1) % 6], 'red');
+});
+
+test('a matching resolution label cannot launder a wrong-origin strict fact', () => {
+  const pendingAward = storedAward('event-a', 'Jamón', 3), noneAward = storedAward('event-a', '', 1);
+  const legacy = (resolution: string): LotFact => ({ origin: 'legacy_v8', resolution, winner: 'unknown' });
+  const wrong: [string, ReturnType<typeof storedAward>, unknown][] = [
+    ['legacy pending', pendingAward, lotSnap(legacy('pending'))],
+    ['numbered pending', pendingAward, lotSnap({ ...numbered(2, 'blue'), resolution: 'pending' })],
+    ['legacy not_required', noneAward, lotSnap(legacy('not_required'), { lot: '', winnerCount: 1 })],
+    ['numbered not_required', noneAward, lotSnap({ ...numbered(1, 'red'), resolution: 'not_required' }, { lot: '', winnerCount: 1 })],
+  ];
+  for (const [name, award, snap] of wrong) assert.equal(lotFixture(award, snap).award(), null, name);
+});
+
+test('refreshLineAward resends only the strict static award for the bound event, with no presentation or history', () => {
+  const f = lotFixture(resolvedAward(), lotSnap(numbered(2, 'blue')));
+  const before = f.messages.length;
+  assert.equal(f.delivery.refreshLineAward('event-a'), true);
+  assert.deepEqual(f.messages.slice(before).map((m) => m.channel), [PUBLIC_LINE_AWARD_CHANNEL]);
+  const sent = f.messages[before].result as Record<string, any>;
+  assert.deepEqual(sent.lotResult, { origin: 'numbered_v1', resolution: 'resolved', paletteVersion: 1, participantNumber: 2, colorId: 'blue' });
+  assert.doesNotMatch(JSON.stringify(sent), /secret-presentation-id/);
+});
+
+test('refreshLineAward sends nothing for a foreign event, a missing or inconsistent fact, a throw, or no window', () => {
+  const f = lotFixture(resolvedAward(), lotSnap(numbered(2, 'blue')));
+  const before = f.messages.length;
+  assert.equal(f.delivery.refreshLineAward('event-b'), false);
+  f.set(lotSnap(numbered(2, 'blue'), { lot: 'Other' }));
+  assert.equal(f.delivery.refreshLineAward('event-a'), false);
+  f.set(null);
+  assert.equal(f.delivery.refreshLineAward('event-a'), false);
+  f.fail();
+  assert.equal(f.delivery.refreshLineAward('event-a'), false);
+  assert.equal(f.messages.length, before);
+  f.delivery.detachIfCurrent(f.target);
+  f.set(lotSnap(numbered(2, 'blue')));
+  assert.equal(f.delivery.refreshLineAward('event-a'), false);
+  assert.equal(f.messages.length, before);
+});
+
+test('refreshLineAward neither disturbs a pending line receipt binding nor sends on the presentation channel', () => {
+  const f = lotFixture(resolvedAward(), lotSnap(numbered(2, 'blue')));
+  const frame = { url: PAGE };
+  const bound = { ...f.target, mainFrame: frame };
+  f.delivery.attachAfterLoad(bound);
+  assert.equal(f.delivery.publishPresentation(signal), true);
+  const before = f.messages.length;
+  f.delivery.refreshLineAward('event-a');
+  assert.ok(f.messages.slice(before).every((m) => m.channel === PUBLIC_LINE_AWARD_CHANNEL));
+  assert.equal(f.delivery.acceptLineReceipt({ sender: bound, senderFrame: frame }, 'p1', PAGE), true);
+});

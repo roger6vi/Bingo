@@ -78,7 +78,7 @@ if (!app.requestSingleInstanceLock()) {
   };
   const activePrizes = () => store.loadPrizes()?.prizes ?? null;
   const publicDelivery = createPublicEventDelivery(store, () => theme.current(), activeMeta, activePrizes,
-    () => store.loadLineAward());
+    () => store.loadLineAward(), () => store.loadLineLotResult());
   const operatorOnly = createOperatorGuard(operator.webContents, operatorFrame, operatorUrl);
   const theme = registerThemeIpc(ipcMain, { load: store.loadTheme, save: store.saveTheme },
     operatorOnly, publicDelivery.publishTheme);
@@ -96,7 +96,8 @@ if (!app.requestSingleInstanceLock()) {
   const line = registerLineIpc(ipcMain, store, { authorize: operatorOnly, now: () => new Date(),
     publish: publicDelivery.publishCommitted, committed: presentation.begin, retry: presentation.retry,
     repeat: presentation.repeat, busy: presentation.busy, tongoPlaying: tongo.playing });
-  registerLineLotIpc(ipcMain, store, { authorize: operatorOnly, busy: presentation.busy, tongoPlaying: tongo.playing });
+  registerLineLotIpc(ipcMain, store, { authorize: operatorOnly, busy: presentation.busy, tongoPlaying: tongo.playing,
+    refresh: (lot) => { publicDelivery.refreshLineAward(lot.eventId); } });
   registerEventCatalogIpc(ipcMain, store, operatorOnly, () => publicDelivery.publishActive(theme.reload()),
     publicDelivery.publishMeta, line.active, presentation.busy);
   registerPrizeIpc(ipcMain, store, operatorOnly, publicDelivery.publishPrizes, line.active);

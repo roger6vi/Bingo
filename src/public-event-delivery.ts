@@ -1,6 +1,7 @@
 import type { EventSnapshot } from './event-core';
 import type { EventPrizes } from './event-prizes';
-import type { StoredLineAward } from './event-store';
+import type { LineLotSnapshot, StoredLineAward } from './event-store';
+import { parseLineLotResolution } from './line-lot-contract.ts';
 import type { LotResolution } from './line-award';
 import type { GamePhase } from './game-phase';
 import type { ThemeId } from './theme';
@@ -27,8 +28,16 @@ export type PublicEventPrizes = EventPrizes | null;
 export type PublicLineAward = {
   readonly eventId: string; readonly winnerCount: number; readonly totalCents: number; readonly shareCents: number;
   readonly remainderCents: number; readonly lot: string; readonly lotResolution: LotResolution;
+  // The strict stored winner fact; present only when a strict lot loader is wired. Never inferred from arithmetic.
+  readonly lotResult?: PublicLineLotResult;
 } | null;
-type CommittedLineAward = Pick<StoredLineAward, 'eventId' | 'award'> | null;
+export type PublicLineLotResult =
+  | { readonly origin: 'none'; readonly resolution: 'not_required' | 'pending' }
+  | { readonly origin: 'legacy_v8'; readonly resolution: 'resolved'; readonly winner: 'unknown' }
+  | { readonly origin: 'numbered_v1'; readonly resolution: 'resolved'; readonly paletteVersion: 1;
+    readonly participantNumber: number; readonly colorId: string };
+type CommittedLineAward = Pick<StoredLineAward, 'eventId' | 'award' | 'presentation'> | null;
+type CommittedLineLot = Pick<LineLotSnapshot, 'eventId' | 'winnerCount' | 'lot' | 'presentation' | 'fact'> | null;
 type Payload = PublicEventResult | ThemeId | PublicEventMeta | PublicEventPrizes | PublicLineAward | TongoPresentation
   | LinePresentationSignal;
 
@@ -49,9 +58,29 @@ const success = (snapshot: PhaseSnapshot): PublicEventResult => ({
   },
 });
 
+// Copies the strict fact only when it matches the award's event, count, lot, presentation and resolution.
+function strictLotResult(stored: NonNullable<CommittedLineAward>, snap: CommittedLineLot): PublicLineLotResult | null {
+  if (snap === null || snap.eventId !== stored.eventId || snap.winnerCount !== stored.award.winnerCount ||
+      snap.lot !== stored.award.lot || snap.presentation.id !== stored.presentation.id) return null;
+  const fact = snap.fact;
+  if (fact.resolution !== stored.award.lotResolution) return null;
+  if (fact.origin === 'none') {
+    return parseLineLotResolution(snap.winnerCount, fact.resolution, null).resolution === fact.resolution
+      ? { origin: 'none', resolution: fact.resolution } : null;
+  }
+  if (fact.origin === 'legacy_v8') return fact.resolution === 'resolved' && fact.winner === 'unknown' ? { origin: 'legacy_v8', resolution: 'resolved', winner: 'unknown' } : null;
+  if (fact.origin !== 'numbered_v1' || fact.resolution !== 'resolved' || fact.paletteVersion !== 1 ||
+      snap.lot === '' || snap.winnerCount < 2) return null;
+  const parsed = parseLineLotResolution(snap.winnerCount, 'resolved',
+    { participantNumber: fact.participantNumber, colorId: fact.colorId });
+  return parsed.resolution === 'resolved'
+    ? { origin: 'numbered_v1', resolution: 'resolved', paletteVersion: 1, ...parsed.result } : null;
+}
+
 export function createPublicEventDelivery(
   store: Store, committedTheme?: () => ThemeId, committedMeta?: () => PublicEventMeta,
   committedPrizes?: () => PublicEventPrizes, committedLineAward?: () => CommittedLineAward,
+  committedLineLot?: () => CommittedLineLot,
 ) {
   let current: Target | null = null;
   // The one line signal whose receipt may still arrive: the exact window and main frame it was sent to.
@@ -99,7 +128,11 @@ export function createPublicEventDelivery(
       const stored = committedLineAward?.() ?? null;
       if (stored === null) return null;
       const { winnerCount, totalCents, shareCents, remainderCents, lot, lotResolution } = stored.award;
-      return { eventId: stored.eventId, winnerCount, totalCents, shareCents, remainderCents, lot, lotResolution };
+      const award = { eventId: stored.eventId, winnerCount, totalCents, shareCents, remainderCents, lot, lotResolution };
+      if (committedLineLot === undefined) return award;
+      // Strict facts must describe the very same award; anything else clears it rather than show a stale winner.
+      const lotResult = strictLotResult(stored, committedLineLot());
+      return lotResult === null ? null : { ...award, lotResult };
     } catch { return null; }
   }
 
@@ -158,6 +191,17 @@ export function createPublicEventDelivery(
     // After the active event's prizes commit.
     publishPrizes(): void {
       if (current !== null) sendPrizes(current);
+    },
+    // Static only: resends the strict award for the one authorized event after its lot result was verified. It
+    // sends nothing when the window, event, or strict fact does not line up, so a stale page is never cleared, and
+    // it never touches presentation channels, receipt bindings, or history.
+    refreshLineAward(eventId: string): boolean {
+      const target = current;
+      if (target === null || committedLineAward === undefined) return false;
+      const award = loadLineAward();
+      if (award === null || award.eventId !== eventId) return false;
+      send(target, award, PUBLIC_LINE_AWARD_CHANNEL);
+      return current === target;
     },
     // Transient and never resent on attach, so a reloaded or reopened window cannot replay it.
     // Reports whether the current window accepted it.

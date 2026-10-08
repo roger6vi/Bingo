@@ -274,3 +274,83 @@ test('source boundary: operator-named preload only, no public permission, no cel
   const ipc = read('../src/line-lot-ipc.ts');
   assert.doesNotMatch(ipc, /line-presentation|\bpublish\w*\(|\.begin\(|committed\?\./);
 });
+
+// Static public refresh: only a verified permanent numbered result reaches the port, once, and never changes the outcome.
+const refreshFixture = (options: Parameters<typeof fixture>[0] = {}) => {
+  const refreshed: any[] = [];
+  const f = fixture({ ...options, ports: { refresh: (snapshot: any) => { refreshed.push(snapshot); }, ...options.ports } });
+  return Object.assign(f, { refreshed });
+};
+
+test('a guarded commit refreshes the public view once with the verified numbered snapshot', () => {
+  const f = refreshFixture();
+  const result = f.draw(id);
+  assert.equal(result.kind, 'committed');
+  assert.deepEqual(f.refreshed, [numbered(2, 'blue')]);
+  assert.notEqual(f.refreshed[0], result.snapshot);
+  assert.deepEqual([f.selections.length, f.writes.length], [1, 1]);
+});
+
+test('an uncertain write recovered as a numbered fact refreshes without a second draw', () => {
+  for (const [name, write] of [
+    ['competitor', (s: any) => { s.state = numbered(4, 'yellow'); throw new Error('changed'); }],
+    ['lost acknowledgement', (s: any, _e: any, r: any) => { s.state = numbered(r.participantNumber, r.colorId); throw new Error('x'); }],
+  ] as const) {
+    const f = refreshFixture({ write });
+    assert.equal(f.draw(id).kind, 'recovered', name);
+    assert.equal(f.refreshed.length, 1, name);
+    assert.deepEqual([f.selections.length, f.writes.length], [1, 1], name);
+  }
+});
+
+test('a resolved current result on draw or read refreshes without entropy or write', () => {
+  const f = refreshFixture({ state: numbered(3, 'red') });
+  assert.equal(f.draw(id).kind, 'current');
+  assert.equal(f.read().kind, 'current');
+  assert.deepEqual(f.refreshed, [numbered(3, 'red'), numbered(3, 'red')]);
+  assert.deepEqual([f.selections.length, f.writes.length], [0, 0]);
+});
+
+test('pending, legacy, unreadable, stale, rejected and foreign calls never refresh', () => {
+  const cases: [any, () => void][] = [
+    [refreshFixture({ write: () => { throw new Error('x'); } }), () => {}],
+    [refreshFixture({ state: legacy() }), () => {}],
+    [refreshFixture({ state: null }), () => {}],
+    [refreshFixture({ ports: { busy: () => true } }), () => {}],
+    [refreshFixture({ ports: { tongoPlaying: () => true } }), () => {}],
+    [refreshFixture({ write: (s: any) => { s.state = numbered(2, 'blue'); s.failLoad = true; throw new Error('x'); } }), () => {}],
+  ];
+  for (const [f] of cases) { f.draw(id); f.draw({ ...id, auditSequence: 9 }); f.draw({ bad: true }); f.read(); }
+  for (const [f] of cases.slice(1, 4)) assert.deepEqual(f.refreshed, []);
+  assert.deepEqual(cases[0][0].refreshed, []);
+  assert.deepEqual(cases[5][0].refreshed, []);
+  const stale = refreshFixture({ write: (s: any) => { s.state = numbered(2, 'blue'); throw new Error('x'); } });
+  assert.equal(stale.draw({ ...id, presentationId: 'other' }).code, 'stale_identity');
+  assert.deepEqual(stale.refreshed, []);
+  const foreign = refreshFixture();
+  assert.throws(() => foreign.handlers.get(LINE_LOT_CHANNELS.draw)!({ sender: {}, senderFrame: { url } }, id), /Unauthorized/);
+  assert.throws(() => foreign.handlers.get(LINE_LOT_CHANNELS.read)!({ sender: {}, senderFrame: { url } }), /Unauthorized/);
+  assert.deepEqual(foreign.refreshed, []);
+  assert.ok(foreign.untouched());
+});
+
+test('a throwing refresh keeps the committed or recovered outcome and never selects or writes again', () => {
+  const boom = { refresh: () => { throw new Error('delivery secret'); } };
+  const committed = fixture({ ports: boom });
+  assert.deepEqual(committed.draw(id), { ok: true, kind: 'committed', snapshot: numbered(2, 'blue') });
+  const recovered = fixture({ ports: boom, write: (s: any) => { s.state = numbered(4, 'yellow'); throw new Error('x'); } });
+  assert.deepEqual(recovered.draw(id), { ok: true, kind: 'recovered', snapshot: numbered(4, 'yellow') });
+  assert.deepEqual(committed.read(), { ok: true, kind: 'current', snapshot: numbered(2, 'blue') });
+  assert.deepEqual([committed.selections.length, committed.writes.length, recovered.selections.length, recovered.writes.length], [1, 1, 1, 1]);
+  assert.equal(committed.draw(id).kind, 'current');
+  assert.deepEqual([committed.selections.length, committed.writes.length], [1, 1]);
+});
+
+test('a mutating or reentrant refresh cannot alter the result or trigger entropy', () => {
+  let again: any;
+  const f = fixture({ ports: { refresh: (snapshot: any) => { snapshot.fact.participantNumber = 99; again = f.draw(id); } } });
+  const result = f.draw(id);
+  assert.equal(result.snapshot.fact.participantNumber, 2);
+  assert.equal(again.code, 'draw_in_progress');
+  assert.deepEqual([f.selections.length, f.writes.length], [1, 1]);
+});
