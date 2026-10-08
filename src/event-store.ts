@@ -842,6 +842,48 @@ function sameBaseline(a: LineDeclarationBaseline, b: LineDeclarationBaseline): b
     b.calledNumbers.every((number, index) => a.calledNumbers[index] === number);
 }
 
+// Identity of a legacy checking_line the operator may cancel: the exact event, its phase head and audit length.
+export type LegacyLineCheck = {
+  readonly eventId: string;
+  readonly phase: 'checking_line';
+  readonly lastTransitionAt: string;
+  readonly auditSequence: number;
+};
+
+// Legitimate "nothing to cancel" carries a code so callers can tell it from corrupt or unreadable storage.
+function notEligible(reason: string): Error {
+  return Object.assign(new Error(`Legacy line check not eligible: ${reason}`), { code: 'legacy_check_not_eligible' });
+}
+
+// Read-only, from one snapshot. Only an active-event checking_line without a line award qualifies. Absence of an
+// event or another phase is typed not-eligible; anything unreadable or inconsistent throws untyped (fail closed).
+function readLegacyLineCheck(db: DatabaseSync): LegacyLineCheck {
+  const id = readActiveEventId(db);
+  const event = id === null ? null : readEvent(db);
+  if (id === null || event === null) throw notEligible('no current event');
+  const audit = replayAudit(db, id);
+  if (event.phase !== 'checking_line') throw notEligible('the event is not in a line check');
+  // A direct declaration never leaves checking_line, so an award or a missing head here is corrupt data.
+  if (event.lastTransitionAt === null || readLineAward(db, id, audit) !== null) {
+    throw new Error('Invalid line check state: current state does not match history');
+  }
+  return Object.freeze({ eventId: id, phase: 'checking_line' as const, lastTransitionAt: event.lastTransitionAt,
+    auditSequence: audit.length });
+}
+
+// Untrusted input: exact shape and types only, never coerced.
+function parseLegacyLineCheck(value: unknown): LegacyLineCheck {
+  const v = value as Record<string, unknown> | null;
+  const keys = ['eventId', 'phase', 'lastTransitionAt', 'auditSequence'];
+  if (typeof v !== 'object' || v === null || Array.isArray(v) || Object.keys(v).length !== keys.length ||
+      !keys.every((key) => Object.hasOwn(v, key)) || typeof v.eventId !== 'string' || v.phase !== 'checking_line' ||
+      !canonicalTime(v.lastTransitionAt) || !Number.isSafeInteger(v.auditSequence) || (v.auditSequence as number) < 1) {
+    throw new Error('Invalid legacy line check identity');
+  }
+  return { eventId: v.eventId, phase: 'checking_line', lastTransitionAt: v.lastTransitionAt,
+    auditSequence: v.auditSequence as number };
+}
+
 export function createEventStore(path: string) {
   if (!existed(path)) {
     // Initialize off-path: the target must never expose SQLite's transient version-0 file.
@@ -1256,6 +1298,53 @@ export function createEventStore(path: string) {
         readEvent(db);
         const stored = readLineAward(db, current.eventId, replayAudit(db, current.eventId));
         if (stored === null) throw new Error('Invalid stored line award: missing after write');
+        return stored;
+      });
+    },
+    loadLegacyLineCheck(): LegacyLineCheck { return readSnapshot(() => readLegacyLineCheck(db)); },
+    // Cancels a legacy line check through the existing reject_line_claim transition, never an award. The exact
+    // event, phase head and audit length are revalidated under the writer lock; a stale identity or a head not
+    // strictly newer than the current one is refused without writing.
+    // Authoritative readback after an uncertain cancel: ONE snapshot binds the active event id, its phase head and
+    // its audit row, so another event's matching row can never count as this recovery. Read-only; throws when the
+    // storage is unreadable or inconsistent.
+    confirmLegacyLineCancel(expected: unknown, transitionAt: unknown): 'recovered' | 'unchanged' | 'stale' {
+      const identity = parseLegacyLineCheck(expected);
+      if (!canonicalTime(transitionAt)) throw new Error('Invalid phase transition timestamp');
+      return readSnapshot(() => {
+        const id = readActiveEventId(db);
+        const event = id === null ? null : readEvent(db);
+        if (id === null || event === null || id !== identity.eventId) return 'stale';
+        const audit = replayAudit(db, id);
+        const row = audit[identity.auditSequence];
+        if (audit.length === identity.auditSequence + 1 && audit[identity.auditSequence - 1].transitionAt ===
+              identity.lastTransitionAt && row.kind === 'reject_line_claim' &&
+            row.transitionAt === transitionAt && event.phase === 'drawing' && event.lastTransitionAt === transitionAt) {
+          return 'recovered';
+        }
+        if (audit.length === identity.auditSequence && event.phase === 'checking_line' &&
+            event.lastTransitionAt === identity.lastTransitionAt) return 'unchanged';
+        return 'stale';
+      });
+    },
+    cancelLegacyLineCheck(expected: unknown, transitionAt: unknown): StoredEvent {
+      const identity = parseLegacyLineCheck(expected);
+      if (!canonicalTime(transitionAt)) throw new Error('Invalid phase transition timestamp');
+      return transaction(() => {
+        const current = readLegacyLineCheck(db);
+        if (current.eventId !== identity.eventId || current.lastTransitionAt !== identity.lastTransitionAt ||
+            current.auditSequence !== identity.auditSequence) throw new Error('Stale legacy line check');
+        if (transitionAt <= current.lastTransitionAt) throw new Error('Invalid phase transition timestamp');
+        db.prepare('UPDATE events SET phase = ?, lastTransitionAt = ? WHERE id = ?')
+          .run('drawing', transitionAt, current.eventId);
+        db.prepare(`INSERT INTO phase_audit (event_id, sequence, transitionAt, kind, from_phase, to_phase)
+          VALUES (?, ?, ?, 'reject_line_claim', 'checking_line', 'drawing')`)
+          .run(current.eventId, current.auditSequence + 1, transitionAt);
+        // Validate the committed state before COMMIT: replay must accept it and no award may appear.
+        const stored = readEvent(db);
+        if (stored === null || stored.phase !== 'drawing' || stored.lastTransitionAt !== transitionAt) {
+          throw new Error('Invalid phase audit: current state does not match history');
+        }
         return stored;
       });
     },

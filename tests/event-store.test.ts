@@ -3067,3 +3067,278 @@ test('failing pending is all or nothing and refuses corrupted pending rows', (t)
     assert.equal(store.failPendingLinePresentations(), 3);
   } finally { store.close(); }
 });
+
+// ---- legacy checking_line recovery (REC-01): guarded cancellation through the existing reject_line_claim ----
+function openLegacyCheck(t: unknown) {
+  const opened = openDrawing(t, { amount: 10, lot: 'Jamón' });
+  opened.store.update((e) => drawManual(drawManual(e, 7), 42));
+  opened.store.transitionPhase('begin_line_check', T1);
+  return opened;
+}
+
+test('loadLegacyLineCheck returns a frozen identity only for checking_line and never writes', (t) => {
+  const { path, store, event } = openLegacyCheck(t);
+  try {
+    const check = store.loadLegacyLineCheck();
+    assert.deepEqual(check, { eventId: event.id, phase: 'checking_line', lastTransitionAt: T1, auditSequence: 1 });
+    assert.ok(Object.isFrozen(check));
+    const before = dump(path);
+    store.loadLegacyLineCheck();
+    assert.deepEqual(dump(path), before);
+  } finally { store.close(); }
+  const reopened = createEventStore(path);
+  try { assert.equal(reopened.loadLegacyLineCheck().auditSequence, 1); } finally { reopened.close(); }
+});
+
+test('loadLegacyLineCheck and cancelLegacyLineCheck refuse every other phase and a missing event', (t) => {
+  const none = createEventStore(fixture(t));
+  try {
+    assert.throws(() => none.loadLegacyLineCheck(), /not eligible/i);
+    assert.throws(() => none.cancelLegacyLineCheck({}, T2), /invalid|not eligible/i);
+  } finally { none.close(); }
+  const { path, store } = openDrawing(t);
+  try {
+    const refused = (label: string) => {
+      const before = dump(path);
+      assert.throws(() => store.loadLegacyLineCheck(), /not eligible/i, label);
+      assert.throws(() => store.cancelLegacyLineCheck({ eventId: 'x', phase: 'checking_line', lastTransitionAt: T1,
+        auditSequence: 1 }, T3), /not eligible/i, label);
+      assert.deepEqual(dump(path), before, label);
+    };
+    refused('drawing');
+    store.transitionPhase('begin_line_check', T1);
+    store.transitionPhase('declare_line', T2);
+    refused('line_declared');
+    store.transitionPhase('begin_bingo_check', T3);
+    refused('checking_bingo');
+  } finally { store.close(); }
+});
+
+test('cancelLegacyLineCheck commits reject_line_claim to drawing preserving calls, prizes, metadata and history; no award', (t) => {
+  const { path, store, event } = openLegacyCheck(t);
+  try {
+    const before = dump(path) as unknown[][];
+    const result = store.cancelLegacyLineCheck(store.loadLegacyLineCheck(), T2);
+    assert.deepEqual(result, { calledNumbers: [7, 42], phase: 'drawing', lastTransitionAt: T2 });
+    assert.deepEqual(store.load(), result);
+    assert.deepEqual(store.readAudit(), [
+      { sequence: 1, transitionAt: T1, kind: 'begin_line_check', from_phase: 'drawing', to_phase: 'checking_line' },
+      { sequence: 2, transitionAt: T2, kind: 'reject_line_claim', from_phase: 'checking_line', to_phase: 'drawing' }]);
+    assert.equal(store.loadLineAward(), null);
+    const after = dump(path) as unknown[][];
+    // Only the phase head of events changes; prizes, active event, awards and the first audit row are untouched.
+    const { phase: _p, lastTransitionAt: _l, ...eventBefore } = before[0][0] as Record<string, unknown>;
+    const { phase: _p2, lastTransitionAt: _l2, ...eventAfter } = after[0][0] as Record<string, unknown>;
+    assert.deepEqual(eventAfter, eventBefore);
+    assert.deepEqual([after[2], after[3], after[4]], [before[2], before[3], before[4]]);
+    assert.deepEqual((after[1] as unknown[]).slice(0, 1), before[1]);
+    // A new baseline and an ordinary direct declaration work afterwards.
+    const baseline = store.loadLineDeclarationBaseline();
+    assert.deepEqual(baseline, { eventId: event.id, calledNumbers: [7, 42], phase: 'drawing', lastTransitionAt: T2,
+      auditSequence: 2, linePrize: { amount: 10, lot: 'Jamón' } });
+    assert.equal(store.declareLineDirectly(baseline, 1, T3).award.winnerCount, 1);
+  } finally { store.close(); }
+  const reopened = createEventStore(path);
+  try { assert.equal(reopened.load()?.phase, 'line_declared'); } finally { reopened.close(); }
+});
+
+test('cancelLegacyLineCheck survives a reopen of the legacy checking_line before cancelling', (t) => {
+  const { path, store } = openLegacyCheck(t);
+  store.close();
+  const reopened = createEventStore(path);
+  try {
+    assert.equal(reopened.cancelLegacyLineCheck(reopened.loadLegacyLineCheck(), T2).phase, 'drawing');
+    assert.equal(reopened.readAudit().length, 2);
+  } finally { reopened.close(); }
+});
+
+test('cancelLegacyLineCheck is single-use: a duplicate and a stale second connection are refused unchanged', (t) => {
+  const { path, store } = openLegacyCheck(t);
+  const other = createEventStore(path);
+  try {
+    const check = store.loadLegacyLineCheck();
+    const staleCopy = other.loadLegacyLineCheck();
+    store.cancelLegacyLineCheck(check, T2);
+    const after = dump(path);
+    assert.throws(() => store.cancelLegacyLineCheck(check, T3), /not eligible/i);
+    assert.throws(() => other.cancelLegacyLineCheck(staleCopy, T3), /not eligible/i);
+    assert.deepEqual(dump(path), after);
+    // Re-entering checking_line gives a new identity; the old one never matches it.
+    other.transitionPhase('begin_line_check', T3);
+    const before = dump(path);
+    assert.throws(() => store.cancelLegacyLineCheck(check, '2025-01-01T00:00:04.000Z'), /stale/i);
+    assert.deepEqual(dump(path), before);
+  } finally { other.close(); store.close(); }
+});
+
+test('cancelLegacyLineCheck refuses a different event, audit, head or malformed identity without writing', (t) => {
+  const { path, store } = openLegacyCheck(t);
+  try {
+    const check = store.loadLegacyLineCheck();
+    const before = dump(path);
+    const bad: unknown[] = [
+      null, undefined, 'x', [], {}, { ...check, eventId: 'other' }, { ...check, auditSequence: 2 },
+      { ...check, lastTransitionAt: T2 }, { ...check, phase: 'drawing' }, { ...check, extra: 1 },
+      { ...check, auditSequence: '1' }, { ...check, auditSequence: 0 }, { ...check, lastTransitionAt: null },
+      { eventId: check.eventId, phase: 'checking_line', lastTransitionAt: T1 },
+    ];
+    for (const value of bad) assert.throws(() => store.cancelLegacyLineCheck(value, T2), /./, JSON.stringify(value));
+    for (const at of [T1, '2024-01-01T00:00:00.000Z', '2025-01-01', 'nope', 5, null, undefined]) {
+      assert.throws(() => store.cancelLegacyLineCheck(check, at), /timestamp/i, String(at));
+    }
+    assert.deepEqual(dump(path), before);
+    assert.equal(store.load()?.phase, 'checking_line');
+  } finally { store.close(); }
+});
+
+test('cancelLegacyLineCheck rolls back on a state or audit failure and under a writer lock', (t) => {
+  const { path, store } = openLegacyCheck(t);
+  try {
+    const check = store.loadLegacyLineCheck();
+    const before = dump(path);
+    for (const [name, trigger] of [
+      ['state', `CREATE TRIGGER fail_cancel BEFORE UPDATE OF phase ON events
+        BEGIN SELECT RAISE(ABORT, 'state failed'); END`],
+      ['audit', `CREATE TRIGGER fail_cancel BEFORE INSERT ON phase_audit
+        BEGIN SELECT RAISE(ABORT, 'audit failed'); END`],
+    ] as const) {
+      withDb(path, (db) => db.exec(trigger));
+      assert.throws(() => store.cancelLegacyLineCheck(check, T2), new RegExp(`${name} failed`));
+      withDb(path, (db) => db.exec('DROP TRIGGER fail_cancel'));
+      assert.deepEqual(dump(path), before, name);
+    }
+    withDb(path, (db) => {
+      db.exec('BEGIN IMMEDIATE');
+      try { assert.throws(() => store.cancelLegacyLineCheck(check, T2), /locked|busy/i); }
+      finally { db.exec('ROLLBACK'); }
+    });
+    assert.deepEqual(dump(path), before);
+    assert.equal(store.cancelLegacyLineCheck(check, T2).phase, 'drawing');
+  } finally { store.close(); }
+});
+
+test('cancelLegacyLineCheck copies the expected identity so later caller mutation changes nothing', (t) => {
+  const { store } = openLegacyCheck(t);
+  try {
+    const check = { ...store.loadLegacyLineCheck() };
+    const result = store.cancelLegacyLineCheck(check, T2);
+    check.auditSequence = 99;
+    assert.equal(result.lastTransitionAt, T2);
+    assert.equal(store.readAudit().length, 2);
+  } finally { store.close(); }
+});
+
+// ---- REC-01 blockers: one bound read snapshot for the readback, and typed eligibility vs corruption ----
+const NOT_ELIGIBLE = 'legacy_check_not_eligible';
+const codeOf = (error: unknown) => (error as { code?: unknown }).code;
+// Test-only damage that bypasses the schema guards a corrupted profile would already have slipped past.
+const damage = (db: DatabaseSync, sql: string) => {
+  db.exec('PRAGMA ignore_check_constraints = 1');
+  db.exec('PRAGMA foreign_keys = 0');
+  db.exec('DROP TRIGGER IF EXISTS phase_audit_no_update');
+  db.exec('DROP TRIGGER IF EXISTS phase_audit_no_delete');
+  db.exec(sql);
+};
+
+test('confirmLegacyLineCancel reports unchanged, recovered and stale from one bound snapshot', (t) => {
+  const { store } = openLegacyCheck(t);
+  try {
+    const check = store.loadLegacyLineCheck();
+    assert.equal(store.confirmLegacyLineCancel(check, T2), 'unchanged');
+    store.cancelLegacyLineCheck(check, T2);
+    assert.equal(store.confirmLegacyLineCancel(check, T2), 'recovered');
+    assert.equal(store.confirmLegacyLineCancel(check, T3), 'stale', 'a different timestamp is not our commit');
+    assert.equal(store.confirmLegacyLineCancel({ ...check, auditSequence: 2 }, T2), 'stale');
+    assert.equal(store.confirmLegacyLineCancel({ ...check, lastTransitionAt: T2 }, T2), 'stale');
+    assert.throws(() => store.confirmLegacyLineCancel({ ...check, extra: 1 }, T2), /invalid/i);
+    assert.throws(() => store.confirmLegacyLineCancel(check, 'nope'), /timestamp/i);
+  } finally { store.close(); }
+});
+
+test('confirmLegacyLineCancel never accepts another event whose audit row matches position and timestamp', (t) => {
+  const { path, store, event } = openLegacyCheck(t);
+  const other = createEventStore(path);
+  try {
+    const check = store.loadLegacyLineCheck();
+    // Event B has the same audit shape: begin at T1 (row 1), then a reject_line_claim at T2 (row 2).
+    const b = other.createEvent({ name: 'B', date: '2025-01-01', place: 'Y' });
+    other.selectEvent(b.id);
+    other.transitionPhase('begin_line_check', T1);
+    other.transitionPhase('reject_line_claim', T2);
+    assert.equal(other.readAudit()[check.auditSequence].kind, 'reject_line_claim');
+    assert.equal(other.readAudit()[check.auditSequence].transitionAt, T2);
+    assert.equal(store.confirmLegacyLineCancel(check, T2), 'stale');
+    // A itself was never cancelled: selecting it back still reads unchanged.
+    other.selectEvent(event.id);
+    assert.equal(store.confirmLegacyLineCancel(check, T2), 'unchanged');
+    assert.equal(store.loadLegacyLineCheck().eventId, event.id);
+  } finally { other.close(); store.close(); }
+});
+
+test('confirmLegacyLineCancel sees a real commit made through a second connection and writes nothing', (t) => {
+  const { path, store } = openLegacyCheck(t);
+  const other = createEventStore(path);
+  try {
+    const check = store.loadLegacyLineCheck();
+    other.cancelLegacyLineCheck(check, T2);
+    const before = dump(path);
+    assert.equal(store.confirmLegacyLineCancel(check, T2), 'recovered');
+    assert.deepEqual(dump(path), before);
+  } finally { other.close(); store.close(); }
+});
+
+test('confirmLegacyLineCancel fails closed on corrupt or unreadable storage', (t) => {
+  const { path, store } = openLegacyCheck(t);
+  try {
+    const check = store.loadLegacyLineCheck();
+    withDb(path, (db) => damage(db, "UPDATE phase_audit SET kind = 'bogus'"));
+    assert.throws(() => store.confirmLegacyLineCancel(check, T2), /invalid/i);
+    withDb(path, (db) => db.exec('DROP TABLE phase_audit'));
+    assert.throws(() => store.confirmLegacyLineCancel(check, T2), /./);
+  } finally { store.close(); }
+});
+
+test('loadLegacyLineCheck marks only legitimate non-eligibility with a typed code', (t) => {
+  const empty = createEventStore(fixture(t));
+  try {
+    assert.throws(() => empty.loadLegacyLineCheck(), (e) => codeOf(e) === NOT_ELIGIBLE);
+  } finally { empty.close(); }
+  const { store } = openDrawing(t);
+  try {
+    assert.throws(() => store.loadLegacyLineCheck(), (e) => codeOf(e) === NOT_ELIGIBLE);
+    store.transitionPhase('begin_line_check', T1);
+    store.transitionPhase('declare_line', T2);
+    assert.throws(() => store.loadLegacyLineCheck(), (e) => codeOf(e) === NOT_ELIGIBLE);
+    assert.throws(() => store.cancelLegacyLineCheck({ eventId: 'x', phase: 'checking_line', lastTransitionAt: T1,
+      auditSequence: 1 }, T3), (e) => codeOf(e) === NOT_ELIGIBLE);
+  } finally { store.close(); }
+});
+
+test('loadLegacyLineCheck never reports corrupt phase, audit or award data as not eligible', (t) => {
+  const corrupt = (label: string, damage: (db: DatabaseSync) => void, prepare?: (s: ReturnType<typeof createEventStore>) => void) => {
+    const { path, store } = openLegacyCheck(t);
+    try {
+      prepare?.(store);
+      withDb(path, damage);
+      assert.throws(() => store.loadLegacyLineCheck(), (e) => codeOf(e) !== NOT_ELIGIBLE && /./.test(String(e)), label);
+    } finally { store.close(); }
+  };
+  corrupt('phase', (db) => damage(db, "UPDATE events SET phase = 'bogus'"));
+  corrupt('phase head', (db) => damage(db, 'UPDATE events SET lastTransitionAt = NULL'));
+  corrupt('audit', (db) => damage(db, "UPDATE phase_audit SET kind = 'bogus'"));
+  corrupt('audit gap', (db) => damage(db, 'UPDATE phase_audit SET sequence = 2'));
+  corrupt('missing audit table', (db) => db.exec('DROP TABLE phase_audit'));
+  corrupt('award table', (db) => db.exec('DROP TABLE line_awards'));
+  // An award next to a checking_line head: a direct declaration never leaves that phase, so this is corruption.
+  const { path, store, event } = openDrawing(t);
+  try {
+    store.declareLineDirectly(store.loadLineDeclarationBaseline(), 1, T1);
+    withDb(path, (db) => {
+      damage(db, 'DELETE FROM phase_audit');
+      db.prepare("INSERT INTO phase_audit (event_id, sequence, transitionAt, kind, from_phase, to_phase) VALUES (?, 1, ?, 'begin_line_check', 'drawing', 'checking_line')")
+        .run(event.id, T1);
+      db.exec("UPDATE events SET phase = 'checking_line'");
+    });
+    assert.throws(() => store.loadLegacyLineCheck(), (e) => codeOf(e) !== NOT_ELIGIBLE && /./.test(String(e)), 'award');
+  } finally { store.close(); }
+});
