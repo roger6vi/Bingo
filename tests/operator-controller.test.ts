@@ -1186,8 +1186,24 @@ test('a null, thrown, malformed or rejected acknowledgement invalidates the iden
   }
 });
 
+test('an undefined legacy read fails closed without rejecting or retrying', async () => {
+  const f = legacyFixture();
+  await f.held();
+  assert.equal(f.last().legacy.status, 'available');
+  const before = f.reads();
+  f.replies.legacyRead = async () => undefined;
+  await assert.doesNotReject(f.controller.checkLegacy());
+  await flush();
+  assert.deepEqual([f.last().legacy.status, f.last().legacy.check, f.last().drawBlocked, f.last().error, f.cancels()],
+    ['uncertain', null, true, 'Invalid line check update. Read it again before trying.', 0]);
+  const after = f.reads();
+  assert.equal(after, before + 1);
+  await flush();
+  assert.equal(f.reads(), after, 'never retried by itself');
+});
+
 test('a failed, malformed or foreign check read fails closed, offers no cancellation and is never retried by itself', async () => {
-  const answers: Array<[string, unknown]> = [['null', null], ['storage', lineFailure('storage_failure', 'Could not read the line check. Try again or review the event storage.')],
+  const answers: Array<[string, unknown]> = [['null', null], ['undefined', undefined], ['storage', lineFailure('storage_failure', 'Could not read the line check. Try again or review the event storage.')],
     ['malformed', { ok: true, state: 'legacy_check', check: { eventId: 'e1' } }],
     ['other event', { ok: true, state: 'legacy_check', check: { ...legacyCheck, eventId: 'e2' } }],
     ['other phase', { ok: true, state: 'legacy_check', check: { ...legacyCheck, phase: 'drawing' } }],

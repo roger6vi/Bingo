@@ -567,3 +567,25 @@ test('seeding refuses a symlinked database or a dist module outside the verified
   assert.deepEqual(missing.seedLog, []);
   await missing.fixture.dispose();
 }));
+
+test('a failed identity-check relaunch revokes the previous bootstrap proof', () => withTemp(async (dir) => {
+  const { fixture, launch, root, seedLog } = await bootstrapped(dir);
+  await launch();
+  await fixture.closeAll();
+  const foreign = fakeApp([], { paths: { userData: '/elsewhere', appPath: '/foreign' } });
+  await assert.rejects(smoke.launchVerified({ electron: { launch: async () => foreign }, executablePath: 'x', project: { root }, fixture }), /not the fixture profile/);
+  await assert.rejects(fixture.seedLegacyLineCheck(), /no bootstrap/);
+  assert.deepEqual(seedLog, [], 'no seed write happened');
+  await fixture.dispose();
+}));
+
+test('a synchronous launch failure releases pending ownership', () => withTemp(async (dir) => {
+  const { fixture, launch, root, seedLog } = await bootstrapped(dir);
+  await assert.rejects(smoke.launchVerified({ electron: { launch() { throw new Error('sync launch failed'); } }, executablePath: 'x', project: { root }, fixture }), /sync launch failed/);
+  await launch();
+  await fixture.closeAll();
+  const facts = await fixture.seedLegacyLineCheck();
+  assert.equal(facts.phase, 'checking_line');
+  assert.equal(seedLog.at(-1)[0], 'close');
+  await fixture.dispose();
+}));
