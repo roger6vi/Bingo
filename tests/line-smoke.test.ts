@@ -40,7 +40,7 @@ test('unknown or empty scenario selectors fail before any profile, artifact or l
   assert.deepEqual(smoke.selectScenarios('5').map(([name]) => name), names.filter((name) => name.startsWith('5')));
   for (const bad of ['nope', '']) assert.throws(() => smoke.selectScenarios(bad), /unknown scenario/);
   await assert.rejects(smoke.main({ only: 'nope' }), /unknown scenario/);
-  assertRefusesBefore('selectScenarios(only)');
+  assertRefusesBefore('selectScenarios(only');
 });
 
 test('the body-facing context cannot launch, restart or read after cancellation, holds no owner capability, and a late launch is cleaned up', () => withTemp(async (dir) => {
@@ -133,7 +133,21 @@ test('rec02b-legacy-recovery is registered, selectable by prefix, and an unknown
   assert.deepEqual(smoke.selectScenarios('rec02b').map(([name]) => name), ['rec02b-legacy-recovery']);
   assert.ok(!smoke.selectScenarios('1').some(([name]) => name.startsWith('rec02b')), 'existing selectors are unchanged');
   await assert.rejects(smoke.main({ only: 'rec02b-nope' }), /unknown scenario/);
-  assertRefusesBefore('selectScenarios(only)');
+  assertRefusesBefore('selectScenarios(only');
+});
+
+test('packaged selection excludes legacy recovery and rejects explicit recovery selectors', async () => {
+  const names = smoke.SCENARIOS.map(([name]) => name);
+  assert.deepEqual(smoke.selectScenarios(undefined, smoke.SCENARIOS, { packaged: true }).map(([n]) => n), names.filter((n) => n !== 'rec02b-legacy-recovery'));
+  assert.ok(smoke.selectScenarios(undefined).map(([n]) => n).includes('rec02b-legacy-recovery'), 'ordinary default keeps recovery');
+  assert.ok(smoke.selectScenarios(undefined, smoke.SCENARIOS, { packaged: false }).map(([n]) => n).includes('rec02b-legacy-recovery'));
+  for (const selector of ['rec02b', 'rec02b-legacy-recovery']) assert.throws(() => smoke.selectScenarios(selector, smoke.SCENARIOS, { packaged: true }), /unsupported.*packaged/i);
+  assert.deepEqual(smoke.selectScenarios('1', smoke.SCENARIOS, { packaged: true }).map(([n]) => n), names.filter((n) => n.startsWith('1')));
+  assert.throws(() => smoke.selectScenarios('nope', smoke.SCENARIOS, { packaged: true }), /unknown scenario/);
+  // main() derives packaged mode and passes it to selection, before any profile/artifact/launch.
+  const source = readFileSync(path.join(import.meta.dirname, '../verification/line-smoke.mjs'), 'utf8');
+  assert.match(source.slice(source.indexOf('export async function main(')), /selectScenarios\(only, SCENARIOS, \{ packaged: packaged !== undefined \}\)/);
+  assertRefusesBefore('selectScenarios(only, SCENARIOS');
 });
 
 test('the recovery context methods are guarded by the scope, expose no raw seed or SQL capability, and refuse before any launch', () => withTemp(async (dir) => {

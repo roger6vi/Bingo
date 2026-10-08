@@ -354,11 +354,17 @@ export const SCENARIOS = [
   ...LEGACY_RECOVERY_SCENARIOS,
 ];
 
+// Scenarios that seed a legacy profile; packaged seeding is refused, so they only run against the source checkout.
+export const SOURCE_ONLY_SCENARIOS = new Set(LEGACY_RECOVERY_SCENARIOS.map(([name]) => name));
+
 // A selector must name at least one scenario; it is checked before any profile, artifact or launch exists.
-export function selectScenarios(only, all = SCENARIOS) {
-  if (only === undefined) return all;
+// In packaged mode the default skips source-only scenarios and an explicit selector for one is refused.
+export function selectScenarios(only, all = SCENARIOS, { packaged = false } = {}) {
+  if (only === undefined) return packaged ? all.filter(([name]) => !SOURCE_ONLY_SCENARIOS.has(name)) : all;
   const picked = all.filter(([name]) => only !== '' && name.startsWith(only));
   if (picked.length === 0) throw new Error(`unknown scenario selector "${only}"; known: ${all.map(([name]) => name).join(', ')}`);
+  const sourceOnly = packaged ? picked.filter(([name]) => SOURCE_ONLY_SCENARIOS.has(name)) : [];
+  if (sourceOnly.length > 0) throw new Error(`scenario selector "${only}" is unsupported in packaged mode (source-only: ${sourceOnly.map(([name]) => name).join(', ')})`);
   return picked;
 }
 
@@ -396,7 +402,7 @@ function packagedProject(base, executable) {
 }
 
 export async function main({ root, only = process.argv[2], packaged = packagedFromEnv() } = {}) {
-  const selected = selectScenarios(only);
+  const selected = selectScenarios(only, SCENARIOS, { packaged: packaged !== undefined });
   if (packaged !== undefined) resolvePackaged(root ?? path.resolve(import.meta.dirname, '..'), packaged); // refuse before any profile or artifact exists
   const artifacts = mkdtempSync(path.join(tmpdir(), 'bingo-fl09-artifacts-'));
   const logFile = path.join(artifacts, 'line-smoke.log');
