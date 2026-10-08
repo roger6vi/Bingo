@@ -1052,3 +1052,282 @@ test('an obsolete read with a foreign or failing answer never replaces a newer p
     assert.deepEqual([f.last().mode, f.last().award?.presentation.id], ['declared', 'p2']);
   }
 });
+
+// Legacy checking_line recovery: an explicit, operator-confirmed cancellation of a check that main reports as held.
+const legacyCheck = { eventId: 'e1', phase: 'checking_line', lastTransitionAt: time, auditSequence: 7 };
+type LegacyState = LineState & { legacy: { status: string; check: typeof legacyCheck | null } };
+function legacyFixture() {
+  const calls: string[] = [];
+  const renders: LegacyState[] = [];
+  let refreshed = 0;
+  const refresh = { ok: true, run: async () => refresh.ok };
+  const replies: Record<string, () => Promise<unknown>> = {
+    read: async () => ({ ok: true, state: 'none' }),
+    legacyRead: async () => ({ ok: true, state: 'legacy_check', check: legacyCheck }),
+    legacyCancel: async () => ({ ok: true, state: 'recovered' }),
+  };
+  const controller = createLineController({
+    readLineSetup: () => { calls.push('read'); return replies.read(); },
+    beginLineSetup: () => { calls.push('begin'); return Promise.resolve({ ok: true, session: lineSession }); },
+    cancelLineSetup: () => { calls.push('setup-cancel'); return Promise.resolve({ ok: true }); },
+    confirmLine: () => { calls.push('confirm'); return Promise.resolve({ ok: true, award: lineAward }); },
+    retryLinePresentation: () => { calls.push('retry'); return Promise.resolve({ ok: true, award: lineAward }); },
+    repeatLinePresentation: () => { calls.push('repeat'); return Promise.resolve({ ok: true, award: lineAward }); },
+    readLegacyLineCheck: () => { calls.push('legacy:read'); return replies.legacyRead(); },
+    cancelLegacyLineCheck: (eventId: string, sequence: number, head: string) => {
+      calls.push(`legacy:cancel:${eventId}:${sequence}:${head}`);
+      return replies.legacyCancel();
+    },
+  }, { render: (state: LegacyState) => { renders.push(structuredClone(state)); } },
+  { committed: () => { refreshed++; return refresh.run(); } });
+  const cancels = () => calls.filter((call) => call.startsWith('legacy:cancel')).length;
+  const reads = () => calls.filter((call) => call === 'legacy:read').length;
+  const held = async () => { await controller.start(); controller.setEvent('e1', 'checking_line'); await flush(); };
+  return { controller, calls, replies, refresh, refreshed: () => refreshed, cancels, reads, held,
+    last: () => renders.at(-1) as LegacyState };
+}
+
+test('a held check is read once for the exact checking_line event, offered for cancellation and never cancelled by reading', async () => {
+  const f = legacyFixture();
+  await f.held();
+  assert.deepEqual(f.calls, ['read', 'legacy:read']);
+  assert.deepEqual([f.last().legacy.status, f.last().legacy.check, f.last().drawBlocked], ['available', legacyCheck, true]);
+  await flush();
+  assert.deepEqual(f.calls, ['read', 'legacy:read'], 'no automatic re-read, retry or cancel');
+});
+
+test('the check is read when the event is named before the initial setup read finishes too', async () => {
+  const f = legacyFixture();
+  const started = f.controller.start();
+  f.controller.setEvent('e1', 'checking_line');
+  await started;
+  await flush();
+  assert.deepEqual([f.reads(), f.last().legacy.status], [1, 'available']);
+});
+
+test('no check is read without a known checking_line event, or beside a held setup, award or setup failure', async () => {
+  for (const [phase, id] of [['drawing', 'e1'], ['line_declared', 'e1'], [null, 'e1'], ['checking_line', null]] as const) {
+    const f = legacyFixture();
+    await f.controller.start();
+    f.controller.setEvent(id, phase);
+    await flush();
+    assert.equal(f.reads(), 0, `${phase}/${id}`);
+    assert.equal(f.last().legacy.status, 'none');
+  }
+  const answers: Array<[string, unknown]> = [['setup', { ok: true, state: 'setup', session: lineSession }],
+    ['declared', { ok: true, state: 'declared', award: awardAt('completed') }], ['failed', lineFailure('storage_failure', 'x')], ['null', null]];
+  for (const [name, answer] of answers) {
+    const f = legacyFixture();
+    f.replies.read = async () => answer;
+    await f.held();
+    assert.equal(f.reads(), 0, name);
+    assert.equal(f.last().legacy.status, 'none', name);
+    await f.controller.cancelLegacy();
+    assert.equal(f.cancels(), 0, name);
+  }
+});
+
+test('setup none alone is not eligibility: a not-available check offers nothing and keeps drawing unlocked', async () => {
+  const f = legacyFixture();
+  f.replies.legacyRead = async () => lineFailure('not_available', 'There is no line check to cancel.');
+  await f.held();
+  assert.deepEqual([f.last().legacy.status, f.last().drawBlocked, f.last().error], ['none', false, null]);
+  await f.controller.cancelLegacy();
+  assert.equal(f.cancels(), 0);
+});
+
+test('cancelling sends the exact identity once, refreshes once, and unlocks drawing only after an authoritative drawing phase', async () => {
+  const f = legacyFixture();
+  await f.held();
+  const first = f.controller.cancelLegacy();
+  const second = f.controller.cancelLegacy();
+  await Promise.all([first, second]);
+  await flush();
+  assert.deepEqual(f.calls.filter((call) => call.startsWith('legacy:cancel')), [`legacy:cancel:e1:7:${time}`]);
+  assert.deepEqual([f.refreshed(), f.last().refresh, f.last().legacy.status, f.last().drawBlocked], [1, 'none', 'recovered', true]);
+  // Only a refreshed event that is drawing again lets the page name the event without a check.
+  f.controller.setEvent('e1', 'drawing');
+  assert.deepEqual([f.last().legacy.status, f.last().drawBlocked, f.cancels(), f.reads()], ['none', false, 1, 1]);
+  assert.deepEqual(f.calls.filter((call) => ['begin', 'confirm', 'retry', 'repeat'].includes(call)), [], 'no award or presentation hook');
+});
+
+test('a failed refresh after recovery stays locked without an optimistic unlock and never cancels again', async () => {
+  const f = legacyFixture();
+  f.refresh.ok = false;
+  await f.held();
+  await f.controller.cancelLegacy();
+  await flush();
+  assert.deepEqual([f.last().refresh, f.last().drawBlocked], ['failed', true]);
+  f.refresh.ok = true;
+  f.controller.retryRefresh();
+  await flush();
+  assert.deepEqual([f.last().refresh, f.last().drawBlocked, f.cancels()], ['none', true, 1]);
+  await f.controller.cancelLegacy();
+  assert.equal(f.cancels(), 1, 'the held identity was consumed');
+});
+
+test('a null, thrown, malformed or rejected acknowledgement invalidates the identity and only an explicit read recovers it', async () => {
+  const answers: Array<[string, () => Promise<unknown>]> = [['null', async () => null], ['thrown', async () => { throw new Error('lost'); }],
+    ['malformed', async () => ({ ok: true })], ['stale', async () => lineFailure('stale_session', 'A confirmation is in progress. Try again.')],
+    ['storage', async () => lineFailure('storage_failure', 'Could not confirm the line check state. Read it again before trying.')]];
+  for (const [name, answer] of answers) {
+    const f = legacyFixture();
+    await f.held();
+    f.replies.legacyCancel = answer;
+    await f.controller.cancelLegacy();
+    await flush();
+    assert.deepEqual([f.last().legacy.status, f.last().legacy.check, f.last().drawBlocked, f.refreshed()], ['uncertain', null, true, 0], name);
+    assert.notEqual(f.last().error, null, name);
+    await f.controller.cancelLegacy();
+    await flush();
+    assert.deepEqual([f.cancels(), f.reads()], [1, 1], `${name}: never retried or re-read automatically`);
+    await f.controller.checkLegacy();
+    assert.deepEqual([f.reads(), f.last().legacy.status, f.cancels()], [2, 'available', 1], name);
+  }
+});
+
+test('an undefined legacy read fails closed without rejecting or retrying', async () => {
+  const f = legacyFixture();
+  await f.held();
+  assert.equal(f.last().legacy.status, 'available');
+  const before = f.reads();
+  f.replies.legacyRead = async () => undefined;
+  await assert.doesNotReject(f.controller.checkLegacy());
+  await flush();
+  assert.deepEqual([f.last().legacy.status, f.last().legacy.check, f.last().drawBlocked, f.last().error, f.cancels()],
+    ['uncertain', null, true, 'Invalid line check update. Read it again before trying.', 0]);
+  const after = f.reads();
+  assert.equal(after, before + 1);
+  await flush();
+  assert.equal(f.reads(), after, 'never retried by itself');
+});
+
+test('a failed, malformed or foreign check read fails closed, offers no cancellation and is never retried by itself', async () => {
+  const answers: Array<[string, unknown]> = [['null', null], ['undefined', undefined], ['storage', lineFailure('storage_failure', 'Could not read the line check. Try again or review the event storage.')],
+    ['malformed', { ok: true, state: 'legacy_check', check: { eventId: 'e1' } }],
+    ['other event', { ok: true, state: 'legacy_check', check: { ...legacyCheck, eventId: 'e2' } }],
+    ['other phase', { ok: true, state: 'legacy_check', check: { ...legacyCheck, phase: 'drawing' } }],
+    ['bad sequence', { ok: true, state: 'legacy_check', check: { ...legacyCheck, auditSequence: 0 } }]];
+  for (const [name, answer] of answers) {
+    const f = legacyFixture();
+    f.replies.legacyRead = async () => answer;
+    await f.held();
+    await flush();
+    assert.deepEqual([f.last().legacy.status, f.last().legacy.check, f.last().drawBlocked, f.reads()], ['uncertain', null, true, 1], name);
+    await f.controller.cancelLegacy();
+    assert.equal(f.cancels(), 0, name);
+  }
+});
+
+test('a read or cancellation answered after the event or its phase changed is dropped', async () => {
+  const f = legacyFixture();
+  let release!: (value: unknown) => void;
+  f.replies.legacyRead = () => new Promise((resolve) => { release = resolve; });
+  await f.controller.start();
+  f.controller.setEvent('e1', 'checking_line');
+  await flush();
+  f.controller.setEvent('e1', 'drawing');
+  release({ ok: true, state: 'legacy_check', check: legacyCheck });
+  await flush();
+  assert.deepEqual([f.last().legacy.status, f.last().drawBlocked], ['none', false]);
+
+  const g = legacyFixture();
+  await g.held();
+  let ack!: (value: unknown) => void;
+  g.replies.legacyCancel = () => new Promise((resolve) => { ack = resolve; });
+  const cancelling = g.controller.cancelLegacy();
+  g.controller.setEvent('e2', 'drawing');
+  ack({ ok: true, state: 'recovered' });
+  await cancelling;
+  await flush();
+  assert.deepEqual([g.refreshed(), g.last().legacy.status, g.last().refresh], [0, 'none', 'none']);
+});
+
+const lateCancelReplies: Array<[string, unknown]> = [
+  ['recovered', { ok: true, state: 'recovered' }],
+  ['refusal', lineFailure('stale_check', 'The check changed.')],
+  ['null', null]];
+
+for (const [name, late] of lateCancelReplies) {
+  test(`a late ${name} cancel reply after a same-event phase change is dropped without touching the new context`, async () => {
+    const f = legacyFixture();
+    await f.held();
+    let ack!: (value: unknown) => void;
+    f.replies.legacyCancel = () => new Promise((resolve) => { ack = resolve; });
+    const cancelling = f.controller.cancelLegacy();
+    f.controller.setEvent('e1', 'drawing');
+    ack(late);
+    await cancelling;
+    await flush();
+    assert.deepEqual([f.refreshed(), f.last().refresh, f.last().legacy.status, f.last().error, f.last().drawBlocked, f.last().pending],
+      [0, 'none', 'none', null, false, false]);
+    assert.deepEqual([f.cancels(), f.reads()], [1, 1]);
+    await f.controller.open();
+    assert.deepEqual([f.calls.filter((call) => call === 'begin').length, f.last().mode], [1, 'setup'], 'the guard was released');
+  });
+
+  test(`a late ${name} cancel reply after leaving and re-entering checking_line leaves the new valid check untouched`, async () => {
+    const f = legacyFixture();
+    await f.held();
+    let ack!: (value: unknown) => void;
+    f.replies.legacyCancel = () => new Promise((resolve) => { ack = resolve; });
+    const newer = { ...legacyCheck, auditSequence: 9 };
+    f.replies.legacyRead = async () => ({ ok: true, state: 'legacy_check', check: newer });
+    const cancelling = f.controller.cancelLegacy();
+    f.controller.setEvent('e1', 'drawing');
+    f.controller.setEvent('e1', 'checking_line');
+    ack(late);
+    await cancelling;
+    await flush();
+    assert.deepEqual([f.refreshed(), f.last().refresh, f.last().legacy.status, f.last().legacy.check, f.last().error, f.last().drawBlocked],
+      [0, 'none', 'available', newer, null, true]);
+    assert.deepEqual([f.cancels(), f.reads()], [1, 2]);
+    f.replies.legacyCancel = async () => ({ ok: true, state: 'recovered' });
+    await f.controller.cancelLegacy();
+    await flush();
+    assert.deepEqual([f.calls.at(-1), f.refreshed()], [`legacy:cancel:e1:9:${time}`, 1], 'the new context is not locked out');
+  });
+}
+
+test('the request is revalidated when it is dispatched: a changed context, award, setup or pending refresh sends nothing', async () => {
+  const f = legacyFixture();
+  await f.held();
+  f.controller.setEvent('e1', null);
+  await f.controller.cancelLegacy();
+  assert.equal(f.cancels(), 0, 'stale or unknown phase');
+
+  const g = legacyFixture();
+  await g.held();
+  g.replies.read = async () => ({ ok: true, state: 'declared', award: awardAt('completed') });
+  await g.controller.start();
+  await g.controller.cancelLegacy();
+  assert.equal(g.cancels(), 0, 'a held award wins over the dedicated read');
+
+  const h = legacyFixture();
+  await h.held();
+  h.replies.read = async () => ({ ok: true, state: 'setup', session: lineSession });
+  await h.controller.start();
+  await h.controller.cancelLegacy();
+  assert.equal(h.cancels(), 0, 'an open setup wins');
+
+  const i = legacyFixture();
+  i.refresh.run = () => new Promise<boolean>(() => {});
+  await i.held();
+  await i.controller.cancelLegacy();
+  await i.controller.cancelLegacy();
+  assert.equal(i.cancels(), 1, 'a refresh still pending never allows a second write');
+});
+
+test('a held check is read again by an ordinary reload and, after recovery, the normal line setup still opens', async () => {
+  const f = legacyFixture();
+  await f.held();
+  await f.controller.start();
+  await flush();
+  assert.deepEqual([f.reads(), f.cancels(), f.last().legacy.status], [2, 0, 'available']);
+  await f.controller.cancelLegacy();
+  await flush();
+  f.controller.setEvent('e1', 'drawing');
+  await f.controller.open();
+  assert.deepEqual(f.calls.filter((call) => ['begin', 'confirm'].includes(call)), ['begin']);
+  assert.deepEqual([f.last().mode, f.last().dialogOpen, f.last().legacy.status], ['setup', true, 'none']);
+});
