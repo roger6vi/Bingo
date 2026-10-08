@@ -69,6 +69,20 @@ export const MESSAGES_ES = Object.freeze({
   'Lot state needs a fresh read.': 'El estado del lote no es fiable. Pulsa «Releer estado» para leerlo de nuevo.',
   'Draw result uncertain; read the lot to continue.':
     'No se pudo confirmar el resultado del sorteo del lote. Pulsa «Releer estado» para leerlo; no se repite solo.',
+  // Legacy line check recovery (src/line-ipc.ts and the line controller)
+  'There is no line check to cancel.': 'No hay ninguna comprobación de línea que cancelar.',
+  'Could not read the line check. Try again or review the event storage.':
+    'No se pudo leer la comprobación de línea. Pulsa «Releer comprobación de línea» o revisa el almacenamiento del evento.',
+  'Could not cancel the line check. Try again.':
+    'No se pudo cancelar la comprobación de línea. Pulsa «Releer comprobación de línea» para leer el estado antes de reintentar.',
+  'Could not confirm the line check state. Read it again before trying.':
+    'No se pudo confirmar el estado de la comprobación de línea. Pulsa «Releer comprobación de línea» para leerlo; no se repite sola.',
+  'A first-line setup is already open. Close it first.':
+    'Ya hay una declaración de línea abierta. Ciérrala primero y pulsa «Releer comprobación de línea».',
+  'Could not connect to the line check. Read it again before trying.':
+    'No se pudo conectar con la comprobación de línea. Pulsa «Releer comprobación de línea» para leer el estado; no se repite sola.',
+  'Invalid line check update. Read it again before trying.':
+    'Respuesta de la comprobación de línea no válida. Pulsa «Releer comprobación de línea» para leer el estado.',
   // Renderer controllers
   'Could not connect to the event. Reload and try again.': 'No se pudo conectar con el evento. Recarga e inténtalo de nuevo.',
   'Invalid event update. Reload and try again.': 'Actualización del evento no válida. Recarga e inténtalo de nuevo.',
@@ -119,6 +133,19 @@ export function lineAwardSummary({ award, presentation }) {
   if (status === 'completed' && lotResolution === 'pending' && lot !== '') parts.push('El lote sigue pendiente de resolver.');
   return parts.join(' ');
 }
+
+// Recovery of a legacy checking_line: cancelling returns to drawing without declaring any line or award.
+export const LEGACY_CHECK_ES = Object.freeze({
+  action: 'Cancelar comprobación de línea',
+  reread: 'Releer comprobación de línea',
+  back: 'Volver',
+  confirm: 'Volver a cantar números',
+  dialog: 'Se conservarán los números cantados, su orden y los premios. La partida volverá a cantar números y no se declarará ninguna línea.',
+  available: 'La partida quedó en una comprobación de línea antigua. Puedes cancelarla para volver a cantar números.',
+  uncertain: 'No se pudo confirmar el estado de la comprobación de línea. Pulsa «Releer comprobación de línea»; no se repite sola.',
+  recovered: 'Comprobación de línea cancelada. Esperando el estado del evento para volver a cantar números.',
+  refreshFailed: 'Comprobación de línea cancelada, pero no se pudo releer el evento. Pulsa «Recargar evento» antes de seguir cantando.',
+});
 
 export const UNKNOWN_ERROR_ES = 'Se produjo un error. Recarga e inténtalo de nuevo.';
 

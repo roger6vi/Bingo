@@ -391,3 +391,201 @@ test('packaged verification requires userData = fixture and appPath = the packag
   assert.equal(good.verified, true);
   await Promise.all([bad, wrongProfile, notAsar, good].map((fixture) => fixture.dispose()));
 }));
+
+// ---- REC02B: fixture-owned legacy checking_line seeding ---------------------------------------------------------
+// The project root holds stub dist CommonJS modules that record every call, so no real database or Electron is used.
+const stubProject = (dir) => {
+  const root = realpathSync(dir);
+  mkdirSync(path.join(root, 'dist'), { recursive: true });
+  writeFileSync(path.join(root, 'dist', 'event-core.js'), `exports.drawManual = (event, number) => {
+    globalThis.__seedLog.push(['drawManual', number]); return { ...event, calledNumbers: [...event.calledNumbers, number] }; };`);
+  writeFileSync(path.join(root, 'dist', 'event-store.js'), `exports.createEventStore = (file) => {
+    const log = globalThis.__seedLog; log.push(['open', file]);
+    let event = globalThis.__seedPristine === false ? { calledNumbers: [3], phase: 'drawing', lastTransitionAt: null } : { calledNumbers: [], phase: 'drawing', lastTransitionAt: null };
+    const audit = []; let prizes = { line: { amount: 0, lot: '' }, bingo: { amount: 0, lot: '' } }; let meta = { name: 'x', date: '2026-01-01', place: 'y' };
+    return {
+      load: () => ({ ...event, calledNumbers: [...event.calledNumbers] }), readAudit: () => audit.map((entry) => ({ ...entry })), loadLineAward: () => null,
+      loadPrizes: () => ({ eventId: 'e1', prizes }), listEvents: () => [{ id: 'e1', ...meta, active: true }],
+      update(fn) { log.push(['update']); if (globalThis.__seedFail) throw new Error('write failed'); event = { ...event, ...fn(event) }; return event; },
+      transitionPhase(intent, at) { log.push(['transition', intent, at]); audit.push({ sequence: audit.length + 1, transitionAt: at, kind: intent, from_phase: 'drawing', to_phase: 'checking_line' });
+        event = { ...event, phase: 'checking_line', lastTransitionAt: at }; return event; },
+      updateEventPrizes(id, value) { log.push(['prizes', id]); prizes = value; return prizes; },
+      updateEventMeta(id, value) { log.push(['meta', id]); meta = value; return { id, ...meta, active: true }; },
+      loadLegacyLineCheck: () => ({ eventId: 'e1', phase: 'checking_line', lastTransitionAt: event.lastTransitionAt, auditSequence: audit.length }),
+      close() { log.push(['close']); },
+    }; };`);
+  return root;
+};
+// A fixture whose bootstrap launch was verified and whose app was then closed: the state in which seeding is allowed.
+async function bootstrapped(dir, { project, rm } = {}) {
+  const log = [];
+  globalThis.__seedLog = []; delete globalThis.__seedFail; delete globalThis.__seedPristine;
+  const root = stubProject(dir);
+  const fixture = smoke.createFixture({ tmp: dir, rm });
+  writeFileSync(path.join(fixture.path, 'current-event.sqlite'), '');
+  const app = fakeApp(log, { paths: { userData: fixture.path, appPath: project?.packaged?.appPath ?? root } });
+  const launch = () => smoke.launchVerified({ electron: { launch: async () => app }, executablePath: 'x', project: project ?? { root }, fixture });
+  return { fixture, root, app, launch, log, seedLog: globalThis.__seedLog };
+}
+
+test('seedLegacyLineCheck seeds the fixed legacy line check through the real store API after the bootstrap app exited', () => withTemp(async (dir) => {
+  const { fixture, launch, seedLog, log } = await bootstrapped(dir);
+  await launch();
+  await fixture.closeAll();
+  assert.deepEqual(log, ['close', 'exit']);
+  const facts = await fixture.seedLegacyLineCheck();
+  assert.deepEqual(seedLog.map(([step]) => step), ['open', 'meta', 'prizes', 'update', 'drawManual', 'drawManual', 'transition', 'close']);
+  assert.equal(seedLog[0][1], path.join(fixture.path, 'current-event.sqlite'));
+  assert.deepEqual(seedLog.filter(([step]) => step === 'drawManual').map(([, n]) => n), [7, 42]);
+  assert.equal(seedLog.find(([step]) => step === 'transition')[1], 'begin_line_check');
+  assert.deepEqual([facts.calledNumbers, facts.phase, facts.award], [[7, 42], 'checking_line', null]);
+  assert.deepEqual(facts.check, { eventId: 'e1', phase: 'checking_line', lastTransitionAt: facts.lastTransitionAt, auditSequence: 1 });
+  assert.equal(facts.audit.length, 1);
+  assert.deepEqual(facts.prizes, { line: { amount: 25, lot: 'Cesta' }, bingo: { amount: 100, lot: 'Jamón' } });
+  assert.deepEqual(Object.keys(facts.meta).sort(), ['date', 'name', 'place']);
+  assert.deepEqual(JSON.parse(JSON.stringify(facts)), facts, 'JSON-safe facts');
+  assert.ok(Date.parse(facts.lastTransitionAt) > 0 && new Date(facts.lastTransitionAt).toISOString() === facts.lastTransitionAt);
+  assert.throws(() => smoke.verifiedRuntime(fixture, 'read'), /not verified/, 'the live runtime identity check is not weakened');
+  await assert.rejects(fixture.seedLegacyLineCheck(), /already/, 'one seed per fixture');
+  await fixture.dispose();
+}));
+
+test('seedLegacyLineCheck takes no path, SQL or callback other than a guard, and writes nothing when refused', () => withTemp(async (dir) => {
+  const { fixture, launch, seedLog } = await bootstrapped(dir);
+  await launch();
+  await fixture.closeAll();
+  for (const bad of [{ path: '/x' }, { sql: 'DELETE FROM events' }, { write: () => {} }, { guard: 'nope' }, 'a path']) {
+    await assert.rejects(fixture.seedLegacyLineCheck(bad), /Refusing|guard/);
+  }
+  assert.deepEqual(seedLog, [], 'nothing was opened');
+  await assert.rejects(fixture.seedLegacyLineCheck({ guard: () => { throw new Error('scenario cancelled: x'); } }), /cancelled/);
+  assert.deepEqual(seedLog, [], 'a revoked scope never reaches the database');
+  await fixture.dispose();
+}));
+
+test('seeding is refused without a verified bootstrap, with a live app, a pending launch, when packaged or disposed', () => withTemp(async (dir) => {
+  // Never launched: refused before any file or module is touched (the sqlite file does not even exist).
+  const fresh = smoke.createFixture({ tmp: dir });
+  await assert.rejects(fresh.seedLegacyLineCheck(), /no bootstrap/);
+  // A launch whose runtime identity failed verification is not a bootstrap.
+  const wrong = await bootstrapped(dir);
+  wrong.app.evaluate = async () => ({ userData: '/elsewhere', appPath: wrong.root });
+  await assert.rejects(wrong.launch(), /not the fixture profile/);
+  await assert.rejects(wrong.fixture.seedLegacyLineCheck(), /no bootstrap/);
+  // Live app.
+  const live = await bootstrapped(dir);
+  await live.launch();
+  await assert.rejects(live.fixture.seedLegacyLineCheck(), /live|running/);
+  assert.deepEqual(live.seedLog, []);
+  // Pending launch.
+  const pending = await bootstrapped(dir);
+  await pending.launch();
+  await pending.fixture.closeAll();
+  let release;
+  const slow = new Promise((resolve) => { release = () => resolve(fakeApp([], { paths: { userData: pending.fixture.path, appPath: pending.root } })); });
+  const launching = smoke.launchVerified({ electron: { launch: () => slow }, executablePath: 'x', project: { root: pending.root }, fixture: pending.fixture });
+  await assert.rejects(pending.fixture.seedLegacyLineCheck(), /launch/);
+  release();
+  await launching;
+  await pending.fixture.dispose();
+  // Packaged: unsupported.
+  const packagedPath = path.join(dir, 'Resources', 'app.asar');
+  const packaged = await bootstrapped(dir, { project: { root: realpathSync(dir), packaged: { appPath: packagedPath } } });
+  await packaged.launch();
+  await packaged.fixture.closeAll();
+  await assert.rejects(packaged.fixture.seedLegacyLineCheck(), /packaged/);
+  // Disposed.
+  const disposed = await bootstrapped(dir);
+  await disposed.launch();
+  await disposed.fixture.closeAll();
+  const disposing = disposed.fixture.dispose();
+  await assert.rejects(disposed.fixture.seedLegacyLineCheck(), /disposing/);
+  await disposing;
+  for (const fixture of [fresh, wrong.fixture, live.fixture, packaged.fixture]) await fixture.dispose();
+}));
+
+test('a seed claims exclusivity synchronously: no concurrent seed, no launch or restart during it, disposal waits for it', () => withTemp(async (dir) => {
+  const log = [];
+  const { fixture, launch, app, seedLog } = await bootstrapped(dir, { rm: (target) => { log.push('rm'); rmSync(target, { recursive: true, force: true }); } });
+  await launch();
+  await fixture.closeAll();
+  const seeding = fixture.seedLegacyLineCheck();
+  await assert.rejects(fixture.seedLegacyLineCheck(), /already|seeding/, 'a concurrent seed is refused');
+  await assert.rejects(launch(), /seeding/, 'a launch is refused during the seed');
+  await assert.rejects(fixture.restart(app, async () => 'launched'), /seeding/, 'a restart is refused during the seed');
+  const disposing = fixture.dispose().then(() => log.push('disposed'));
+  await seeding.catch(() => {});
+  await disposing;
+  assert.ok(log.indexOf('rm') > -1);
+  assert.ok(!seedLog.some(([step]) => step === 'open') || seedLog.at(-1)[0] === 'close', 'a store opened by the seed is closed before the profile is deleted');
+  assert.ok(!existsSync(fixture.path));
+}));
+
+test('disposal that starts first aborts the seed before any database write', () => withTemp(async (dir) => {
+  const { fixture, launch, seedLog } = await bootstrapped(dir);
+  await launch();
+  await fixture.closeAll();
+  const seeding = fixture.seedLegacyLineCheck();
+  const disposing = fixture.dispose();
+  await assert.rejects(seeding, /disposing/);
+  await disposing;
+  assert.deepEqual(seedLog, [], 'nothing was opened or written');
+}));
+
+test('a non-pristine baseline or a failing write closes the store, surfaces the error and retains no extra authority', () => withTemp(async (dir) => {
+  const dirty = await bootstrapped(dir);
+  await dirty.launch();
+  await dirty.fixture.closeAll();
+  globalThis.__seedPristine = false;
+  await assert.rejects(dirty.fixture.seedLegacyLineCheck(), /pristine/);
+  assert.deepEqual(dirty.seedLog.map(([step]) => step), ['open', 'close'], 'no write happened and the store was closed');
+  await assert.rejects(dirty.fixture.seedLegacyLineCheck(), /already/, 'a failed seed is never retried on the same profile');
+  await dirty.fixture.dispose();
+  const failing = await bootstrapped(dir);
+  await failing.launch();
+  await failing.fixture.closeAll();
+  globalThis.__seedFail = true;
+  await assert.rejects(failing.fixture.seedLegacyLineCheck(), /write failed/);
+  assert.equal(failing.seedLog.at(-1)[0], 'close', 'the store is closed in finally');
+  await failing.fixture.dispose();
+}));
+
+test('seeding refuses a symlinked database or a dist module outside the verified project root', () => withTemp(async (dir) => {
+  const link = await bootstrapped(dir);
+  await link.launch();
+  await link.fixture.closeAll();
+  rmSync(path.join(link.fixture.path, 'current-event.sqlite'));
+  symlinkSync(path.join(link.root, 'dist', 'event-core.js'), path.join(link.fixture.path, 'current-event.sqlite'));
+  await assert.rejects(link.fixture.seedLegacyLineCheck(), /symlink|regular/);
+  assert.deepEqual(link.seedLog, []);
+  await link.fixture.dispose();
+  const missing = await bootstrapped(dir);
+  await missing.launch();
+  await missing.fixture.closeAll();
+  rmSync(path.join(missing.root, 'dist', 'event-store.js'));
+  await assert.rejects(missing.fixture.seedLegacyLineCheck(), /event-store/);
+  assert.deepEqual(missing.seedLog, []);
+  await missing.fixture.dispose();
+}));
+
+test('a failed identity-check relaunch revokes the previous bootstrap proof', () => withTemp(async (dir) => {
+  const { fixture, launch, root, seedLog } = await bootstrapped(dir);
+  await launch();
+  await fixture.closeAll();
+  const foreign = fakeApp([], { paths: { userData: '/elsewhere', appPath: '/foreign' } });
+  await assert.rejects(smoke.launchVerified({ electron: { launch: async () => foreign }, executablePath: 'x', project: { root }, fixture }), /not the fixture profile/);
+  await assert.rejects(fixture.seedLegacyLineCheck(), /no bootstrap/);
+  assert.deepEqual(seedLog, [], 'no seed write happened');
+  await fixture.dispose();
+}));
+
+test('a synchronous launch failure releases pending ownership', () => withTemp(async (dir) => {
+  const { fixture, launch, root, seedLog } = await bootstrapped(dir);
+  await assert.rejects(smoke.launchVerified({ electron: { launch() { throw new Error('sync launch failed'); } }, executablePath: 'x', project: { root }, fixture }), /sync launch failed/);
+  await launch();
+  await fixture.closeAll();
+  const facts = await fixture.seedLegacyLineCheck();
+  assert.equal(facts.phase, 'checking_line');
+  assert.equal(seedLog.at(-1)[0], 'close');
+  await fixture.dispose();
+}));
