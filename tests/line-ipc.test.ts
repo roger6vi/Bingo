@@ -14,7 +14,8 @@ const storedAward = (eventId = 'a') => ({ eventId, presentation: { id: 'p1', sta
   deadlineAt: null }, award: { winnerCount: 3, totalCents: 1000, shareCents: 333, remainderCents: 1, lot: 'Lote',
   lotResolution: 'not_required' } });
 
-function fixture(options: { head?: string | null; now?: () => Date; ports?: Record<string, unknown> } = {}) {
+function fixture(options: { head?: string | null; now?: () => Date; ports?: Record<string, unknown>;
+  storeExtra?: Record<string, unknown> } = {}) {
   const sender = {};
   const url = 'file:///app/operator.html';
   let frame: Frame = { url };
@@ -47,6 +48,7 @@ function fixture(options: { head?: string | null; now?: () => Date; ports?: Reco
       calls.push('load');
       return { calledNumbers: [7, 42], phase: 'line_declared' as const, lastTransitionAt: 'x' };
     },
+    ...options.storeExtra,
   };
   const line = registerLineIpc({ handle: (channel: string, handler: Handler) => {
     assert.equal(handlers.has(channel), false);
@@ -332,4 +334,187 @@ test('manual retry and repeat are refused while Tongo plays, before any coordina
   playing = false;
   assert.equal((f.invoke(LINE_CHANNELS.retryPresentation, ['p1']) as { ok: boolean }).ok, true);
   assert.deepEqual(actions, ['busy', 'retry:p1']);
+});
+
+// ---- legacy checking_line recovery (REC-01) ----
+const CHECK = { eventId: 'a', phase: 'checking_line' as const, lastTransitionAt: '2026-10-01T09:00:00.000Z', auditSequence: 3 };
+
+function legacy(options: { head?: string; ports?: Record<string, unknown>; mode?: string } = {}) {
+  const check = { ...CHECK, lastTransitionAt: options.head ?? CHECK.lastTransitionAt };
+  let mode = options.mode ?? 'ok';
+  let recovered: string | null = null;
+  const calls: string[] = [];
+  const extra = {
+    loadLegacyLineCheck() {
+      calls.push('check');
+      if (mode === 'corrupt') throw new Error('secret corrupt row');
+      if (mode === 'ineligible' || mode === 'stale' || recovered !== null) {
+        throw Object.assign(new Error('secret not eligible'), { code: 'legacy_check_not_eligible' });
+      }
+      return Object.freeze({ ...check });
+    },
+    cancelLegacyLineCheck(expected: unknown, at: unknown) {
+      calls.push(`cancel:${JSON.stringify(expected)}:${String(at)}`);
+      if (mode === 'rejected' || mode === 'stale') throw new Error('secret write');
+      recovered = String(at);
+      if (mode === 'uncertain' || mode === 'unreadable' || mode === 'otherEvent') throw new Error('lost acknowledgement');
+      return { calledNumbers: [7, 42], phase: 'drawing' as const, lastTransitionAt: recovered };
+    },
+    // Bound readback: one snapshot that names the event, so another event's matching row is never ours.
+    confirmLegacyLineCancel(expected: unknown, at: unknown) {
+      calls.push(`confirm:${JSON.stringify(expected)}:${String(at)}`);
+      if (mode === 'unreadable') throw new Error('secret read');
+      if (mode === 'otherEvent' || mode === 'stale') return 'stale';
+      return recovered === at ? 'recovered' : 'unchanged';
+    },
+    readAudit() {
+      calls.push('audit');
+      if (mode === 'unreadable') throw new Error('secret read');
+      if (mode === 'otherEvent') {
+        // Event B is now active and its row at the same position and timestamp matches.
+        return [...Array.from({ length: check.auditSequence }, (_, i) => ({ sequence: i + 1, transitionAt: 't',
+          kind: 'begin_line_check', from_phase: 'drawing', to_phase: 'checking_line' })),
+          { sequence: check.auditSequence + 1, transitionAt: recovered!, kind: 'reject_line_claim',
+            from_phase: 'checking_line', to_phase: 'drawing' }];
+      }
+      const rows = Array.from({ length: check.auditSequence }, (_, i) => ({ sequence: i + 1, transitionAt: 't',
+        kind: 'begin_line_check', from_phase: 'drawing', to_phase: 'checking_line' }));
+      if (recovered !== null) rows.push({ sequence: check.auditSequence + 1, transitionAt: recovered,
+        kind: 'reject_line_claim', from_phase: 'checking_line', to_phase: 'drawing' });
+      return rows;
+    },
+  };
+  const f = fixture({ ports: options.ports, storeExtra: extra });
+  const read = () => f.invoke(LINE_CHANNELS.readLegacyCheck) as Record<string, unknown>;
+  const cancel = (args: unknown[] = [check.eventId, check.auditSequence, check.lastTransitionAt]) =>
+    f.invoke(LINE_CHANNELS.cancelLegacyCheck, args) as Record<string, unknown>;
+  return { f, read, cancel, calls, set: (value: string) => { mode = value; } };
+}
+const writes = (calls: string[]) => calls.filter((call) => call.startsWith('cancel:'));
+
+test('legacy check read returns only the plain identity and refuses extra arguments and other senders', () => {
+  const { f, read } = legacy();
+  assert.deepEqual(read(), { ok: true, state: 'legacy_check', check: CHECK });
+  assert.equal((f.invoke(LINE_CHANNELS.readLegacyCheck, [1]) as { code: string }).code, 'invalid_request');
+  assert.throws(() => f.invoke(LINE_CHANNELS.readLegacyCheck, [], {}), /Unauthorized/);
+  assert.throws(() => f.invoke(LINE_CHANNELS.cancelLegacyCheck, [CHECK.eventId, 3, CHECK.lastTransitionAt], {}), /Unauthorized/);
+  const ineligible = legacy({ mode: 'ineligible' });
+  assert.deepEqual(ineligible.read(), { ok: false, code: 'not_available', message: 'There is no line check to cancel.' });
+});
+
+test('legacy cancel commits with a main-generated newer timestamp, publishes the normal snapshot and never celebrates', () => {
+  const events: string[] = [];
+  const { f, cancel, calls } = legacy({ ports: { committed: () => events.push('committed'),
+    publish: (snapshot: unknown) => events.push(`publish:${JSON.stringify(snapshot)}`) } });
+  assert.deepEqual(cancel(), { ok: true, state: 'recovered' });
+  assert.deepEqual(writes(calls), [`cancel:${JSON.stringify({ ...CHECK })}:2026-10-01T10:00:00.000Z`]);
+  assert.deepEqual(events, ['publish:{"calledNumbers":[7,42],"phase":"line_declared","lastTransitionAt":"x"}']);
+  assert.equal(f.line.active(), false);
+});
+
+test('legacy cancel timestamp is strictly after a clock-skewed head', () => {
+  const head = '2026-10-01T12:00:00.000Z';
+  const { cancel, calls } = legacy({ head });
+  assert.equal(cancel([CHECK.eventId, CHECK.auditSequence, head]).ok, true);
+  assert.ok(writes(calls)[0].endsWith(':2026-10-01T12:00:00.001Z'));
+});
+
+test('legacy cancel rejects malformed arguments before any store access', () => {
+  const { cancel, calls } = legacy();
+  for (const args of [[], ['a'], ['a', 3], ['a', 3, CHECK.lastTransitionAt, 'x'], ['', 3, 'h'], [1, 3, 'h'],
+    ['a', '3', 'h'], ['a', 0, 'h'], ['a', 1.5, 'h'], ['a', NaN, 'h'], ['a', Number.MAX_SAFE_INTEGER + 1, 'h'],
+    ['a', 3, ''], ['a', 3, null], ['a'.repeat(65), 3, 'h'], [{ eventId: 'a' }], [{}, 3, 'h']]) {
+    assert.equal(cancel(args).code, 'invalid_request', JSON.stringify(args));
+  }
+  assert.deepEqual(calls, []);
+});
+
+test('legacy cancel refuses an open setup, Tongo, a presentation and a clock failure without writing', () => {
+  const state = { tongo: false, busy: false, clock: false };
+  const { f, cancel, calls } = legacy({ ports: { tongoPlaying: () => state.tongo, busy: () => state.busy } });
+  const open = begin(f);
+  assert.equal(cancel().code, 'setup_active');
+  f.invoke(LINE_CHANNELS.cancel, [open.sessionId, open.eventId]);
+  state.tongo = true;
+  assert.equal(cancel().code, 'tongo_active');
+  state.tongo = false; state.busy = true;
+  assert.equal(cancel().code, 'presentation_busy');
+  assert.deepEqual(writes(calls), []);
+  state.busy = false;
+  assert.equal(cancel().ok, true);
+  const bad = legacy({ ports: { now: () => { throw new Error('clock'); } } });
+  assert.equal(bad.cancel().code, 'storage_failure');
+  assert.deepEqual(writes(bad.calls), []);
+});
+
+test('legacy cancel with a stale or ineligible store reports stale without publishing or celebrating', () => {
+  const events: string[] = [];
+  const ports = { publish: () => events.push('publish'), committed: () => events.push('committed') };
+  const stale = legacy({ ports, mode: 'stale' });
+  const r = stale.cancel();
+  assert.deepEqual([r.ok, r.code], [false, 'stale_session']);
+  const rejected = legacy({ ports, mode: 'rejected' });
+  const unchanged = rejected.cancel();
+  assert.deepEqual([unchanged.ok, unchanged.code], [false, 'storage_failure']);
+  assert.equal(JSON.stringify(unchanged).includes('secret'), false);
+  assert.deepEqual(events, []);
+});
+
+test('legacy cancel with a lost acknowledgement rereads the bound state instead of retrying and then succeeds', () => {
+  const events: string[] = [];
+  const { cancel, calls } = legacy({ mode: 'uncertain', ports: { publish: () => events.push('publish'),
+    committed: () => events.push('committed') } });
+  assert.deepEqual(cancel(), { ok: true, state: 'recovered' });
+  assert.equal(writes(calls).length, 1, 'never a second write');
+  assert.ok(calls.some((call) => call.startsWith('confirm:')));
+  assert.deepEqual(events, ['publish']);
+});
+
+test('legacy cancel with an unreadable state after a failed write reports an unknown state and does not retry', () => {
+  const { cancel, calls, set } = legacy({ mode: 'unreadable' });
+  const r = cancel();
+  assert.deepEqual([r.ok, r.code], [false, 'storage_failure']);
+  assert.equal(JSON.stringify(r).includes('secret'), false);
+  assert.equal(writes(calls).length, 1);
+  set('ok');
+  assert.equal(cancel().ok, true, 'an explicit new request after a readback is allowed');
+});
+
+test('legacy cancel publication failure stays acknowledged and does not undo the commit', () => {
+  const { f, cancel } = legacy();
+  f.setFailure('publish');
+  assert.deepEqual(cancel(), { ok: true, state: 'recovered' });
+});
+
+test('legacy cancel never treats another active event matching audit row as its own recovery', () => {
+  const events: string[] = [];
+  const { cancel, calls } = legacy({ mode: 'otherEvent', ports: { publish: () => events.push('publish'),
+    committed: () => events.push('committed') } });
+  const r = cancel();
+  assert.deepEqual([r.ok, r.code], [false, 'stale_session']);
+  assert.equal(writes(calls).length, 1, 'never a second write');
+  assert.ok(calls.some((call) => call.startsWith(`confirm:${JSON.stringify({ ...CHECK })}:`)), 'bound readback');
+  assert.deepEqual(events, [], 'no publish for an event we did not recover');
+});
+
+test('legacy cancel readback uses the bound store read for a lost acknowledgement and for an unchanged write', () => {
+  const lost = legacy({ mode: 'uncertain' });
+  assert.deepEqual(lost.cancel(), { ok: true, state: 'recovered' });
+  assert.ok(lost.calls.some((call) => call.startsWith('confirm:')));
+  assert.equal(lost.calls.includes('audit'), false, 'no unbound audit read');
+  const unchanged = legacy({ mode: 'rejected' });
+  const r = unchanged.cancel();
+  assert.deepEqual([r.ok, r.code], [false, 'storage_failure']);
+  assert.equal(unchanged.calls.includes('audit'), false);
+});
+
+test('legacy read reports corrupt or unreadable storage as an operator storage failure, not as not available', () => {
+  const corrupt = legacy({ mode: 'corrupt' });
+  const r = corrupt.read();
+  assert.deepEqual([r.ok, r.code], [false, 'storage_failure']);
+  assert.equal(JSON.stringify(r).includes('secret'), false);
+  assert.match(String(r.message), /storage|read|retry|try again/i);
+  const eligible = legacy({ mode: 'ineligible' }).read();
+  assert.deepEqual([eligible.ok, eligible.code], [false, 'not_available']);
+  assert.notEqual(r.message, eligible.message);
 });
