@@ -3298,6 +3298,28 @@ test('confirmLegacyLineCancel fails closed on corrupt or unreadable storage', (t
   } finally { store.close(); }
 });
 
+test('confirmLegacyLineCancel rejects corrupt awards in unchanged and recovered snapshots', (t) => {
+  const { path, store, event } = openLegacyCheck(t);
+  try {
+    const check = store.loadLegacyLineCheck();
+    // Well-formed award whose audit link points at the begin_line_check row (sequence 1).
+    insertAward(path, event.id, { audit_sequence: 1 }, true);
+    let before = dump(path);
+    assert.throws(() => store.confirmLegacyLineCancel(check, T2), /Invalid stored line award: audit link/);
+    assert.deepEqual(dump(path), before, 'unchanged case writes nothing');
+    withDb(path, (db) => {
+      db.exec('PRAGMA ignore_check_constraints = 1; PRAGMA foreign_keys = OFF');
+      db.exec('DROP TRIGGER IF EXISTS phase_audit_no_update');
+      db.prepare('UPDATE events SET phase = ?, lastTransitionAt = ? WHERE id = ?').run('drawing', T2, event.id);
+      db.prepare(`INSERT INTO phase_audit (event_id, sequence, transitionAt, kind, from_phase, to_phase)
+        VALUES (?, 2, ?, 'reject_line_claim', 'checking_line', 'drawing')`).run(event.id, T2);
+    });
+    before = dump(path);
+    assert.throws(() => store.confirmLegacyLineCancel(check, T2), /Invalid stored line award: audit link/);
+    assert.deepEqual(dump(path), before, 'recovered case writes nothing');
+  } finally { store.close(); }
+});
+
 test('loadLegacyLineCheck marks only legitimate non-eligibility with a typed code', (t) => {
   const empty = createEventStore(fixture(t));
   try {
