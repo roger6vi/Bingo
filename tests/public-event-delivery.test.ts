@@ -592,3 +592,42 @@ test('a matching resolution label cannot launder a wrong-origin strict fact', ()
   ];
   for (const [name, award, snap] of wrong) assert.equal(lotFixture(award, snap).award(), null, name);
 });
+
+test('refreshLineAward resends only the strict static award for the bound event, with no presentation or history', () => {
+  const f = lotFixture(resolvedAward(), lotSnap(numbered(2, 'blue')));
+  const before = f.messages.length;
+  assert.equal(f.delivery.refreshLineAward('event-a'), true);
+  assert.deepEqual(f.messages.slice(before).map((m) => m.channel), [PUBLIC_LINE_AWARD_CHANNEL]);
+  const sent = f.messages[before].result as Record<string, any>;
+  assert.deepEqual(sent.lotResult, { origin: 'numbered_v1', resolution: 'resolved', paletteVersion: 1, participantNumber: 2, colorId: 'blue' });
+  assert.doesNotMatch(JSON.stringify(sent), /secret-presentation-id/);
+});
+
+test('refreshLineAward sends nothing for a foreign event, a missing or inconsistent fact, a throw, or no window', () => {
+  const f = lotFixture(resolvedAward(), lotSnap(numbered(2, 'blue')));
+  const before = f.messages.length;
+  assert.equal(f.delivery.refreshLineAward('event-b'), false);
+  f.set(lotSnap(numbered(2, 'blue'), { lot: 'Other' }));
+  assert.equal(f.delivery.refreshLineAward('event-a'), false);
+  f.set(null);
+  assert.equal(f.delivery.refreshLineAward('event-a'), false);
+  f.fail();
+  assert.equal(f.delivery.refreshLineAward('event-a'), false);
+  assert.equal(f.messages.length, before);
+  f.delivery.detachIfCurrent(f.target);
+  f.set(lotSnap(numbered(2, 'blue')));
+  assert.equal(f.delivery.refreshLineAward('event-a'), false);
+  assert.equal(f.messages.length, before);
+});
+
+test('refreshLineAward neither disturbs a pending line receipt binding nor sends on the presentation channel', () => {
+  const f = lotFixture(resolvedAward(), lotSnap(numbered(2, 'blue')));
+  const frame = { url: PAGE };
+  const bound = { ...f.target, mainFrame: frame };
+  f.delivery.attachAfterLoad(bound);
+  assert.equal(f.delivery.publishPresentation(signal), true);
+  const before = f.messages.length;
+  f.delivery.refreshLineAward('event-a');
+  assert.ok(f.messages.slice(before).every((m) => m.channel === PUBLIC_LINE_AWARD_CHANNEL));
+  assert.equal(f.delivery.acceptLineReceipt({ sender: bound, senderFrame: frame }, 'p1', PAGE), true);
+});

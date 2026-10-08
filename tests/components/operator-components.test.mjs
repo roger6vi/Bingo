@@ -1861,6 +1861,14 @@ it('the line lot panel reads the pending lot, waits for the completed celebratio
   } finally { op.cleanup(); }
 });
 
+it('a failed lot read shows Spanish copy on the panel, never the controller English message', async () => {
+  const op = await tiedOp({ read: async () => ({ ok: false, code: 'storage_failure' }) });
+  try {
+    expect(lotText(op)).to.include('El estado del lote no es fiable');
+    expect(lotText(op)).to.not.include('Lot state needs a fresh read');
+  } finally { op.cleanup(); }
+});
+
 it('a numbered or legacy winner restored at startup is shown as is, with no reroll, retry, replay or presentation request', async () => {
   const legacy = lotSnap({ origin: 'legacy_v8', resolution: 'resolved', winner: 'unknown' });
   // The largest safe count and a repeated palette colour (participant 7 is red again) are valid facts.

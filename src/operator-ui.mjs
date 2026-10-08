@@ -148,7 +148,7 @@ const lotPanel = required('line-lot', HTMLElement);
 const presentLot = (snapshot) => {
   try { Promise.resolve(desktop.presentLineLot?.(snapshot)).catch(() => {}); } catch { /* presentation is not lot state */ }
 };
-const lotController = createLineLotController(desktop, { render: (state) => { lotPanel.state = state; } }, { onCommitted: presentLot });
+const lotController = createLineLotController(desktop, { render: (state) => { lotPanel.state = { ...state, message: operatorMessage(state.message) }; } }, { onCommitted: presentLot });
 const lotAward = () => {
   const award = lineState.mode === 'declared' && !lineMismatch() ? lineState.award : null;
   return award && activeEventId !== null && award.eventId === activeEventId && award.award?.lotResolution !== 'not_required' ? award : null;
