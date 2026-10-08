@@ -9,10 +9,15 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFixture, createScope, guarded, launchVerified, resolvePackaged, resolveProject, runScenario } from './line-smoke-lifecycle.mjs';
-import { readAwards, readFixture, readLot } from './line-smoke-reader.mjs';
+import { AWARD_SQL, readAwards, readFixture, readLot } from './line-smoke-reader.mjs';
 import { LOT_SCENARIOS } from './line-lot-smoke-scenarios.mjs';
+import { LEGACY_RECOVERY_SCENARIOS } from './line-legacy-recovery-smoke-scenarios.mjs';
 
 const PRESENTATION_MS = 4000;
+// Fixed committed facts for the legacy recovery scenario (read-only SELECTs, never caller-supplied SQL).
+const RECOVERY_SQL = ['SELECT name, date, place, history, phase, lastTransitionAt FROM events',
+  'SELECT sequence, transitionAt, kind, from_phase AS fromPhase, to_phase AS toPhase FROM phase_audit ORDER BY sequence',
+  'SELECT lineAmount, lineLot, bingoAmount, bingoLot FROM event_prizes', AWARD_SQL];
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // ---- live scenarios -------------------------------------------------------------------------------------------
@@ -60,6 +65,21 @@ export function createContext({ project, electron, executablePath, artifacts, na
     // SQL errors are never swallowed into "no award yet".
     async award() { scope.check(); const rows = await readAwards(fixture); scope.check(); return rows[0] ?? null; },
     async readLot() { scope.check(); const rows = await readLot(fixture); scope.check(); return rows; },
+    // Closes and awaits the actual exit of every app of the owned fixture (the state a seed requires).
+    async closeApps() { scope.check(); await fixture.closeAll(); scope.check(); },
+    // Fixed-purpose offline seed of one legacy checking_line; the scope guard is re-run right before the database opens.
+    async seedLegacyLine() { scope.check(); const facts = await fixture.seedLegacyLineCheck({ guard: () => scope.check() }); scope.check(); return facts; },
+    // Committed facts of the one current event, read through the verified runtime (needs a live, verified app).
+    async readRecovery() {
+      scope.check();
+      const [events, audit, prizes, awards] = await readFixture(fixture, RECOVERY_SQL);
+      scope.check();
+      if (events.length !== 1 || prizes.length > 1) throw new Error(`unexpected current-event rows: ${events.length} events, ${prizes.length} prize rows`);
+      const [{ history, ...event }] = events;
+      const [row] = prizes;
+      return { ...event, calledNumbers: JSON.parse(history), audit,
+        prizes: row ? { line: { amount: row.lineAmount, lot: row.lineLot }, bingo: { amount: row.bingoAmount, lot: row.bingoLot } } : null, awards };
+    },
     async waitAward(label, test, timeout = 15_000) {
       const limit = Date.now() + timeout;
       for (;;) {
@@ -331,6 +351,7 @@ export const SCENARIOS = [
   ['6-receipt-refusals', receipts],
   ['7-navigation-before-receipt', navigateBeforeReceipt],
   ...LOT_SCENARIOS,
+  ...LEGACY_RECOVERY_SCENARIOS,
 ];
 
 // A selector must name at least one scenario; it is checked before any profile, artifact or launch exists.
