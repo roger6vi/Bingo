@@ -6,6 +6,12 @@ export const AWARD_SQL = `SELECT presentation_id AS id, presentation_status AS s
   presentation_deadline AS deadline, winner_count AS winners, total_cents AS totalCents, share_cents AS shareCents,
   remainder_cents AS remainderCents, lot, lot_resolution AS lotResolution FROM line_awards`;
 
+// Lot facts of the one first-line award (numbered result, origin) plus the audit identity the lot must not disturb.
+export const LOT_SQL = `SELECT presentation_id AS id, presentation_status AS status, audit_sequence AS auditSequence, winner_count AS winners,
+  total_cents AS totalCents, share_cents AS shareCents, remainder_cents AS remainderCents, lot, lot_resolution AS lotResolution,
+  lot_result_origin AS origin, lot_participant_number AS participant, lot_color_id AS color FROM line_awards`;
+export const AUDIT_SQL = 'SELECT COUNT(*) AS entries, MAX(sequence) AS last FROM phase_audit';
+
 // Runs INSIDE Electron's main process via app.evaluate (self-contained: it is serialized). The runtime userData and
 // appPath are re-checked before the fixture database is opened read-only; every statement runs and is fully
 // materialized synchronously on the main event loop, so the product's synchronous writer can never overlap this
@@ -28,3 +34,8 @@ export async function readFixture(fixture, statements) {
     file: path.join(fixture.path, 'current-event.sqlite'), statements });
 }
 export const readAwards = async (fixture) => (await readFixture(fixture, [AWARD_SQL]))[0];
+// One committed lot row (or null) with the audit identity, from a single read-only pass.
+export async function readLot(fixture) {
+  const [lots, audit] = await readFixture(fixture, [LOT_SQL, AUDIT_SQL]);
+  return { lot: lots[0] ?? null, audit: audit[0] };
+}

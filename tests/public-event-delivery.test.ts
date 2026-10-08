@@ -403,6 +403,19 @@ test('a line receipt is bound to the exact frame the signal was sent to, and is 
   assert.equal(f.delivery.acceptLineReceipt(event(target, frameA), 'p1', PAGE), false, 'one-shot: no replay');
 });
 
+test('a receipt from an operator sender is rejected with either frame and never consumes the public binding', () => {
+  const f = fixture();
+  const publicFrame = { url: PAGE }, operatorFrame = { url: PAGE };
+  const target = Object.assign(f.target(), { mainFrame: publicFrame as { url: string } });
+  const operator = Object.assign(f.target(), { mainFrame: operatorFrame as { url: string } });
+  const event = (sender: unknown, senderFrame: unknown) => ({ sender, senderFrame });
+  f.delivery.attachAfterLoad(target);
+  assert.equal(f.delivery.publishPresentation(signal), true);
+  assert.equal(f.delivery.acceptLineReceipt(event(operator, operatorFrame), 'p1', PAGE), false, 'operator sender, own frame');
+  assert.equal(f.delivery.acceptLineReceipt(event(operator, publicFrame), 'p1', PAGE), false, 'operator sender, public frame');
+  assert.equal(f.delivery.acceptLineReceipt(event(target, publicFrame), 'p1', PAGE), true, 'genuine public receipt still accepted');
+});
+
 test('a receipt binding dies with its window and is replaced by the next signal; Tongo and failed sends bind nothing', () => {
   const f = fixture();
   const frame = { url: PAGE };

@@ -9,7 +9,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFixture, createScope, guarded, launchVerified, resolvePackaged, resolveProject, runScenario } from './line-smoke-lifecycle.mjs';
-import { readAwards, readFixture } from './line-smoke-reader.mjs';
+import { readAwards, readFixture, readLot } from './line-smoke-reader.mjs';
+import { LOT_SCENARIOS } from './line-lot-smoke-scenarios.mjs';
 
 const PRESENTATION_MS = 4000;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -58,6 +59,7 @@ export function createContext({ project, electron, executablePath, artifacts, na
     },
     // SQL errors are never swallowed into "no award yet".
     async award() { scope.check(); const rows = await readAwards(fixture); scope.check(); return rows[0] ?? null; },
+    async readLot() { scope.check(); const rows = await readLot(fixture); scope.check(); return rows; },
     async waitAward(label, test, timeout = 15_000) {
       const limit = Date.now() + timeout;
       for (;;) {
@@ -95,6 +97,26 @@ export function createContext({ project, electron, executablePath, artifacts, na
     },
     celebration: (page) => page.evaluate(() => { const el = document.querySelector('#line-celebration');
       return { active: el.active, text: el.shadowRoot.textContent.includes('¡Línea!'), award: document.querySelector('#line-award').textContent }; }),
+    // Bounded screenshots of every open window of the owned fixture, kept in the artifacts directory (success included).
+    async shoot(label) {
+      scope.check();
+      let index = 0;
+      // Authority is re-checked before every window listing and dispatch and after every capture, so a revocation
+      // during a pending screenshot (resolved or rejected) escapes and no further capture is dispatched.
+      for (const app of fixture.apps) {
+        scope.check();
+        for (const page of app.windows()) {
+          scope.check();
+          try {
+            await page.screenshot({ path: path.join(artifacts, `${name}-${label}-${++index}.png`), timeout: 5000 });
+          } catch (error) {
+            scope.check(); // revoked authority is never swallowed as a best-effort failure
+            note(`screenshot ${label} failed: ${error.message}`);
+          }
+          scope.check();
+        }
+      }
+    },
     drawCode: (operator) => operator.evaluate(() => window.desktop.drawDigital().then((result) => result.code ?? 'ok')),
     async drawFromUi(operator) {
       await operator.click('#tab-bingo');
@@ -261,10 +283,9 @@ async function receipts(ctx) {
   await ctx.seed(operator, '');
   const page = await ctx.openPublic(app, operator);
   await ctx.delayReceipt(page, 1500);
-  const [foreign] = await Promise.all([app.waitForEvent('window'), app.evaluate(({ BrowserWindow }, file) => {
-    new BrowserWindow({ show: false, webPreferences: { preload: file, contextIsolation: true, nodeIntegration: false, sandbox: true } })
-      .loadURL('data:text/html,<title>foreign</title>');
-  }, ctx.preload)]);
+  const [foreign] = await Promise.all([app.waitForEvent('window'), app.evaluate(({ BrowserWindow }, { preload, file }) => {
+    void new BrowserWindow({ show: false, webPreferences: { preload, contextIsolation: true, nodeIntegration: false, sandbox: true } }).loadFile(file);
+  }, { preload: ctx.preload, file: ctx.shipped.publicHtml })]);
   await foreign.waitForFunction(() => 'publicLineReceipt' in window);
   await ctx.declare(operator, 1);
   const pending = await ctx.waitAward('pending', (award) => award.status === 'pending');
@@ -281,7 +302,7 @@ async function receipts(ctx) {
   await page.evaluate((id) => window.publicLineReceipt.started(id), pending.id);
   await ctx.pause(300);
   assert.deepEqual(await ctx.award(), done, 'a late receipt after completion changes nothing');
-  ctx.note('operator window has no receipt API: operator-frame spoofing is not coverable without product changes');
+  ctx.note('operator window has no receipt API; operator-sender receipt rejection is covered by the unit test in tests/public-event-delivery.test.ts');
 }
 
 // 7. Navigating the public page before its receipt voids the pending run: no start, the award fails, no retry.
@@ -309,6 +330,7 @@ export const SCENARIOS = [
   ['5-restart-interrupted-repeat', restartInterrupted],
   ['6-receipt-refusals', receipts],
   ['7-navigation-before-receipt', navigateBeforeReceipt],
+  ...LOT_SCENARIOS,
 ];
 
 // A selector must name at least one scenario; it is checked before any profile, artifact or launch exists.
@@ -371,6 +393,9 @@ export async function main({ root, only = process.argv[2], packaged = packagedFr
     for (const [name, body] of selected) {
       const { ctx, owner, scope } = createContext({ project, electron, executablePath, artifacts, name, say });
       ctx.preload = preloadFor(project);
+      const dist = path.dirname(ctx.preload);
+      ctx.shipped = { operatorPreload: path.join(dist, 'preload.js'), operatorHtml: path.join(dist, 'renderer', 'operator.html'),
+        publicHtml: path.join(dist, 'renderer', 'public.html') };
       results.push(await runScenario({ name, body, ctx, scope, owner, say }));
       say(`${name}: profile ${owner.fixture.path} removed=${!existsSync(owner.fixture.path)}`);
       save();
