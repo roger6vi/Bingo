@@ -1226,34 +1226,84 @@ export function createEventStore(path: string) {
   // One explicit presentation step on the active event's award. Everything is checked under the writer lock: the id
   // must be the current one and the pure graph must allow the step. The compare-and-set names the id and source
   // status, must change exactly one row, and the readback must equal the intended state before COMMIT.
+  // The Bingo award reuses the same lifecycle on its own table; only presentation columns are ever written.
+  const kinds = {
+    line: { table: 'line_awards', name: 'line', label: 'Line', read: readLineAward },
+    bingo: { table: 'bingo_awards', name: 'bingo', label: 'Bingo', read: readBingoAward },
+  } as const;
   function stepPresentation(id: unknown, intent: LinePresentationIntent,
-      plan: (current: StoredLineAward['presentation']) => { startedAt: number | null; deadlineAt: number | null }) {
-    if (typeof id !== 'string' || id.trim() === '') throw new Error('Invalid line presentation id');
+      plan: (current: StoredLineAward['presentation']) => { startedAt: number | null; deadlineAt: number | null },
+      kind: keyof typeof kinds = 'line') {
+    const { table, name, label, read } = kinds[kind];
+    if (typeof id !== 'string' || id.trim() === '') throw new Error(`Invalid ${name} presentation id`);
     return transaction(() => {
       const eventId = readActiveEventId(db);
       if (eventId === null) throw new Error('Current event does not exist');
       readEvent(db);
-      const current = readLineAward(db, eventId, replayAudit(db, eventId));
-      if (current === null || current.presentation.id !== id) throw new Error('Line presentation is not the current one');
+      const current = read(db, eventId, replayAudit(db, eventId));
+      if (current === null || current.presentation.id !== id) throw new Error(`${label} presentation is not the current one`);
       const status = transitionLinePresentation({ status: current.presentation.status }, intent).status;
       const times = plan(current.presentation);
       const nextId = intent === 'retry' || intent === 'replay' ? randomUUID() : id;
-      const result = db.prepare(`UPDATE line_awards SET presentation_id = ?, presentation_status = ?,
+      const result = db.prepare(`UPDATE ${table} SET presentation_id = ?, presentation_status = ?,
         presentation_started_at = ?, presentation_deadline = ?
         WHERE event_id = ? AND presentation_id = ? AND presentation_status = ?`)
         .run(nextId, status, times.startedAt, times.deadlineAt, eventId, id, current.presentation.status);
-      if (result.changes !== 1) throw new Error('Line presentation changed concurrently');
+      if (result.changes !== 1) throw new Error(`${label} presentation changed concurrently`);
       readEvent(db);
-      const stored = readLineAward(db, eventId, replayAudit(db, eventId));
+      const stored = read(db, eventId, replayAudit(db, eventId));
       const p = stored?.presentation;
       if (p === undefined || p.id !== nextId || p.status !== status || p.startedAt !== times.startedAt ||
           p.deadlineAt !== times.deadlineAt) {
-        throw new Error('Invalid stored line award: presentation mismatch after write');
+        throw new Error(`Invalid stored ${name} award: presentation mismatch after write`);
       }
       return stored as StoredLineAward;
     });
   }
   const noTimes = () => ({ startedAt: null, deadlineAt: null });
+  const startPlan = (label: string, startedAt: unknown) => {
+    if (typeof startedAt !== 'number' || !Number.isSafeInteger(startedAt) || startedAt < 0 ||
+        startedAt + LINE_PRESENTATION_MS > MAX_SAFE_INTEGER) {
+      throw new Error(`${label} presentation start must be a safe epoch millisecond whose deadline is safe`);
+    }
+    return () => ({ startedAt, deadlineAt: startedAt + LINE_PRESENTATION_MS });
+  };
+  const completePlan = (label: string, now: unknown) => {
+    if (typeof now !== 'number' || !Number.isSafeInteger(now) || now < 0) {
+      throw new Error(`${label} presentation completion time must be a safe epoch millisecond`);
+    }
+    return (current: StoredLineAward['presentation']) => {
+      if (current.deadlineAt === null || now < current.deadlineAt) throw new Error(`${label} presentation deadline not reached`);
+      return { startedAt: current.startedAt, deadlineAt: current.deadlineAt };
+    };
+  };
+  // Startup reconciliation of one status across all events, in rowid order: each row is fully validated, moved
+  // keeping its id and times, and read back; any corruption or failed write rolls the whole batch back.
+  function reconcilePresentations(kind: keyof typeof kinds, from: 'started' | 'pending'): number {
+    const { table, name, label, read } = kinds[kind];
+    return transaction(() => {
+      const ids = db.prepare(`SELECT event_id FROM ${table} WHERE presentation_status = ? ORDER BY rowid`)
+        .all(from).map((row) => row.event_id);
+      const to = transitionLinePresentation({ status: from }, from === 'started' ? 'interrupt' : 'fail').status;
+      for (const eventId of ids) {
+        if (typeof eventId !== 'string') throw new Error(`Invalid stored ${name} award: event`);
+        const current = read(db, eventId, replayAudit(db, eventId));
+        if (current === null || current.presentation.status !== from) {
+          throw new Error(`Invalid stored ${name} award: presentation`);
+        }
+        const result = db.prepare(`UPDATE ${table} SET presentation_status = ?
+          WHERE event_id = ? AND presentation_id = ? AND presentation_status = ?`)
+          .run(to, eventId, current.presentation.id, from);
+        if (result.changes !== 1) throw new Error(`${label} presentation changed concurrently`);
+        const stored = read(db, eventId, replayAudit(db, eventId))?.presentation;
+        if (stored?.status !== to || stored.id !== current.presentation.id ||
+            stored.startedAt !== current.presentation.startedAt || stored.deadlineAt !== current.presentation.deadlineAt) {
+          throw new Error(`Invalid stored ${name} award: presentation mismatch after write`);
+        }
+      }
+      return ids.length;
+    });
+  }
 
   function readSnapshot<T>(action: () => T): T {
     db.exec('BEGIN');
@@ -1732,82 +1782,41 @@ export function createEventStore(path: string) {
     // Explicit presentation steps; the main process calls them, nothing here uses a clock, timer or replay. Each
     // returns the frozen award read back inside the committing transaction and refuses stale ids and repeats.
     startLinePresentation(id: unknown, startedAt: unknown): StoredLineAward {
-      if (typeof startedAt !== 'number' || !Number.isSafeInteger(startedAt) || startedAt < 0 ||
-          startedAt + LINE_PRESENTATION_MS > MAX_SAFE_INTEGER) {
-        throw new Error('Line presentation start must be a safe epoch millisecond whose deadline is safe');
-      }
-      return stepPresentation(id, 'start', () => ({ startedAt, deadlineAt: startedAt + LINE_PRESENTATION_MS }));
+      return stepPresentation(id, 'start', startPlan('Line', startedAt));
     },
     failLinePresentation(id: unknown): StoredLineAward { return stepPresentation(id, 'fail', noTimes); },
     retryLinePresentation(id: unknown): StoredLineAward { return stepPresentation(id, 'retry', noTimes); },
     // Explicit operator replay of an interrupted run: back to pending under a new id, so the old run can never complete.
     replayLinePresentation(id: unknown): StoredLineAward { return stepPresentation(id, 'replay', noTimes); },
     completeLinePresentation(id: unknown, now: unknown): StoredLineAward {
-      if (typeof now !== 'number' || !Number.isSafeInteger(now) || now < 0) {
-        throw new Error('Line presentation completion time must be a safe epoch millisecond');
-      }
-      return stepPresentation(id, 'complete', (current) => {
-        if (current.deadlineAt === null || now < current.deadlineAt) throw new Error('Line presentation deadline not reached');
-        return { startedAt: current.startedAt, deadlineAt: current.deadlineAt };
-      });
+      return stepPresentation(id, 'complete', completePlan('Line', now));
     },
     // Startup reconciliation, called once by main before any window or delivery exists: every award persisted as
     // started across all events becomes interrupted, keeping its id and times. Never run by open, read or event
     // switching, and it creates no replay, completion or audit row. Each started row is fully validated first, so
     // corruption throws and rolls the whole batch back. Returns the number of awards changed.
-    interruptStartedLinePresentations(): number {
-      return transaction(() => {
-        const ids = db.prepare("SELECT event_id FROM line_awards WHERE presentation_status = 'started' ORDER BY rowid")
-          .all().map((row) => row.event_id);
-        const to = transitionLinePresentation({ status: 'started' }, 'interrupt').status;
-        for (const eventId of ids) {
-          if (typeof eventId !== 'string') throw new Error('Invalid stored line award: event');
-          const current = readLineAward(db, eventId, replayAudit(db, eventId));
-          if (current === null || current.presentation.status !== 'started') {
-            throw new Error('Invalid stored line award: presentation');
-          }
-          const result = db.prepare(`UPDATE line_awards SET presentation_status = ?
-            WHERE event_id = ? AND presentation_id = ? AND presentation_status = 'started'`)
-            .run(to, eventId, current.presentation.id);
-          if (result.changes !== 1) throw new Error('Line presentation changed concurrently');
-          const stored = readLineAward(db, eventId, replayAudit(db, eventId))?.presentation;
-          if (stored?.status !== to || stored.id !== current.presentation.id ||
-              stored.startedAt !== current.presentation.startedAt || stored.deadlineAt !== current.presentation.deadlineAt) {
-            throw new Error('Invalid stored line award: presentation mismatch after write');
-          }
-        }
-        return ids.length;
-      });
-    },
+    interruptStartedLinePresentations(): number { return reconcilePresentations('line', 'started'); },
     // Rows are processed in insertion (rowid) order, never by random event id, so failures are reproducible.
     // Startup reconciliation (run after interruptStarted, before any window): every award persisted as
     // pending across all events becomes failed, keeping its id; its times stay NULL. Never run by open, read or event
     // switching, and it creates no retry, completion or audit row. Each pending row is fully validated first, so
     // corruption throws and rolls the whole batch back. Returns the number of awards changed.
-    failPendingLinePresentations(): number {
-      return transaction(() => {
-        const ids = db.prepare("SELECT event_id FROM line_awards WHERE presentation_status = 'pending' ORDER BY rowid")
-          .all().map((row) => row.event_id);
-        const to = transitionLinePresentation({ status: 'pending' }, 'fail').status;
-        for (const eventId of ids) {
-          if (typeof eventId !== 'string') throw new Error('Invalid stored line award: event');
-          const current = readLineAward(db, eventId, replayAudit(db, eventId));
-          if (current === null || current.presentation.status !== 'pending') {
-            throw new Error('Invalid stored line award: presentation');
-          }
-          const result = db.prepare(`UPDATE line_awards SET presentation_status = ?
-            WHERE event_id = ? AND presentation_id = ? AND presentation_status = 'pending'`)
-            .run(to, eventId, current.presentation.id);
-          if (result.changes !== 1) throw new Error('Line presentation changed concurrently');
-          const stored = readLineAward(db, eventId, replayAudit(db, eventId))?.presentation;
-          if (stored?.status !== to || stored.id !== current.presentation.id ||
-              stored.startedAt !== null || stored.deadlineAt !== null) {
-            throw new Error('Invalid stored line award: presentation mismatch after write');
-          }
-        }
-        return ids.length;
-      });
+    failPendingLinePresentations(): number { return reconcilePresentations('line', 'pending'); },
+    // The Bingo award's presentation follows the same explicit steps and startup reconciliation as the line's, on its
+    // own row. Completion only marks the presentation: the phase stays bingo_declared, draws stay blocked, the lot is
+    // untouched and nothing finishes, rerolls or settles. Retry and replay are manual and rotate only the id.
+    startBingoPresentation(id: unknown, startedAt: unknown): StoredBingoAward {
+      return stepPresentation(id, 'start', startPlan('Bingo', startedAt), 'bingo');
     },
+    failBingoPresentation(id: unknown): StoredBingoAward { return stepPresentation(id, 'fail', noTimes, 'bingo'); },
+    retryBingoPresentation(id: unknown): StoredBingoAward { return stepPresentation(id, 'retry', noTimes, 'bingo'); },
+    replayBingoPresentation(id: unknown): StoredBingoAward { return stepPresentation(id, 'replay', noTimes, 'bingo'); },
+    completeBingoPresentation(id: unknown, now: unknown): StoredBingoAward {
+      return stepPresentation(id, 'complete', completePlan('Bingo', now), 'bingo');
+    },
+    // Startup only, like the line ones; never run by open, read or event switching.
+    interruptStartedBingoPresentations(): number { return reconcilePresentations('bingo', 'started'); },
+    failPendingBingoPresentations(): number { return reconcilePresentations('bingo', 'pending'); },
     // Replaces only the active event's prizes; like updateEventMeta, a stale id never reaches another event.
     // Returns the values read back inside the committing transaction.
     updateEventPrizes(id: unknown, prizes: unknown): EventPrizes {
