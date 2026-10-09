@@ -30,10 +30,11 @@ export function createCelebrationPlayback(api, view, receipts, schedule = setTim
       timer = null;
       view.hide();
     };
+    // Marks the page busy before the view is touched and until rendering settles, so an overlapping signal (even
+    // one delivered from inside show) is dropped before it can change the overlay.
+    timer = pending;
     try {
       const rendered = Promise.resolve(view.show(signal));
-      // Marks the page busy until rendering settles, so overlapping signals are still dropped.
-      timer = pending;
       rendered.then(() => {
         if (run !== mine || timer !== pending) return;
         // The whole duration is visible time: it starts only once the overlay has actually rendered.

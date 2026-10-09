@@ -151,7 +151,8 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
   } };
   const receipts = [];
   window.publicLineReceipt = { started: (id) => receipts.push(id) };
-  window.publicBingoReceipt = { started: () => {} };
+  const bingoReceipts = [];
+  window.publicBingoReceipt = { started: (id) => bingoReceipts.push(id) };
   // Receive-only live lot channel, as with the real preload: one listener, removed once however often disposed.
   let lotListeners = 0;
   window.publicLineLot = Object.freeze({ subscribe: () => {
@@ -273,6 +274,25 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
       { kind: 'line', id: 'p3', durationMs: 1 }]) receivePresentation(ignored);
     expect(celebration.active).to.equal(false);
     expect(receipts).to.deep.equal(['p1']);
+    // Bingo reuses the same overlay with its own word, facts and receipt sender; a concurrent line never overwrites it.
+    expect(bingoReceipts).to.deep.equal([]);
+    receivePresentation({ kind: 'bingo', id: 'p1', durationMs: 4000 });
+    expect(celebration.active).to.equal(true);
+    await celebration.updateComplete;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect([bingoReceipts, receipts]).to.deep.equal([['p1'], ['p1']]);
+    const bingoView = () => [celebration.shadowRoot.querySelector('.word')?.textContent,
+      celebration.shadowRoot.querySelector('[role="status"]').textContent, celebration.shadowRoot.querySelector('.facts')];
+    expect(bingoView()).to.deep.equal(['¡Bingo!', '¡Bingo!', null]);
+    receivePresentation({ kind: 'line', id: 'p9', durationMs: 4000 });
+    await celebration.updateComplete;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect([bingoReceipts, receipts]).to.deep.equal([['p1'], ['p1']]);
+    expect(bingoView()).to.deep.equal(['¡Bingo!', '¡Bingo!', null]);
+    expect([board(), phase.message, status.message]).to.deep.equal(lineBefore);
+    await expect(celebration).to.be.accessible();
+    await new Promise((resolve) => setTimeout(resolve, 4100));
+    expect(celebration.active).to.equal(false);
     expect(lotListeners).to.equal(1);
     window.dispatchEvent(new Event('pagehide'));
     expect(unsubscribed).to.equal(9);

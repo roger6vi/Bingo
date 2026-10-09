@@ -122,14 +122,18 @@ test('a rejected render hides without a receipt or timer; a duplicate during ren
 });
 
 // Bingo (BG04C): one shared overlay run for both kinds; each receipt goes only to its own kind's sender.
-function sharedPage(renderGate?: Promise<void>) {
+function sharedPage(renderGate?: Promise<void>, onShow: () => void = () => {}) {
   let listener: (value: unknown) => void = () => {};
   const timers = new Map<number, () => void>();
   let next = 1;
   const events: string[] = [];
   createCelebrationPlayback(
     { subscribe: (callback: (value: unknown) => void) => { listener = callback; return () => {}; } },
-    { show: (signal: { kind: string; id: string }) => { events.push(`show:${signal.kind}:${signal.id}`); return renderGate; },
+    { show: (signal: { kind: string; id: string }) => {
+      events.push(`show:${signal.kind}:${signal.id}`);
+      onShow();
+      return renderGate;
+    },
       hide: () => { events.push('hide'); } },
     { line: { started: (id: string) => { events.push(`line:${id}`); } },
       bingo: { started: (id: string) => { events.push(`bingo:${id}`); } } },
@@ -162,4 +166,17 @@ test('a failed Bingo render sends no receipt, and the line-only playback ignores
   const lineOnly = page();
   lineOnly.receive(bingo());
   assert.deepEqual(lineOnly.events, []);
+});
+
+test('a competing signal delivered from inside show is dropped before it can change the overlay', async () => {
+  let reenter = () => {};
+  const p = sharedPage(undefined, () => reenter());
+  reenter = () => { reenter = () => {}; p.receive(line('l9')); p.receive(bingo('b9')); };
+  p.receive(bingo('b1'));
+  await tick();
+  assert.deepEqual([p.events, p.timers.size], [['show:bingo:b1', 'bingo:b1'], 1]);
+  [...p.timers.values()][0]();
+  p.receive(line('l9'));
+  await tick();
+  assert.deepEqual(p.events.slice(2), ['hide', 'show:line:l9', 'line:l9'], 'the dropped id was never consumed');
 });
