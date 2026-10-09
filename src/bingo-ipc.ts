@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import type { BingoDeclarationBaseline, StoredBingoAward } from './event-store';
+import type { BingoDeclarationBaseline, LegacyBingoCheck, StoredBingoAward } from './event-store';
 
 // Main-owned setup, declaration, bound recovery and explicit manual presentation actions.
 export const BINGO_CHANNELS = Object.freeze({
   begin: 'bingo:begin',
   read: 'bingo:read',
+  legacyRead: 'bingo:legacy-check:read',
   cancel: 'bingo:cancel',
   confirm: 'bingo:confirm',
   retryPresentation: 'bingo:retry-presentation',
@@ -23,6 +24,7 @@ export type BingoSetupView = {
 export type BingoResult =
   | { ok: true; state: 'setup'; session: BingoSetupView }
   | { ok: true; state: 'declared'; award: StoredBingoAward }
+  | { ok: true; state: 'legacy_check'; check: LegacyBingoCheck }
   | { ok: true; state: 'none' }
   | { ok: true; state: 'cancelled' }
   | { ok: false; code: 'invalid_request' | 'not_available' | 'setup_active' | 'stale_session' | 'storage_failure'
@@ -30,6 +32,7 @@ export type BingoResult =
 
 type BingoRequest = { sender: unknown; senderFrame: unknown };
 type BingoStore = {
+  loadLegacyBingoCheck(): LegacyBingoCheck;
   loadBingoAward(): StoredBingoAward | null;
   loadBingoDeclarationBaseline(): BingoDeclarationBaseline;
   declareBingoDirectly(expected: BingoDeclarationBaseline, count: number, at: string): StoredBingoAward;
@@ -175,6 +178,21 @@ export function registerBingoIpc(registrar: Registrar, store: BingoStore, ports:
     }
     session.frame = event.senderFrame;
     return { ok: true, state: 'setup', session: viewOf(session) };
+  });
+
+  // Read only: expose the bound legacy identity, never adopt a setup or trigger recovery/playback.
+  handle(BINGO_CHANNELS.legacyRead, (_event, ...args) => {
+    if (args.length !== 0) return invalid();
+    try {
+      const check = store.loadLegacyBingoCheck();
+      return { ok: true, state: 'legacy_check', check: {
+        eventId: check.eventId, phase: check.phase, auditSequence: check.auditSequence,
+        lastTransitionAt: check.lastTransitionAt,
+      } };
+    } catch (error) {
+      return (error as { code?: unknown } | null)?.code === 'legacy_bingo_check_not_eligible'
+        ? failure('not_available', 'There is no legacy Bingo check to recover.') : unreadable();
+    }
   });
 
   handle(BINGO_CHANNELS.cancel, (event, ...args) => {

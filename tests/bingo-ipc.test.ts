@@ -18,6 +18,8 @@ const baseline = (eventId = 'a', head = '2026-10-01T09:00:00.000Z') => ({ eventI
 const storedAward = () => ({ eventId: 'a', presentation: { id: 'bp', status: 'pending', startedAt: null, deadlineAt: null },
   award: { winnerCount: 1, totalCents: 2000, shareCents: 2000, remainderCents: 0, lot: 'Jamón', lotResolution: 'pending' } });
 const notEligible = () => Object.assign(new Error('secret not eligible'), { code: 'bingo_not_eligible' });
+const legacyCheck = () => ({ eventId: 'a', phase: 'checking_bingo' as const, auditSequence: 3,
+  lastTransitionAt: '2026-10-01T09:00:00.000Z' });
 
 function fixture(ports: Record<string, unknown> = {}) {
   const sender = {};
@@ -30,7 +32,15 @@ function fixture(ports: Record<string, unknown> = {}) {
   } = { base: baseline(), returned: null, award: null, fail: null, confirmation: 'throw' };
   const attempts: Array<{ expected: unknown; count: number; at: string }> = [];
   const confirmations: typeof attempts = [];
+  const legacy = { value: { ...legacyCheck(), privateField: 'main only' }, error: null as Error | null,
+    onLoad: undefined as (() => void) | undefined };
   const store = {
+    loadLegacyBingoCheck() {
+      calls.push('legacy');
+      legacy.onLoad?.();
+      if (legacy.error) throw legacy.error;
+      return legacy.value;
+    },
     loadBingoDeclarationBaseline() {
       calls.push('baseline');
       if (state.fail === 'baseline') throw new Error('secret corrupt');
@@ -75,7 +85,7 @@ function fixture(ports: Record<string, unknown> = {}) {
   } }, store, mutablePorts);
   const invoke = (channel: string, args: unknown[] = [], fromFrame: object | null = frame, from: object = sender) =>
     handlers.get(channel)!({ sender: from, senderFrame: fromFrame }, ...args) as Record<string, unknown>;
-  return { invoke, handlers, calls, attempts, confirmations, bingo, sender, state, playback, mutablePorts, store,
+  return { invoke, handlers, calls, attempts, confirmations, bingo, sender, state, legacy, playback, mutablePorts, store,
     get frame() { return frame; }, reload() { frame = { url }; return frame; },
     restoreFrame(original: Frame) { frame = original; } };
 }
@@ -87,9 +97,9 @@ const begin = (f: ReturnType<typeof fixture>) => {
 const code = (result: Record<string, unknown>) => [result.ok, result.code];
 const STALE = { ok: false, code: 'stale_session', message: 'This Bingo setup is no longer current. Reopen it.' };
 
-test('registers only the six Bingo channels and rejects wrong sender, frame or URL before any store access', () => {
+test('registers only the seven Bingo channels and rejects wrong sender, frame or URL before any store access', () => {
   const f = fixture();
-  assert.deepEqual(Object.values(BINGO_CHANNELS), ['bingo:begin', 'bingo:read', 'bingo:cancel', 'bingo:confirm',
+  assert.deepEqual(Object.values(BINGO_CHANNELS), ['bingo:begin', 'bingo:read', 'bingo:legacy-check:read', 'bingo:cancel', 'bingo:confirm',
     'bingo:retry-presentation', 'bingo:repeat-presentation']);
   assert.deepEqual([...f.handlers.keys()], Object.values(BINGO_CHANNELS));
   for (const channel of Object.values(BINGO_CHANNELS)) {
@@ -360,6 +370,7 @@ test('notification follows durable return, contains failures and blocks reentry 
   f = fixture({ committed: () => {
     notificationState = [f.calls.at(-1), f.state.award !== null, f.bingo.active()];
     for (const [channel, args] of [[BINGO_CHANNELS.begin, []], [BINGO_CHANNELS.read, []],
+      [BINGO_CHANNELS.legacyRead, []],
       [BINGO_CHANNELS.cancel, [view.sessionId, view.eventId]], ['bingo:confirm', [view.sessionId, 1]],
       [BINGO_CHANNELS.retryPresentation, ['bp']], [BINGO_CHANNELS.repeatPresentation, ['bp']]] as const) {
       reentry.push(code(f.invoke(channel, [...args])));
@@ -369,7 +380,7 @@ test('notification follows durable return, contains failures and blocks reentry 
   view = begin(f);
   assert.equal(confirm(f, view).state, 'declared');
   assert.deepEqual(notificationState, ['WRITE', true, true]);
-  assert.deepEqual(reentry, Array.from({ length: 6 }, () => [false, 'setup_active']));
+  assert.deepEqual(reentry, Array.from({ length: 7 }, () => [false, 'setup_active']));
   assert.equal(f.attempts.length, 1);
   assert.equal(f.bingo.active(), false);
   assert.deepEqual(code(confirm(f, view)), [false, 'stale_session']);
@@ -519,6 +530,7 @@ test('bound read and its committed notification keep all handlers locked through
   const probe = () => {
     observations.push(f.bingo.active());
     for (const [channel, args] of [[BINGO_CHANNELS.begin, []], [BINGO_CHANNELS.read, []],
+      [BINGO_CHANNELS.legacyRead, []],
       [BINGO_CHANNELS.cancel, [view.sessionId, 'a']], [BINGO_CHANNELS.confirm, [view.sessionId, 7]],
       [BINGO_CHANNELS.retryPresentation, ['bp']], [BINGO_CHANNELS.repeatPresentation, ['bp']]] as const) {
       observations.push(code(f.invoke(channel, [...args])));
@@ -531,7 +543,7 @@ test('bound read and its committed notification keep all handlers locked through
   f.state.onConfirmation = probe;
   f.state.confirmation = 'declared';
   assert.equal(f.invoke(BINGO_CHANNELS.read).state, 'declared');
-  const locked = [true, ...Array.from({ length: 6 }, () => [false, 'setup_active'])];
+  const locked = [true, ...Array.from({ length: 7 }, () => [false, 'setup_active'])];
   assert.deepEqual(observations, [...locked, ...locked]);
   assert.equal(f.bingo.active(), false);
   assert.equal(f.confirmations.length, 2);
@@ -540,8 +552,133 @@ test('bound read and its committed notification keep all handlers locked through
   assert.deepEqual(observations, [...locked, ...locked], 'ordinary reads never notify again');
 });
 
+test('legacy read returns only a detached four-field check without any clock, write or playback', () => {
+  const f = fixture({ now: () => { throw new Error('read must not use clock'); } });
+  const result = f.invoke(BINGO_CHANNELS.legacyRead);
+  assert.deepEqual(result, { ok: true, state: 'legacy_check', check: legacyCheck() });
+  const check = result.check as ReturnType<typeof legacyCheck>;
+  assert.deepEqual(Object.keys(check).sort(), ['auditSequence', 'eventId', 'lastTransitionAt', 'phase']);
+  assert.notEqual(check, f.legacy.value);
+  check.eventId = 'mutated';
+  check.auditSequence = 99;
+  assert.deepEqual(f.invoke(BINGO_CHANNELS.legacyRead), { ok: true, state: 'legacy_check', check: legacyCheck() });
+  f.legacy.value.eventId = 'another';
+  assert.equal(check.eventId, 'mutated', 'loader mutation cannot change an earlier view');
+  assert.deepEqual(f.calls, ['legacy', 'legacy']);
+  assert.deepEqual(f.playback, []);
+  assert.equal(f.attempts.length, 0);
+  assert.equal(f.confirmations.length, 0);
+  assert.equal(f.bingo.active(), false);
+});
+
+for (const [name, error, expected] of [
+  ['typed eligibility', Object.assign(new Error('secret'), { code: 'legacy_bingo_check_not_eligible' }), 'not_available'],
+  ['similar message', new Error('legacy_bingo_check_not_eligible'), 'storage_failure'],
+  ['ordinary eligibility code', notEligible(), 'storage_failure'],
+  ['corrupt storage', new Error('secret corrupt line'), 'storage_failure'],
+] as const) {
+  test(`legacy read distinguishes ${name} without leaking loader details`, () => {
+    const f = fixture();
+    f.legacy.error = error;
+    const result = f.invoke(BINGO_CHANNELS.legacyRead);
+    assert.deepEqual(code(result), [false, expected]);
+    assert.equal(JSON.stringify(result).includes(error.message), false);
+    assert.deepEqual(f.calls, ['legacy']);
+    assert.deepEqual(f.playback, []);
+    assert.equal(f.bingo.active(), false);
+  });
+}
+
+test('legacy read requires exactly zero arguments and current operator frame authorization before access', () => {
+  const f = fixture();
+  for (const args of [[undefined], [null], [{}], ['a'], [1, 2]]) {
+    assert.deepEqual(code(f.invoke(BINGO_CHANNELS.legacyRead, args)), [false, 'invalid_request']);
+  }
+  assert.throws(() => f.invoke(BINGO_CHANNELS.legacyRead, [undefined], f.frame, {}), /Unauthorized/);
+  assert.throws(() => f.invoke(BINGO_CHANNELS.legacyRead, [], {}), /Unauthorized/);
+  assert.throws(() => f.invoke(BINGO_CHANNELS.legacyRead, [], null), /Unauthorized/);
+  const former = f.frame;
+  f.reload();
+  assert.throws(() => f.invoke(BINGO_CHANNELS.legacyRead, [], former), /Unauthorized/);
+  f.frame.url = 'https://evil.example';
+  assert.throws(() => f.invoke(BINGO_CHANNELS.legacyRead), /Unauthorized/);
+  assert.deepEqual(f.calls, []);
+  assert.equal(f.bingo.active(), false);
+  f.frame.url = 'file:///app/operator.html';
+  assert.equal(f.invoke(BINGO_CHANNELS.legacyRead).state, 'legacy_check');
+  assert.deepEqual(f.calls, ['legacy']);
+});
+
+test('legacy read does not adopt, discard or otherwise change an existing setup owner', () => {
+  const f = fixture();
+  const view = begin(f);
+  const owner = f.frame;
+  f.reload();
+  assert.equal(f.invoke(BINGO_CHANNELS.legacyRead).state, 'legacy_check');
+  assert.deepEqual(code(f.invoke(BINGO_CHANNELS.cancel, [view.sessionId, view.eventId])), [false, 'stale_session']);
+  assert.equal(f.bingo.active(), true);
+  f.restoreFrame(owner);
+  assert.equal(f.invoke(BINGO_CHANNELS.cancel, [view.sessionId, view.eventId]).state, 'cancelled');
+  assert.deepEqual(f.calls, ['baseline', 'legacy']);
+  assert.deepEqual(f.playback, []);
+});
+
+test('legacy read remains read-only during shared activity and never invokes action ports', () => {
+  const forbidden = () => { throw new Error('read must not dispatch or consult activity'); };
+  const f = fixture({ now: forbidden, committed: forbidden, retry: forbidden, repeat: forbidden,
+    tongoPlaying: forbidden, presentationBusy: forbidden, otherSetupActive: forbidden });
+  assert.equal(f.invoke(BINGO_CHANNELS.legacyRead).state, 'legacy_check');
+  assert.deepEqual(f.calls, ['legacy']);
+  assert.equal(f.bingo.active(), false);
+});
+
+test('legacy loader holds the processing guard across reentry into all seven handlers', () => {
+  const f = fixture();
+  let loads = 0;
+  f.legacy.onLoad = () => {
+    loads++;
+    assert.equal(f.bingo.active(), true);
+    for (const [channel, args] of allRequests()) {
+      assert.deepEqual(code(f.invoke(channel, args)), [false, 'setup_active']);
+    }
+  };
+  assert.equal(f.invoke(BINGO_CHANNELS.legacyRead).state, 'legacy_check');
+  assert.equal(loads, 1);
+  assert.deepEqual(f.calls, ['legacy']);
+  assert.deepEqual(f.playback, []);
+  assert.equal(f.bingo.active(), false);
+  f.legacy.error = new Error('loader failed');
+  assert.deepEqual(code(f.invoke(BINGO_CHANNELS.legacyRead)), [false, 'storage_failure']);
+  assert.equal(loads, 2);
+  assert.equal(f.bingo.active(), false, 'finally releases processing after failure');
+});
+
+test('legacy read cannot resolve or discard a retained declaration attempt', () => {
+  let clocks = 0;
+  const f = fixture({ now: () => { clocks++; return new Date('2026-10-01T10:00:00.000Z'); } });
+  const view = begin(f);
+  f.state.fail = 'declare';
+  assert.deepEqual(code(confirm(f, view, 2)), [false, 'storage_failure']);
+  const calls = [...f.calls];
+  const original = f.attempts[0];
+  f.reload();
+  assert.deepEqual(code(f.invoke(BINGO_CHANNELS.legacyRead)), [false, 'storage_failure']);
+  assert.deepEqual(f.calls, calls);
+  assert.equal(clocks, 1);
+  assert.equal(f.bingo.active(), true);
+  f.state.confirmation = 'declared';
+  assert.equal(f.invoke(BINGO_CHANNELS.read).state, 'declared');
+  assert.equal(f.confirmations[1].expected, original.expected);
+  assert.deepEqual(f.confirmations[1], original);
+  assert.equal(f.attempts.length, 1);
+  assert.equal(clocks, 1);
+  assert.deepEqual(f.playback, ['committed']);
+  assert.equal(f.bingo.active(), false);
+});
+
 const manualChannels = [BINGO_CHANNELS.retryPresentation, BINGO_CHANNELS.repeatPresentation] as const;
 const allRequests = () => [[BINGO_CHANNELS.begin, []], [BINGO_CHANNELS.read, []],
+  [BINGO_CHANNELS.legacyRead, []],
   [BINGO_CHANNELS.cancel, ['s', 'a']], [BINGO_CHANNELS.confirm, ['s', 1]],
   ...manualChannels.map(channel => [channel, ['bp']])] as Array<[string, unknown[]]>;
 
@@ -640,7 +777,7 @@ for (const [index, channel] of manualChannels.entries()) {
     }
   });
 
-  test(`${kind} locks all six handlers through action notification and readback callbacks`, () => {
+  test(`${kind} locks all seven handlers through action notification and readback callbacks`, () => {
     let f: ReturnType<typeof fixture>;
     let probes = 0;
     const probe = () => {
