@@ -10,6 +10,8 @@ import { registerThemeIpc } from './theme-ipc';
 import { registerTongoIpc } from './tongo-ipc';
 import { registerPrizeIpc } from './prize-ipc';
 import { registerLineIpc } from './line-ipc';
+import { recoverBingoPresentations, registerBingoMainWiring, sharedSetupActive } from './bingo-main-wiring';
+import type { StoredBingoAward } from './event-store';
 import { registerLineLotPresentation } from './line-lot-presentation';
 import { createPresentationWiring } from './presentation-wiring';
 import { createPublicEventDelivery, PUBLIC_BINGO_RECEIPT_CHANNEL, PUBLIC_LINE_RECEIPT_CHANNEL } from './public-event-delivery';
@@ -55,6 +57,7 @@ if (!app.requestSingleInstanceLock()) {
     // completes, replays or retries either; draws stay blocked and the operator retries manually.
     store.interruptStartedLinePresentations();
     store.failPendingLinePresentations();
+    recoverBingoPresentations(store);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     dialog.showErrorBox('Could not open current event',
@@ -85,14 +88,17 @@ if (!app.requestSingleInstanceLock()) {
     operatorOnly, publicDelivery.publishTheme);
   // The line and Bingo coordinators own every presentation state change and are mutually exclusive; main only supplies
   // the clock, timers, the public signal, the receipt authorization and the operator notification. Nothing here
-  // begins a Bingo: the explicit fresh declaration path does (BG05), never a read, hydration, attach or startup.
+  // begins a Bingo: E1a only registers declarations and refreshes facts/status; playback remains for E1b.
+  const notifyBingo = (award: StoredBingoAward | null): void => {
+    if (!operator.isDestroyed()) operator.webContents.send('bingo:presentation', award);
+  };
   const presentations = createPresentationWiring(store, {
     now: Date.now,
     schedule: (fn, ms) => setTimeout(fn, ms),
     cancel: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
     publish: publicDelivery.publishPresentation,
     notifyLine: (award) => { if (!operator.isDestroyed()) operator.webContents.send('line:presentation', award); },
-    notifyBingo: () => { /* The operator Bingo surface arrives with the declaration path (BG05). */ },
+    notifyBingo,
     acceptLineReceipt: (event, id) => publicDelivery.acceptLineReceipt(event, id, publicUrl),
     acceptBingoReceipt: (event, id) => publicDelivery.acceptBingoReceipt(event, id, publicUrl),
   });
@@ -101,7 +107,12 @@ if (!app.requestSingleInstanceLock()) {
     lineBusy: presentations.busy });
   const line = registerLineIpc(ipcMain, store, { authorize: operatorOnly, now: () => new Date(),
     publish: publicDelivery.publishCommitted, committed: presentation.begin, retry: presentation.retry,
-    repeat: presentation.repeat, busy: presentations.busy, tongoPlaying: tongo.playing });
+    repeat: presentation.repeat, busy: presentations.busy, tongoPlaying: tongo.playing,
+    otherSetupActive: () => bingo.active() });
+  const bingo = registerBingoMainWiring(ipcMain, store, { authorize: operatorOnly, now: () => new Date(),
+    otherSetupActive: line.active, tongoPlaying: tongo.playing, presentationBusy: presentations.busy,
+    publishCommitted: publicDelivery.publishCommitted, notifyBingo });
+  const setupActive = sharedSetupActive(line, bingo);
   // The manual lot draw plus its one-shot public handoff; any operator document or active-event change voids a pending one.
   const lotPresentation = registerLineLotPresentation(ipcMain, store, { authorize: operatorOnly, busy: presentations.busy,
     tongoPlaying: tongo.playing, publish: (signal) => publicDelivery.publishLineLot(signal, publicUrl),
@@ -112,10 +123,10 @@ if (!app.requestSingleInstanceLock()) {
   operator.on('close', () => lotPresentation.invalidate());
   operator.webContents.once('destroyed', () => lotPresentation.invalidate());
   registerEventCatalogIpc(ipcMain, store, operatorOnly, () => { lotPresentation.invalidate(); publicDelivery.publishActive(theme.reload()); },
-    publicDelivery.publishMeta, line.active, presentations.busy);
-  registerPrizeIpc(ipcMain, store, operatorOnly, publicDelivery.publishPrizes, line.active);
+    publicDelivery.publishMeta, setupActive, presentations.busy);
+  registerPrizeIpc(ipcMain, store, operatorOnly, publicDelivery.publishPrizes, setupActive);
   registerEventIpc(ipcMain, store, { drawManual, drawDigital }, Math.random,
-    operator.webContents, operatorFrame, operatorUrl, publicDelivery.publishCommitted, tongo.playing, line.active,
+    operator.webContents, operatorFrame, operatorUrl, publicDelivery.publishCommitted, tongo.playing, setupActive,
     presentations.busy);
   // A start receipt counts only from the exact public main frame its signal was sent to, still current at the page URL,
   // and only on its own kind's channel.
