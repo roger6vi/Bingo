@@ -63,6 +63,8 @@ type Ports = {
   busy?(): boolean;
   // Tongo and a first-line declaration never overlap.
   tongoPlaying?(): boolean;
+  // Reciprocal setup exclusion; reads and owned cancellation remain available.
+  otherSetupActive?(): boolean;
 };
 type Session = { id: string; eventId: string; frame: unknown; baseline: LineDeclarationBaseline };
 
@@ -82,6 +84,19 @@ const awardCopy = (award: StoredLineAward): StoredLineAward => structuredClone(a
 export function registerLineIpc(registrar: Registrar, store: LineStore, ports: Ports) {
   let session: Session | null = null;
   let confirming = false;
+  let processing = false;
+
+  // Authorize even a reentrant request, then reserve the entire synchronous operation, including delivery.
+  const handle: Registrar['handle'] = (channel, handler) => {
+    registrar.handle(channel, (event, ...args) => {
+      ports.authorize(event);
+      if (processing) return stale();
+      processing = true;
+      try { return handler(event, ...args); }
+      finally { processing = false; }
+    });
+  };
+  const otherSetup = () => failure('setup_active', 'Another award setup is already open. Close it first.');
 
   const owned = (event: LineRequest, id: unknown, eventId: unknown): boolean =>
     session !== null && session.id === id && session.eventId === eventId && session.frame === event.senderFrame;
@@ -98,9 +113,9 @@ export function registerLineIpc(registrar: Registrar, store: LineStore, ports: P
     return { ok: true, award: awardCopy(award) };
   }
 
-  registrar.handle(LINE_CHANNELS.begin, (event, ...args) => {
-    ports.authorize(event);
+  handle(LINE_CHANNELS.begin, (event, ...args) => {
     if (args.length !== 0) return invalid();
+    if (ports.otherSetupActive?.()) return otherSetup();
     if (ports.tongoPlaying?.()) return tongoActive();
     if (session !== null) return failure('setup_active', 'A first-line setup is already open. Reopen it to continue.');
     let baseline: LineDeclarationBaseline;
@@ -112,8 +127,7 @@ export function registerLineIpc(registrar: Registrar, store: LineStore, ports: P
 
   // Recovery after a reload or an uncertain acknowledgement: committed state wins over any session, and an
   // open session is adopted by the current authorized frame.
-  registrar.handle(LINE_CHANNELS.read, (event, ...args) => {
-    ports.authorize(event);
+  handle(LINE_CHANNELS.read, (event, ...args) => {
     if (args.length !== 0) return invalid();
     if (confirming) return failure('stale_session', 'A confirmation is in progress. Try again.');
     let award: StoredLineAward | null;
@@ -128,20 +142,19 @@ export function registerLineIpc(registrar: Registrar, store: LineStore, ports: P
     return { ok: true, state: 'setup', session: viewOf(session) };
   });
 
-  registrar.handle(LINE_CHANNELS.cancel, (event, ...args) => {
-    ports.authorize(event);
+  handle(LINE_CHANNELS.cancel, (event, ...args) => {
     if (args.length !== 2 || !text(args[0]) || !text(args[1])) return invalid();
     if (confirming || !owned(event, args[0], args[1])) return stale();
     session = null;
     return { ok: true };
   });
 
-  registrar.handle(LINE_CHANNELS.confirm, (event, ...args) => {
-    ports.authorize(event);
+  handle(LINE_CHANNELS.confirm, (event, ...args) => {
     const count = args[2];
     if (args.length !== 3 || !text(args[0]) || !text(args[1]) ||
         typeof count !== 'number' || !Number.isSafeInteger(count) || count < 1) return invalid();
     if (confirming || !owned(event, args[0], args[1])) return stale();
+    if (ports.otherSetupActive?.()) return otherSetup();
     if (ports.tongoPlaying?.()) return tongoActive();
     const current = session as Session;
     let at: string;
@@ -170,8 +183,8 @@ export function registerLineIpc(registrar: Registrar, store: LineStore, ports: P
   // Manual retry/repeat of the current award's presentation. The coordinator owns the transition; main only maps
   // its refusals to typed codes and reads the committed award back.
   const manual = (step: ((id: string) => void) | undefined) => (event: LineRequest, ...args: unknown[]): LineResult => {
-    ports.authorize(event);
     if (args.length !== 1 || !text(args[0])) return invalid();
+    if (ports.otherSetupActive?.()) return otherSetup();
     if (ports.tongoPlaying?.()) return tongoActive();
     if (step === undefined) return failure('presentation_refused', 'The line celebration cannot be started now.');
     if (ports.busy?.()) return failure('presentation_busy', 'Wait for the line celebration to finish first.');
@@ -183,14 +196,13 @@ export function registerLineIpc(registrar: Registrar, store: LineStore, ports: P
     } catch { /* Fall through to the read failure below. */ }
     return failure('storage_failure', 'Could not read the first-line state. Try again.');
   };
-  registrar.handle(LINE_CHANNELS.retryPresentation, manual(ports.retry));
-  registrar.handle(LINE_CHANNELS.repeatPresentation, manual(ports.repeat));
+  handle(LINE_CHANNELS.retryPresentation, manual(ports.retry));
+  handle(LINE_CHANNELS.repeatPresentation, manual(ports.repeat));
 
   // Legacy checking_line recovery. Read returns the identity the operator is shown; cancel sends it back and the
   // store revalidates the exact event, phase head and audit length inside its writer transaction. Never awards,
   // never starts a celebration or Tongo, and never runs next to an open setup, a presentation or Tongo.
-  registrar.handle(LINE_CHANNELS.readLegacyCheck, (event, ...args) => {
-    ports.authorize(event);
+  handle(LINE_CHANNELS.readLegacyCheck, (event, ...args) => {
     if (args.length !== 0) return invalid();
     try { return { ok: true, state: 'legacy_check', check: { ...store.loadLegacyLineCheck() } }; }
     catch (error) {
@@ -202,13 +214,13 @@ export function registerLineIpc(registrar: Registrar, store: LineStore, ports: P
     }
   });
 
-  registrar.handle(LINE_CHANNELS.cancelLegacyCheck, (event, ...args) => {
-    ports.authorize(event);
+  handle(LINE_CHANNELS.cancelLegacyCheck, (event, ...args) => {
     const [eventId, auditSequence, head] = args;
     if (args.length !== 3 || !text(eventId) || !text(head) ||
         typeof auditSequence !== 'number' || !Number.isSafeInteger(auditSequence) || auditSequence < 1) return invalid();
     if (confirming) return failure('stale_session', 'A confirmation is in progress. Try again.');
     if (session !== null) return failure('setup_active', 'A first-line setup is already open. Close it first.');
+    if (ports.otherSetupActive?.()) return otherSetup();
     if (ports.tongoPlaying?.()) return tongoActive();
     if (ports.busy?.()) return failure('presentation_busy', 'Wait for the line celebration to finish first.');
     const expected = { eventId, phase: 'checking_line' as const, lastTransitionAt: head, auditSequence };
@@ -238,5 +250,5 @@ export function registerLineIpc(registrar: Registrar, store: LineStore, ports: P
     return { ok: true, state: 'recovered' };
   });
 
-  return { active: (): boolean => session !== null };
+  return { active: (): boolean => processing || session !== null };
 }
