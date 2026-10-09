@@ -18,11 +18,15 @@ test('the public window uses its preload subscriptions and never listens to fram
   Object.assign(win, { publicEvent: { subscribe: () => () => {} }, publicTheme: { subscribe: () => () => {} },
     publicEventMeta: { subscribe: () => () => {} }, publicEventPrizes: { subscribe: () => () => {} },
     publicPresentation: { subscribe: () => () => {} }, publicLineAward: { subscribe: () => () => {} },
-    publicBingoAward: { subscribe: () => () => {} }, publicLineReceipt: { started: () => {} }, publicLineLot: { subscribe: () => () => {} } });
+    publicBingoAward: { subscribe: () => () => {} }, publicLineReceipt: { started: () => {} }, publicLineLot: { subscribe: () => () => {} },
+    publicBingoReceipt: { started: () => {} } });
   const bridges = publicBridges(win);
   assert.deepEqual([bridges.event, bridges.theme, bridges.meta, bridges.prizes, bridges.lineAward, bridges.presentation,
     bridges.lineReceipt, bridges.lineLot], [win.publicEvent, win.publicTheme, win.publicEventMeta, win.publicEventPrizes,
     win.publicLineAward, win.publicPresentation, win.publicLineReceipt, win.publicLineLot]);
+  assert.equal(bridges.bingoReceipt, win.publicBingoReceipt);
+  delete win.publicBingoReceipt;
+  assert.throws(() => publicBridges(win), /Missing public display bridge/, 'the Bingo receipt bridge is required');
   assert.equal(listeners.length, 0);
   assert.throws(() => publicBridges(fakeWindow().win), /Missing public display bridge/);
   // A top-level page missing any one preload bridge is not the public window.
@@ -36,7 +40,7 @@ test('the public window fails closed without the committed line-award bridge', (
   const bridge = () => ({ subscribe: () => () => {} });
   Object.assign(win, { publicEvent: bridge(), publicTheme: bridge(), publicEventMeta: bridge(),
     publicEventPrizes: bridge(), publicPresentation: bridge(), publicLineReceipt: { started: () => {} },
-    publicLineLot: bridge(), publicBingoAward: bridge() });
+    publicLineLot: bridge(), publicBingoAward: bridge(), publicBingoReceipt: { started: () => {} } });
   assert.throws(() => publicBridges(win), /Missing public display bridge/);
   win.publicLineAward = bridge();
   assert.equal(publicBridges(win).lineAward, win.publicLineAward);
@@ -112,7 +116,9 @@ test('formatEuros groups thousands with points independent of the host locale', 
 
 test('the simulator receipt is an inert no-op that can neither send nor throw', () => {
   const { win } = fakeWindow({});
-  const { lineReceipt, presentation } = publicBridges(win);
+  const { lineReceipt, bingoReceipt, presentation } = publicBridges(win);
+  assert.equal(bingoReceipt.started('b1'), undefined);
+  assert.deepEqual([Object.keys(bingoReceipt), Object.isFrozen(bingoReceipt)], [['started'], true]);
   assert.equal(lineReceipt.started('p1'), undefined);
   assert.deepEqual(Object.keys(lineReceipt), ['started']);
   assert.equal(Object.isFrozen(lineReceipt), true);
@@ -123,7 +129,8 @@ test('the public window fails closed without the line-lot bridge', () => {
   const { win } = fakeWindow();
   const bridge = () => ({ subscribe: () => () => {} });
   Object.assign(win, { publicEvent: bridge(), publicTheme: bridge(), publicEventMeta: bridge(), publicEventPrizes: bridge(),
-    publicLineAward: bridge(), publicBingoAward: bridge(), publicPresentation: bridge(), publicLineReceipt: { started: () => {} } });
+    publicLineAward: bridge(), publicBingoAward: bridge(), publicPresentation: bridge(), publicLineReceipt: { started: () => {} },
+    publicBingoReceipt: { started: () => {} } });
   assert.throws(() => publicBridges(win), /Missing public display bridge/);
   win.publicLineLot = bridge();
   assert.equal(publicBridges(win).lineLot, win.publicLineLot);
@@ -147,7 +154,8 @@ test('the public window requires the Bingo award bridge; the simulator relays it
   const { win } = fakeWindow();
   const bridge = () => ({ subscribe: () => () => {} });
   Object.assign(win, { publicEvent: bridge(), publicTheme: bridge(), publicEventMeta: bridge(), publicEventPrizes: bridge(),
-    publicLineAward: bridge(), publicPresentation: bridge(), publicLineReceipt: { started: () => {} }, publicLineLot: bridge() });
+    publicLineAward: bridge(), publicPresentation: bridge(), publicLineReceipt: { started: () => {} }, publicLineLot: bridge(),
+    publicBingoReceipt: { started: () => {} } });
   assert.throws(() => publicBridges(win), /Missing public display bridge/);
   win.publicBingoAward = bridge();
   assert.equal((publicBridges(win) as Record<string, unknown>).bingoAward, win.publicBingoAward);

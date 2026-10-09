@@ -151,6 +151,7 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
   } };
   const receipts = [];
   window.publicLineReceipt = { started: (id) => receipts.push(id) };
+  window.publicBingoReceipt = { started: () => {} };
   // Receive-only live lot channel, as with the real preload: one listener, removed once however often disposed.
   let lotListeners = 0;
   window.publicLineLot = Object.freeze({ subscribe: () => {
@@ -286,6 +287,7 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
     delete window.publicBingoAward;
     delete window.publicPresentation;
     delete window.publicLineReceipt;
+    delete window.publicBingoReceipt;
     delete window.publicLineLot;
     delete document.documentElement.dataset.theme;
   }

@@ -8,7 +8,7 @@ import { drawManual } from '../src/event-core.ts';
 import { createEventStore } from '../src/event-store.ts';
 import {
   createPublicEventDelivery, PUBLIC_EVENT_CHANNEL, PUBLIC_META_CHANNEL, PUBLIC_PRESENTATION_CHANNEL,
-  PUBLIC_LINE_AWARD_CHANNEL, PUBLIC_LINE_RECEIPT_CHANNEL, PUBLIC_PRIZES_CHANNEL, PUBLIC_THEME_CHANNEL, type PublicEventMeta, type PublicEventPrizes,
+  PUBLIC_BINGO_RECEIPT_CHANNEL, PUBLIC_LINE_AWARD_CHANNEL, PUBLIC_LINE_RECEIPT_CHANNEL, PUBLIC_PRIZES_CHANNEL, PUBLIC_THEME_CHANNEL, type PublicEventMeta, type PublicEventPrizes,
 } from '../src/public-event-delivery.ts';
 import type { EventSnapshot } from '../src/event-core.ts';
 
@@ -490,6 +490,51 @@ test('navigation of an unrelated window leaves the rightful receipt binding and 
 
 test('the receipt channel is a fixed literal', () => {
   assert.equal(PUBLIC_LINE_RECEIPT_CHANNEL, 'public:line-presentation-started');
+});
+
+test('a Bingo signal binds its own one-shot receipt that never consumes, or is consumed by, a line binding', () => {
+  const f = fixture();
+  const frame = { url: PAGE }, other = { url: PAGE };
+  const target = Object.assign(f.target(), { mainFrame: frame as { url: string } });
+  const event = (senderFrame: unknown = frame, sender: unknown = target) => ({ sender, senderFrame });
+  const bingo = { kind: 'bingo', id: 'p1', durationMs: 4000 } as const;
+  f.delivery.attachAfterLoad(target);
+  target.messages.length = 0;
+  assert.equal(f.delivery.publishPresentation(signal), true);
+  assert.equal(f.delivery.publishPresentation(bingo), true);
+  assert.deepEqual(target.messages, [{ channel: PUBLIC_PRESENTATION_CHANNEL, result: signal },
+    { channel: PUBLIC_PRESENTATION_CHANNEL, result: bingo }]);
+  assert.equal(f.delivery.acceptBingoReceipt(event(other), 'p1', PAGE), false, 'unrelated frame');
+  assert.equal(f.delivery.acceptBingoReceipt(event(frame, f.target()), 'p1', PAGE), false, 'wrong sender');
+  assert.equal(f.delivery.acceptBingoReceipt(event(), 'p1', 'file:///other.html'), false, 'wrong url');
+  assert.equal(f.delivery.acceptBingoReceipt(event(), 'p2', PAGE), false, 'wrong id');
+  assert.equal(f.delivery.acceptBingoReceipt(event(), 'p1', PAGE), true);
+  assert.equal(f.delivery.acceptBingoReceipt(event(), 'p1', PAGE), false, 'one-shot');
+  assert.equal(f.delivery.acceptLineReceipt(event(), 'p1', PAGE), true, 'line binding survived the Bingo receipt');
+  f.delivery.publishPresentation(signal);
+  assert.equal(f.delivery.acceptBingoReceipt(event(), 'p1', PAGE), false, 'a line signal binds no Bingo receipt');
+  assert.equal(f.delivery.acceptLineReceipt(event(), 'p1', PAGE), true);
+  f.delivery.publishPresentation(bingo);
+  f.delivery.navigationStarted(target);
+  f.delivery.attachAfterLoad(target);
+  assert.equal(f.delivery.acceptBingoReceipt(event(), 'p1', PAGE), false, 'navigation voids it; attach never rebinds');
+  assert.equal(PUBLIC_BINGO_RECEIPT_CHANNEL, 'public:bingo-presentation-started');
+});
+
+test('a Bingo receipt from the bound frame is rejected once that frame is no longer the window\'s main frame', () => {
+  const f = fixture();
+  const frameA = { url: PAGE }, frameB = { url: PAGE };
+  const target = Object.assign(f.target(), { mainFrame: frameA as { url: string } });
+  const event = (senderFrame: unknown) => ({ sender: target, senderFrame });
+  f.delivery.attachAfterLoad(target);
+  assert.equal(f.delivery.publishPresentation({ kind: 'bingo', id: 'b1', durationMs: 4000 }), true);
+  // The same webContents replaces its main frame without the navigation path: the bound frame is stale.
+  target.mainFrame = frameB;
+  assert.equal(f.delivery.acceptBingoReceipt(event(frameA), 'b1', PAGE), false, 'old frame no longer current');
+  assert.equal(f.delivery.acceptBingoReceipt(event(frameB), 'b1', PAGE), false, 'replacement frame was never sent it');
+  target.mainFrame = frameA;
+  assert.equal(f.delivery.acceptBingoReceipt(event(frameA), 'b1', PAGE), true, 'rejections never consumed the binding');
+  assert.equal(f.delivery.acceptBingoReceipt(event(frameA), 'b1', PAGE), false, 'one-shot');
 });
 
 // Strict lot facts (LOT05A): the winner comes only from the strict store snapshot, never from arithmetic or inference.

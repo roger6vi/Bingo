@@ -3,7 +3,8 @@ import * as fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { after } from 'node:test';
-import { createLinePresentationCoordinator, type LinePresentationSignal } from '../src/line-presentation.ts';
+import { createBingoPresentationCoordinator, createLinePresentationCoordinator, type BingoPresentationSignal,
+  type LinePresentationSignal } from '../src/line-presentation.ts';
 import { createEventStore, type StoredLineAward } from '../src/event-store.ts';
 
 type Status = 'pending' | 'started' | 'failed' | 'completed' | 'interrupted';
@@ -386,4 +387,78 @@ test('a stale timer for an older id cannot clear a newer run', () => {
   assert.equal(h.coordinator.receiptStarted('b'), true);
   h.advance(4000);
   assert.equal(h.store.current.presentation.status, 'completed');
+});
+
+// Bingo (BG04C): the same run semantics over the Bingo store methods only, with its own signal kind.
+function bingoHarness(initial = award('b1'), options: { publish?: boolean } = {}) {
+  const line = fakeStore(initial);
+  const store = { get current() { return line.current; }, set: line.set, calls: line.calls,
+    startBingoPresentation: (id: string, at: number) => line.startLinePresentation(id, at),
+    failBingoPresentation: line.failLinePresentation, completeBingoPresentation: line.completeLinePresentation,
+    retryBingoPresentation: line.retryLinePresentation, replayBingoPresentation: line.replayLinePresentation };
+  let clock = 1000;
+  const timers = new Map<number, { at: number; fn: () => void }>();
+  let handle = 0;
+  const published: unknown[] = [];
+  const coordinator = createBingoPresentationCoordinator(store, {
+    now: () => clock,
+    schedule: (fn: () => void, ms: number) => { timers.set(++handle, { at: clock + ms, fn }); return handle; },
+    cancel: (value: unknown) => { timers.delete(value as number); },
+    publish: (signal: BingoPresentationSignal) => { published.push(signal); return options.publish ?? true; },
+    notify: () => {},
+  });
+  const advance = (ms: number) => {
+    clock += ms;
+    for (const [key, timer] of [...timers].filter(([, t]) => t.at <= clock)) { timers.delete(key); timer.fn(); }
+  };
+  return { store, coordinator, published, advance, timers };
+}
+
+test('a fresh Bingo declaration publishes one 4 s bingo signal and completes from the receipt via Bingo methods only', () => {
+  const h = bingoHarness();
+  assert.deepEqual(Object.keys(h.coordinator).sort(), ['begin', 'busy', 'receiptStarted']);
+  h.coordinator.begin(h.store.current);
+  h.coordinator.begin(h.store.current);
+  assert.deepEqual(h.published, [{ kind: 'bingo', id: 'b1', durationMs: 4000 }]);
+  assert.equal(h.coordinator.busy(), true);
+  assert.equal(h.coordinator.receiptStarted('other'), false);
+  assert.equal(h.coordinator.receiptStarted('b1'), true);
+  assert.equal(h.coordinator.receiptStarted('b1'), false, 'one receipt');
+  h.advance(3999);
+  assert.equal(h.store.current.presentation.status, 'started');
+  h.advance(1);
+  assert.equal(h.store.current.presentation.status, 'completed');
+  assert.deepEqual(h.store.calls, ['start:b1', 'complete:b1']);
+  assert.equal(h.coordinator.busy(), false);
+});
+
+test('an undelivered, unreceipted, refused or overlapping Bingo run fails through the Bingo store', () => {
+  const undelivered = bingoHarness(award('b1'), { publish: false });
+  undelivered.coordinator.begin(undelivered.store.current);
+  assert.deepEqual(undelivered.store.calls, ['fail:b1']);
+  const silent = bingoHarness();
+  silent.coordinator.begin(silent.store.current);
+  silent.advance(1999);
+  assert.equal(silent.store.current.presentation.status, 'pending');
+  silent.advance(1);
+  assert.equal(silent.store.current.presentation.status, 'failed');
+  assert.equal(silent.coordinator.receiptStarted('b1'), false, 'late receipt ignored');
+  const refused = bingoHarness();
+  refused.coordinator.begin(refused.store.current);
+  refused.store.set(award('b1', 'failed'));
+  assert.equal(refused.coordinator.receiptStarted('b1'), false);
+  assert.equal(refused.coordinator.busy(), false);
+  const busy = bingoHarness();
+  busy.coordinator.begin(busy.store.current);
+  busy.store.set(award('b2'));
+  busy.coordinator.begin(busy.store.current);
+  assert.deepEqual([busy.published.length, busy.store.current.presentation.status], [1, 'failed']);
+});
+
+test('a Bingo begin ignores non-pending awards', () => {
+  for (const status of ['started', 'failed', 'completed', 'interrupted'] as const) {
+    const h = bingoHarness(award('b1', status, 1000));
+    h.coordinator.begin(h.store.current);
+    assert.deepEqual([h.published.length, h.store.calls.length], [0, 0], status);
+  }
 });
