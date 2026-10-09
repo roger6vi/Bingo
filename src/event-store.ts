@@ -1047,6 +1047,44 @@ function parseLegacyLineCheck(value: unknown): LegacyLineCheck {
     auditSequence: v.auditSequence as number };
 }
 
+// The active legacy Bingo check's exact phase head, without changing the line or either award.
+export type LegacyBingoCheck = {
+  readonly eventId: string;
+  readonly phase: 'checking_bingo';
+  readonly lastTransitionAt: string;
+  readonly auditSequence: number;
+};
+
+function bingoCheckNotEligible(reason: string): Error {
+  return Object.assign(new Error(`Legacy bingo check not eligible: ${reason}`), { code: 'legacy_bingo_check_not_eligible' });
+}
+
+function readLegacyBingoCheck(db: DatabaseSync): LegacyBingoCheck {
+  const id = readActiveEventId(db);
+  const event = id === null ? null : readEvent(db);
+  if (id === null || event === null) throw bingoCheckNotEligible('no current event');
+  const audit = replayAudit(db, id);
+  if (event.phase !== 'checking_bingo') throw bingoCheckNotEligible('the event is not in a bingo check');
+  if (event.lastTransitionAt === null) throw new Error('Invalid bingo check state: missing phase head');
+  // Validate a present line award first (without requiring one, or a resolved presentation/lot), so corrupt storage
+  // is never reported as a typed refusal.
+  readLineAward(db, id, audit);
+  // A prior valid Bingo award belongs to correction, not legacy check cancellation.
+  if (readBingoAward(db, id, audit) !== null) throw bingoCheckNotEligible('existing bingo award requires correction');
+  return Object.freeze({ eventId: id, phase: 'checking_bingo' as const,
+    lastTransitionAt: event.lastTransitionAt, auditSequence: audit.length });
+}
+
+function parseLegacyBingoCheck(value: unknown): LegacyBingoCheck {
+  const v = exactPlain(value, ['eventId', 'phase', 'lastTransitionAt', 'auditSequence'], 'legacy bingo check identity');
+  if (typeof v.eventId !== 'string' || v.eventId === '' || v.phase !== 'checking_bingo' ||
+      !canonicalTime(v.lastTransitionAt) || !Number.isSafeInteger(v.auditSequence) || (v.auditSequence as number) < 1) {
+    throw new Error('Invalid legacy bingo check identity');
+  }
+  return { eventId: v.eventId, phase: 'checking_bingo', lastTransitionAt: v.lastTransitionAt,
+    auditSequence: v.auditSequence as number };
+}
+
 export function createEventStore(path: string) {
   if (!existed(path)) {
     // Initialize off-path: the target must never expose SQLite's transient version-0 file.
@@ -1580,6 +1618,60 @@ export function createEventStore(path: string) {
           return sameBingoBaseline(baseline, current) ? { state: 'unchanged' as const } : { state: 'stale' as const };
         }
         return { state: 'stale' as const };
+      });
+    },
+    loadLegacyBingoCheck(): LegacyBingoCheck { return readSnapshot(() => readLegacyBingoCheck(db)); },
+    // One read snapshot binds active event, original phase head, the appended audit row and both awards.
+    confirmLegacyBingoCancel(expected: unknown, transitionAt: unknown): 'recovered' | 'unchanged' | 'stale' {
+      const identity = parseLegacyBingoCheck(expected);
+      if (!canonicalTime(transitionAt)) throw new Error('Invalid phase transition timestamp');
+      return readSnapshot(() => {
+        const id = readActiveEventId(db);
+        const event = id === null ? null : readEvent(db);
+        if (id === null || event === null || id !== identity.eventId) return 'stale';
+        const audit = replayAudit(db, id);
+        const prior = audit[identity.auditSequence - 1];
+        // A matching head never acknowledges a recovered check that has acquired a Bingo award.
+        const noBingo = () => {
+          readLineAward(db, id, audit);
+          if (readBingoAward(db, id, audit) !== null) throw bingoCheckNotEligible('existing bingo award requires correction');
+        };
+        if (prior?.transitionAt === identity.lastTransitionAt && audit.length === identity.auditSequence + 1 &&
+            audit[identity.auditSequence].kind === 'reject_bingo_claim' &&
+            audit[identity.auditSequence].transitionAt === transitionAt && event.phase === 'line_declared' &&
+            event.lastTransitionAt === transitionAt) {
+          noBingo();
+          return 'recovered';
+        }
+        if (prior?.transitionAt === identity.lastTransitionAt && audit.length === identity.auditSequence &&
+            event.phase === 'checking_bingo' && event.lastTransitionAt === identity.lastTransitionAt) {
+          noBingo();
+          return 'unchanged';
+        }
+        return 'stale';
+      });
+    },
+    cancelLegacyBingoCheck(expected: unknown, transitionAt: unknown): StoredEvent {
+      const identity = parseLegacyBingoCheck(expected);
+      if (!canonicalTime(transitionAt)) throw new Error('Invalid phase transition timestamp');
+      return transaction(() => {
+        const current = readLegacyBingoCheck(db);
+        if (current.eventId !== identity.eventId || current.lastTransitionAt !== identity.lastTransitionAt ||
+            current.auditSequence !== identity.auditSequence) throw new Error('Stale legacy bingo check');
+        if (transitionAt <= current.lastTransitionAt) throw new Error('Invalid phase transition timestamp');
+        const phase = transitionPhase(current, 'reject_bingo_claim').phase;
+        const moved = db.prepare('UPDATE events SET phase = ?, lastTransitionAt = ? WHERE id = ? AND phase = ? AND lastTransitionAt = ?')
+          .run(phase, transitionAt, current.eventId, current.phase, current.lastTransitionAt);
+        if (moved.changes !== 1) throw new Error('Legacy bingo check changed concurrently');
+        db.prepare(`INSERT INTO phase_audit (event_id, sequence, transitionAt, kind, from_phase, to_phase)
+          VALUES (?, ?, ?, 'reject_bingo_claim', 'checking_bingo', 'line_declared')`)
+          .run(current.eventId, current.auditSequence + 1, transitionAt);
+        const stored = readEvent(db);
+        if (stored?.phase !== phase || stored.lastTransitionAt !== transitionAt ||
+            replayAudit(db, current.eventId).length !== current.auditSequence + 1) {
+          throw new Error('Invalid bingo recovery: phase audit mismatch after write');
+        }
+        return stored;
       });
     },
     loadLegacyLineCheck(): LegacyLineCheck { return readSnapshot(() => readLegacyLineCheck(db)); },
