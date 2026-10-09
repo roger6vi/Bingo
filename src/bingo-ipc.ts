@@ -1,12 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import type { BingoDeclarationBaseline, StoredBingoAward } from './event-store';
 
-// Main-owned setup, declaration and bound recovery; presentation routes arrive separately.
+// Main-owned setup, declaration, bound recovery and explicit manual presentation actions.
 export const BINGO_CHANNELS = Object.freeze({
   begin: 'bingo:begin',
   read: 'bingo:read',
   cancel: 'bingo:cancel',
   confirm: 'bingo:confirm',
+  retryPresentation: 'bingo:retry-presentation',
+  repeatPresentation: 'bingo:repeat-presentation',
 });
 
 // What the dialog may see of the main-owned session; the complete baseline itself never leaves main.
@@ -24,7 +26,7 @@ export type BingoResult =
   | { ok: true; state: 'none' }
   | { ok: true; state: 'cancelled' }
   | { ok: false; code: 'invalid_request' | 'not_available' | 'setup_active' | 'stale_session' | 'storage_failure'
-    | 'tongo_active' | 'presentation_busy'; message: string };
+    | 'tongo_active' | 'presentation_busy' | 'presentation_refused'; message: string };
 
 type BingoRequest = { sender: unknown; senderFrame: unknown };
 type BingoStore = {
@@ -41,6 +43,8 @@ type Ports = {
   authorize(event: BingoRequest): void;
   now?(): Date;
   committed?(): void;
+  retry?(presentationId: string): void | boolean;
+  repeat?(presentationId: string): void | boolean;
   // Shared guards: no Bingo setup next to Tongo, a running presentation or another open setup (the first line).
   tongoPlaying?(): boolean;
   presentationBusy?(): boolean;
@@ -120,7 +124,7 @@ export function registerBingoIpc(registrar: Registrar, store: BingoStore, ports:
     registrar.handle(channel, (event, ...args) => {
       ports.authorize(event);
       if (processing) return failure('setup_active', 'A Bingo operation is already in progress.');
-      // Begin/cancel/confirm cannot discard or rewrite an uncertain attempt, even after a frame reload.
+      // Only bound read may resolve an uncertain attempt; all mutations and playback stay blocked.
       if (attempt !== null && channel !== BINGO_CHANNELS.read) return uncertain();
       processing = true;
       try { return handler(event, ...args); }
@@ -213,6 +217,27 @@ export function registerBingoIpc(registrar: Registrar, store: BingoStore, ports:
     catch { return resolveAttempt(); }
     return finish(award);
   });
+
+  // The coordinator owns status validation, ID rotation, notification and fresh playback. IPC only dispatches
+  // one explicit action, then reads the authoritative award; failed readback never permits a second action.
+  const manual = (dispatch: (id: string) => void | boolean) => (_event: BingoRequest, ...args: unknown[]): BingoResult => {
+    if (args.length !== 1 || !text(args[0])) return invalid();
+    if (ports.tongoPlaying?.()) return failure('tongo_active', 'Wait for Tongo to finish, then try again.');
+    if (ports.presentationBusy?.()) return failure('presentation_busy', 'Wait for the celebration to finish first.');
+    try {
+      if (dispatch(args[0]) === false) {
+        return failure('presentation_refused', 'The Bingo presentation cannot be started now.');
+      }
+    } catch { return failure('storage_failure', 'Could not start the Bingo presentation. Try again.'); }
+    try {
+      const award = store.loadBingoAward();
+      if (award !== null) return { ok: true, state: 'declared', award: structuredClone(award) };
+    } catch { /* A successful action with unreadable state is not permission to replay it. */ }
+    return unreadable();
+  };
+  // Resolve mutable ports at invocation time, not registration: main composition installs them later.
+  handle(BINGO_CHANNELS.retryPresentation, manual(id => ports.retry ? ports.retry(id) : false));
+  handle(BINGO_CHANNELS.repeatPresentation, manual(id => ports.repeat ? ports.repeat(id) : false));
 
   return { active: (): boolean => processing || session !== null || attempt !== null };
 }

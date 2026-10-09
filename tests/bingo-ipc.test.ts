@@ -65,15 +65,17 @@ function fixture(ports: Record<string, unknown> = {}) {
     update() { calls.push('WRITE'); throw new Error('no writes'); },
   };
   const playback: string[] = [];
+  const mutablePorts = { authorize: createOperatorGuard(sender, () => frame, url),
+    retry: (id: string) => { playback.push(`retry:${id}`); },
+    repeat: (id: string) => { playback.push(`repeat:${id}`); }, committed: () => playback.push('committed'),
+    now: () => new Date('2026-10-01T10:00:00.000Z'), ...ports };
   const bingo = registerBingoIpc({ handle: (channel: string, handler: Handler) => {
     assert.equal(handlers.has(channel), false);
     handlers.set(channel, handler);
-  } }, store, { authorize: createOperatorGuard(sender, () => frame, url),
-    retry: () => playback.push('retry'), repeat: () => playback.push('repeat'), committed: () => playback.push('committed'),
-    now: () => new Date('2026-10-01T10:00:00.000Z'), ...ports });
+  } }, store, mutablePorts);
   const invoke = (channel: string, args: unknown[] = [], fromFrame: object | null = frame, from: object = sender) =>
     handlers.get(channel)!({ sender: from, senderFrame: fromFrame }, ...args) as Record<string, unknown>;
-  return { invoke, handlers, calls, attempts, confirmations, bingo, sender, state, playback,
+  return { invoke, handlers, calls, attempts, confirmations, bingo, sender, state, playback, mutablePorts, store,
     get frame() { return frame; }, reload() { frame = { url }; return frame; },
     restoreFrame(original: Frame) { frame = original; } };
 }
@@ -85,9 +87,10 @@ const begin = (f: ReturnType<typeof fixture>) => {
 const code = (result: Record<string, unknown>) => [result.ok, result.code];
 const STALE = { ok: false, code: 'stale_session', message: 'This Bingo setup is no longer current. Reopen it.' };
 
-test('registers only the four Bingo channels and rejects wrong sender, frame or URL before any store access', () => {
+test('registers only the six Bingo channels and rejects wrong sender, frame or URL before any store access', () => {
   const f = fixture();
-  assert.deepEqual(Object.values(BINGO_CHANNELS), ['bingo:begin', 'bingo:read', 'bingo:cancel', 'bingo:confirm']);
+  assert.deepEqual(Object.values(BINGO_CHANNELS), ['bingo:begin', 'bingo:read', 'bingo:cancel', 'bingo:confirm',
+    'bingo:retry-presentation', 'bingo:repeat-presentation']);
   assert.deepEqual([...f.handlers.keys()], Object.values(BINGO_CHANNELS));
   for (const channel of Object.values(BINGO_CHANNELS)) {
     assert.throws(() => f.invoke(channel, [], f.frame, {}), /Unauthorized/);
@@ -96,6 +99,7 @@ test('registers only the four Bingo channels and rejects wrong sender, frame or 
     assert.throws(() => f.invoke(channel, [], { url: 'file:///app/operator.html' }), /Unauthorized/);
   }
   assert.deepEqual(f.calls, []);
+  assert.deepEqual(f.playback, []);
   assert.equal(f.bingo.active(), false);
   // Same accepted sender and the same current main frame object; only its page URL changes.
   const wrongUrl = fixture();
@@ -103,7 +107,8 @@ test('registers only the four Bingo channels and rejects wrong sender, frame or 
   const owner = wrongUrl.frame;
   owner.url = 'https://evil.example/operator.html';
   for (const [channel, args] of [[BINGO_CHANNELS.begin, []], [BINGO_CHANNELS.read, []],
-    [BINGO_CHANNELS.cancel, [view.sessionId, 'a']], ['bingo:confirm', [view.sessionId, 1]]] as const) {
+    [BINGO_CHANNELS.cancel, [view.sessionId, 'a']], ['bingo:confirm', [view.sessionId, 1]],
+    [BINGO_CHANNELS.retryPresentation, ['bp']], [BINGO_CHANNELS.repeatPresentation, ['bp']]] as const) {
     assert.throws(() => wrongUrl.invoke(channel, [...args], owner, wrongUrl.sender), /Unauthorized/);
   }
   assert.deepEqual(wrongUrl.calls, ['baseline'], 'no store read after the URL changed');
@@ -355,7 +360,8 @@ test('notification follows durable return, contains failures and blocks reentry 
   f = fixture({ committed: () => {
     notificationState = [f.calls.at(-1), f.state.award !== null, f.bingo.active()];
     for (const [channel, args] of [[BINGO_CHANNELS.begin, []], [BINGO_CHANNELS.read, []],
-      [BINGO_CHANNELS.cancel, [view.sessionId, view.eventId]], ['bingo:confirm', [view.sessionId, 1]]] as const) {
+      [BINGO_CHANNELS.cancel, [view.sessionId, view.eventId]], ['bingo:confirm', [view.sessionId, 1]],
+      [BINGO_CHANNELS.retryPresentation, ['bp']], [BINGO_CHANNELS.repeatPresentation, ['bp']]] as const) {
       reentry.push(code(f.invoke(channel, [...args])));
     }
     throw new Error('notification failure');
@@ -363,7 +369,7 @@ test('notification follows durable return, contains failures and blocks reentry 
   view = begin(f);
   assert.equal(confirm(f, view).state, 'declared');
   assert.deepEqual(notificationState, ['WRITE', true, true]);
-  assert.deepEqual(reentry, Array.from({ length: 4 }, () => [false, 'setup_active']));
+  assert.deepEqual(reentry, Array.from({ length: 6 }, () => [false, 'setup_active']));
   assert.equal(f.attempts.length, 1);
   assert.equal(f.bingo.active(), false);
   assert.deepEqual(code(confirm(f, view)), [false, 'stale_session']);
@@ -513,7 +519,8 @@ test('bound read and its committed notification keep all handlers locked through
   const probe = () => {
     observations.push(f.bingo.active());
     for (const [channel, args] of [[BINGO_CHANNELS.begin, []], [BINGO_CHANNELS.read, []],
-      [BINGO_CHANNELS.cancel, [view.sessionId, 'a']], [BINGO_CHANNELS.confirm, [view.sessionId, 7]]] as const) {
+      [BINGO_CHANNELS.cancel, [view.sessionId, 'a']], [BINGO_CHANNELS.confirm, [view.sessionId, 7]],
+      [BINGO_CHANNELS.retryPresentation, ['bp']], [BINGO_CHANNELS.repeatPresentation, ['bp']]] as const) {
       observations.push(code(f.invoke(channel, [...args])));
     }
   };
@@ -524,13 +531,151 @@ test('bound read and its committed notification keep all handlers locked through
   f.state.onConfirmation = probe;
   f.state.confirmation = 'declared';
   assert.equal(f.invoke(BINGO_CHANNELS.read).state, 'declared');
-  const locked = [true, ...Array.from({ length: 4 }, () => [false, 'setup_active'])];
+  const locked = [true, ...Array.from({ length: 6 }, () => [false, 'setup_active'])];
   assert.deepEqual(observations, [...locked, ...locked]);
   assert.equal(f.bingo.active(), false);
   assert.equal(f.confirmations.length, 2);
   assert.equal(f.attempts.length, 1);
   assert.equal(f.invoke(BINGO_CHANNELS.read).state, 'declared');
   assert.deepEqual(observations, [...locked, ...locked], 'ordinary reads never notify again');
+});
+
+const manualChannels = [BINGO_CHANNELS.retryPresentation, BINGO_CHANNELS.repeatPresentation] as const;
+const allRequests = () => [[BINGO_CHANNELS.begin, []], [BINGO_CHANNELS.read, []],
+  [BINGO_CHANNELS.cancel, ['s', 'a']], [BINGO_CHANNELS.confirm, ['s', 1]],
+  ...manualChannels.map(channel => [channel, ['bp']])] as Array<[string, unknown[]]>;
+
+for (const [index, channel] of manualChannels.entries()) {
+  const kind = index === 0 ? 'retry' : 'repeat';
+  test(`${kind} validates one bounded primitive ID before ports or storage`, () => {
+    const f = fixture();
+    for (const args of [[], ['bp', {}], [undefined], [null], [1], [''], ['x'.repeat(65)],
+      [new String('bp')], [{ presentationId: 'bp' }]]) {
+      assert.deepEqual(code(f.invoke(channel, args)), [false, 'invalid_request']);
+    }
+    assert.deepEqual(f.calls, []);
+    assert.deepEqual(f.playback, []);
+  });
+
+  test(`${kind} refuses missing ports or false coordinator without fallback or reads`, () => {
+    for (const port of [undefined, () => false]) {
+      const f = fixture({ [kind]: port });
+      const result = f.invoke(channel, ['bp']);
+      assert.deepEqual(code(result), [false, 'presentation_refused']);
+      assert.equal(JSON.stringify(result).includes('secret'), false);
+      assert.deepEqual(f.calls, []);
+      assert.deepEqual(f.playback, []);
+    }
+    // IPC delegates status, wrong-ID and absent-award decisions; these spies do not prove store semantics.
+    for (const reason of ['wrong ID', 'wrong status', 'no award']) {
+      const ids: string[] = [];
+      const f = fixture({ [kind]: (id: string) => { ids.push(id); return false; } });
+      assert.deepEqual(code(f.invoke(channel, [reason])), [false, 'presentation_refused']);
+      assert.deepEqual(ids, [reason]);
+      assert.deepEqual(f.calls, []);
+      assert.deepEqual(f.playback, []);
+    }
+  });
+
+  test(`${kind} reports a throwing coordinator as storage failure without retry or consuming setup`, () => {
+    let dispatches = 0;
+    const f = fixture({ [kind]: () => { dispatches++; throw new Error('secret storage failure'); } });
+    const view = begin(f);
+    const before = [...f.calls];
+    const result = f.invoke(channel, ['bp']);
+    assert.deepEqual(code(result), [false, 'storage_failure']);
+    assert.equal(JSON.stringify(result).includes('secret'), false);
+    assert.equal(dispatches, 1);
+    assert.deepEqual(f.calls, before, 'no readback after dispatch throws');
+    assert.deepEqual(f.playback, [], 'no opposite action or committed notification');
+    assert.equal(f.attempts.length, 0);
+    assert.equal(f.bingo.active(), true, 'the existing setup remains owned');
+    assert.deepEqual(f.invoke(BINGO_CHANNELS.cancel, [view.sessionId, view.eventId]),
+      { ok: true, state: 'cancelled' }, 'finally releases processing and retains the setup owner');
+    assert.equal(f.bingo.active(), false);
+    assert.equal(dispatches, 1);
+  });
+
+  test(`${kind} checks Tongo and shared busy before accessing mutable action ports`, () => {
+    for (const guard of ['tongoPlaying', 'presentationBusy']) {
+      const f = fixture({ [guard]: () => true });
+      Object.defineProperty(f.mutablePorts, kind, { get() { throw new Error('port accessed'); } });
+      assert.deepEqual(code(f.invoke(channel, ['bp'])),
+        [false, guard === 'tongoPlaying' ? 'tongo_active' : 'presentation_busy']);
+      assert.deepEqual(f.calls, []);
+      assert.deepEqual(f.playback, []);
+    }
+  });
+
+  test(`${kind} dispatches once through the current port and clones authoritative readback`, () => {
+    const f = fixture();
+    const ids: string[] = [];
+    f.mutablePorts[kind] = (id: string) => {
+      ids.push(id);
+      const award = storedAward();
+      award.eventId = 'current-event';
+      award.presentation.id = 'rotated';
+      f.state.award = award;
+    };
+    const result = f.invoke(channel, ['x'.repeat(64)]);
+    assert.deepEqual(ids, ['x'.repeat(64)]);
+    assert.deepEqual(result, { ok: true, state: 'declared', award: f.state.award });
+    (result.award as ReturnType<typeof storedAward>).presentation.id = 'renderer mutation';
+    assert.equal((f.state.award as ReturnType<typeof storedAward>).presentation.id, 'rotated');
+    assert.deepEqual(f.calls, ['award']);
+    assert.equal(f.invoke(BINGO_CHANNELS.read).state, 'declared');
+    assert.deepEqual(ids, ['x'.repeat(64)], 'ordinary reads do not replay');
+    assert.deepEqual(f.playback, [], 'no initial captured port, opposite action or committed notification');
+    assert.equal(f.attempts.length, 0);
+  });
+
+  test(`${kind} readback failure never authorizes an internal second action`, () => {
+    for (const missing of [false, true]) {
+      const f = fixture();
+      if (!missing) f.state.fail = 'award';
+      assert.deepEqual(code(f.invoke(channel, ['bp'])), [false, 'storage_failure']);
+      assert.deepEqual(f.playback, [`${kind}:bp`]);
+      assert.deepEqual(f.calls, ['award']);
+      assert.equal(f.attempts.length, 0);
+    }
+  });
+
+  test(`${kind} locks all six handlers through action notification and readback callbacks`, () => {
+    let f: ReturnType<typeof fixture>;
+    let probes = 0;
+    const probe = () => {
+      probes++;
+      assert.equal(f.bingo.active(), true);
+      for (const [route, args] of allRequests()) {
+        assert.deepEqual(code(f.invoke(route, args)), [false, 'setup_active']);
+      }
+    };
+    f = fixture({ [kind]: () => { probe(); f.state.award = storedAward(); } });
+    const load = f.store.loadBingoAward;
+    f.store.loadBingoAward = () => { probe(); return load(); };
+    assert.equal(f.invoke(channel, ['bp']).state, 'declared');
+    assert.equal(probes, 2);
+    assert.deepEqual(f.calls, ['award']);
+    assert.deepEqual(f.playback, []);
+    assert.equal(f.bingo.active(), false);
+  });
+}
+
+test('both manual routes preserve an uncertain declaration without accessing ports or reading', () => {
+  const f = fixture();
+  const view = begin(f);
+  f.state.fail = 'declare';
+  assert.deepEqual(code(confirm(f, view)), [false, 'storage_failure']);
+  const calls = [...f.calls];
+  for (const [kind, channel] of [['retry', BINGO_CHANNELS.retryPresentation],
+    ['repeat', BINGO_CHANNELS.repeatPresentation]] as const) {
+    Object.defineProperty(f.mutablePorts, kind, { get() { throw new Error('port accessed'); } });
+    assert.deepEqual(code(f.invoke(channel, ['bp'])), [false, 'storage_failure']);
+  }
+  assert.deepEqual(f.calls, calls);
+  assert.deepEqual(f.playback, []);
+  assert.equal(f.attempts.length, 1);
+  assert.equal(f.bingo.active(), true);
 });
 
 const directories: string[] = [];
