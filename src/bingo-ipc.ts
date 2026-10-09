@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { BingoDeclarationBaseline, StoredBingoAward } from './event-store';
 
-// Main-owned setup and declaration; recovery and presentation routes arrive separately.
+// Main-owned setup, declaration and bound recovery; presentation routes arrive separately.
 export const BINGO_CHANNELS = Object.freeze({
   begin: 'bingo:begin',
   read: 'bingo:read',
@@ -31,6 +31,8 @@ type BingoStore = {
   loadBingoAward(): StoredBingoAward | null;
   loadBingoDeclarationBaseline(): BingoDeclarationBaseline;
   declareBingoDirectly(expected: BingoDeclarationBaseline, count: number, at: string): StoredBingoAward;
+  confirmBingoDeclaration(expected: BingoDeclarationBaseline, count: number, at: string):
+    { state: 'declared'; award: StoredBingoAward } | { state: 'unchanged' | 'stale' };
 };
 type Registrar = {
   handle(channel: string, handler: (event: BingoRequest, ...args: unknown[]) => BingoResult): void;
@@ -81,13 +83,45 @@ export function registerBingoIpc(registrar: Registrar, store: BingoStore, ports:
   const uncertain = () => failure('storage_failure',
     'Could not confirm the Bingo declaration. Keep this setup open and check the state later.');
 
+  const finish = (award: StoredBingoAward): BingoResult => {
+    const result: BingoResult = { ok: true, state: 'declared', award: structuredClone(award) };
+    session = null;
+    attempt = null;
+    try { ports.committed?.(); }
+    catch { /* A notification failure cannot undo a durable declaration or authorize another write. */ }
+    return result;
+  };
+
+  // Only this bound read can resolve uncertainty. It never loads a generic award or regenerates an attempt.
+  const resolveAttempt = (reader?: BingoRequest): BingoResult => {
+    const original = attempt;
+    if (original === null || session === null) return stale();
+    let confirmed: ReturnType<BingoStore['confirmBingoDeclaration']>;
+    try {
+      confirmed = store.confirmBingoDeclaration(original.baseline, original.count, original.at);
+    } catch { return uncertain(); }
+    if (confirmed.state === 'declared') return finish(confirmed.award);
+    attempt = null;
+    if (confirmed.state === 'stale') {
+      session = null;
+      return stale();
+    }
+    // An unchanged declaration is not success; only a later explicit confirm may try a new write.
+    // An authorized read may adopt the retained setup only after this authoritative result.
+    if (reader !== undefined) {
+      session.frame = reader.senderFrame;
+      return { ok: true, state: 'setup', session: viewOf(session) };
+    }
+    return uncertain();
+  };
+
   // Hold the external setup lock through all synchronous work, including committed callbacks.
   const handle = (channel: string, handler: (event: BingoRequest, ...args: unknown[]) => BingoResult) => {
     registrar.handle(channel, (event, ...args) => {
       ports.authorize(event);
       if (processing) return failure('setup_active', 'A Bingo operation is already in progress.');
-      // C1 fails closed: only bound authoritative recovery (C2) may resolve an uncertain attempt.
-      if (attempt !== null) return uncertain();
+      // Begin/cancel/confirm cannot discard or rewrite an uncertain attempt, even after a frame reload.
+      if (attempt !== null && channel !== BINGO_CHANNELS.read) return uncertain();
       processing = true;
       try { return handler(event, ...args); }
       finally { processing = false; }
@@ -114,6 +148,7 @@ export function registerBingoIpc(registrar: Registrar, store: BingoStore, ports:
   // authoritative baseline and only then adopted by the current authorized frame. A failed read adopts nothing.
   handle(BINGO_CHANNELS.read, (event, ...args) => {
     if (args.length !== 0) return invalid();
+    if (attempt !== null) return resolveAttempt(event);
     let award: StoredBingoAward | null;
     try { award = store.loadBingoAward(); }
     catch { return unreadable(); }
@@ -175,13 +210,8 @@ export function registerBingoIpc(registrar: Registrar, store: BingoStore, ports:
       baseline: session.baseline, count, at });
     let award: StoredBingoAward;
     try { award = store.declareBingoDirectly(attempt.baseline, attempt.count, attempt.at); }
-    catch { return uncertain(); }
-    const result: BingoResult = { ok: true, state: 'declared', award: structuredClone(award) };
-    session = null;
-    attempt = null;
-    try { ports.committed?.(); }
-    catch { /* A notification failure cannot undo a durable declaration or authorize another write. */ }
-    return result;
+    catch { return resolveAttempt(); }
+    return finish(award);
   });
 
   return { active: (): boolean => processing || session !== null || attempt !== null };
