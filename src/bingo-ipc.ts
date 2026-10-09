@@ -6,6 +6,7 @@ export const BINGO_CHANNELS = Object.freeze({
   begin: 'bingo:begin',
   read: 'bingo:read',
   legacyRead: 'bingo:legacy-check:read',
+  legacyCancel: 'bingo:legacy-check:cancel',
   cancel: 'bingo:cancel',
   confirm: 'bingo:confirm',
   retryPresentation: 'bingo:retry-presentation',
@@ -27,12 +28,15 @@ export type BingoResult =
   | { ok: true; state: 'legacy_check'; check: LegacyBingoCheck }
   | { ok: true; state: 'none' }
   | { ok: true; state: 'cancelled' }
+  | { ok: true; state: 'recovered' }
   | { ok: false; code: 'invalid_request' | 'not_available' | 'setup_active' | 'stale_session' | 'storage_failure'
     | 'tongo_active' | 'presentation_busy' | 'presentation_refused'; message: string };
 
 type BingoRequest = { sender: unknown; senderFrame: unknown };
 type BingoStore = {
   loadLegacyBingoCheck(): LegacyBingoCheck;
+  cancelLegacyBingoCheck(expected: LegacyBingoCheck, at: string): unknown;
+  confirmLegacyBingoCancel(expected: LegacyBingoCheck, at: string): 'recovered' | 'unchanged' | 'stale';
   loadBingoAward(): StoredBingoAward | null;
   loadBingoDeclarationBaseline(): BingoDeclarationBaseline;
   declareBingoDirectly(expected: BingoDeclarationBaseline, count: number, at: string): StoredBingoAward;
@@ -46,6 +50,7 @@ type Ports = {
   authorize(event: BingoRequest): void;
   now?(): Date;
   committed?(): void;
+  recovered?(): void;
   retry?(presentationId: string): void | boolean;
   repeat?(presentationId: string): void | boolean;
   // Shared guards: no Bingo setup next to Tongo, a running presentation or another open setup (the first line).
@@ -62,6 +67,11 @@ const stale = () => failure('stale_session', 'This Bingo setup is no longer curr
 const unreadable = () => failure('storage_failure', 'Could not read the Bingo state. Try again.');
 const text = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 64;
 const notEligible = (error: unknown) => (error as { code?: unknown } | null)?.code === 'bingo_not_eligible';
+const canonicalTime = (value: unknown): value is string => {
+  if (!text(value)) return false;
+  const time = Date.parse(value);
+  return Number.isFinite(time) && new Date(time).toISOString() === value;
+};
 
 // A deep, frozen private copy so neither the store's object nor any caller can change what main holds.
 const copyBaseline = (b: BingoDeclarationBaseline): BingoDeclarationBaseline => Object.freeze({
@@ -87,6 +97,25 @@ export function registerBingoIpc(registrar: Registrar, store: BingoStore, ports:
   let processing = false;
   let attempt: Readonly<{ sessionId: string; eventId: string; frame: unknown;
     baseline: BingoDeclarationBaseline; count: number; at: string }> | null = null;
+  let legacyAttempt: Readonly<{ expected: LegacyBingoCheck; at: string }> | null = null;
+  const legacyUncertain = () => failure('storage_failure',
+    'Could not confirm legacy Bingo recovery. Check the state later.');
+  const finishRecovery = (): BingoResult => {
+    legacyAttempt = null;
+    try { ports.recovered?.(); }
+    catch { /* Notification cannot undo durable recovery or permit another write. */ }
+    return { ok: true, state: 'recovered' };
+  };
+  const resolveLegacyAttempt = (): BingoResult => {
+    const original = legacyAttempt;
+    if (original === null) return stale();
+    let confirmed: ReturnType<BingoStore['confirmLegacyBingoCancel']>;
+    try { confirmed = store.confirmLegacyBingoCancel(original.expected, original.at); }
+    catch { return legacyUncertain(); }
+    if (confirmed === 'recovered') return finishRecovery();
+    legacyAttempt = null;
+    return confirmed === 'stale' ? stale() : legacyUncertain();
+  };
   const uncertain = () => failure('storage_failure',
     'Could not confirm the Bingo declaration. Keep this setup open and check the state later.');
 
@@ -129,6 +158,7 @@ export function registerBingoIpc(registrar: Registrar, store: BingoStore, ports:
       if (processing) return failure('setup_active', 'A Bingo operation is already in progress.');
       // Only bound read may resolve an uncertain attempt; all mutations and playback stay blocked.
       if (attempt !== null && channel !== BINGO_CHANNELS.read) return uncertain();
+      if (legacyAttempt !== null && channel !== BINGO_CHANNELS.legacyRead) return legacyUncertain();
       processing = true;
       try { return handler(event, ...args); }
       finally { processing = false; }
@@ -180,9 +210,10 @@ export function registerBingoIpc(registrar: Registrar, store: BingoStore, ports:
     return { ok: true, state: 'setup', session: viewOf(session) };
   });
 
-  // Read only: expose the bound legacy identity, never adopt a setup or trigger recovery/playback.
+  // A retained attempt permits only bound confirmation; otherwise this is a read-only identity view.
   handle(BINGO_CHANNELS.legacyRead, (_event, ...args) => {
     if (args.length !== 0) return invalid();
+    if (legacyAttempt !== null) return resolveLegacyAttempt();
     try {
       const check = store.loadLegacyBingoCheck();
       return { ok: true, state: 'legacy_check', check: {
@@ -193,6 +224,35 @@ export function registerBingoIpc(registrar: Registrar, store: BingoStore, ports:
       return (error as { code?: unknown } | null)?.code === 'legacy_bingo_check_not_eligible'
         ? failure('not_available', 'There is no legacy Bingo check to recover.') : unreadable();
     }
+  });
+
+  handle(BINGO_CHANNELS.legacyCancel, (_event, ...args) => {
+    const [eventId, auditSequence, lastTransitionAt] = args;
+    if (args.length !== 3 || !text(eventId) || typeof auditSequence !== 'number' ||
+        !Number.isSafeInteger(auditSequence) || auditSequence < 1 || !canonicalTime(lastTransitionAt)) return invalid();
+    if (session !== null) return failure('setup_active', 'A Bingo setup is already open. Close it first.');
+    if (ports.otherSetupActive?.()) return failure('setup_active', 'Another setup is open. Close it first.');
+    if (ports.tongoPlaying?.()) return failure('tongo_active', 'Wait for Tongo to finish, then try again.');
+    if (ports.presentationBusy?.()) return failure('presentation_busy', 'Wait for the celebration to finish first.');
+    // Preflight precedes the clock; the transactional write still rechecks the complete identity atomically.
+    let current: LegacyBingoCheck;
+    try { current = store.loadLegacyBingoCheck(); }
+    catch { return unreadable(); }
+    if (current.eventId !== eventId || current.phase !== 'checking_bingo' ||
+        current.auditSequence !== auditSequence || current.lastTransitionAt !== lastTransitionAt) return stale();
+    let at: string;
+    try {
+      const now = (ports.now?.() ?? new Date()).getTime();
+      const head = Date.parse(lastTransitionAt);
+      if (!Number.isFinite(now)) throw new Error('Invalid clock');
+      at = new Date(now <= head ? head + 1 : now).toISOString();
+      if (Date.parse(at) <= head) throw new Error('Clock did not advance');
+    } catch { return failure('storage_failure', 'Could not read the clock. Try again.'); }
+    legacyAttempt = Object.freeze({ expected: Object.freeze({ eventId, phase: 'checking_bingo' as const,
+      auditSequence, lastTransitionAt }), at });
+    try { store.cancelLegacyBingoCheck(legacyAttempt.expected, legacyAttempt.at); }
+    catch { return resolveLegacyAttempt(); }
+    return finishRecovery();
   });
 
   handle(BINGO_CHANNELS.cancel, (event, ...args) => {
@@ -257,5 +317,5 @@ export function registerBingoIpc(registrar: Registrar, store: BingoStore, ports:
   handle(BINGO_CHANNELS.retryPresentation, manual(id => ports.retry ? ports.retry(id) : false));
   handle(BINGO_CHANNELS.repeatPresentation, manual(id => ports.repeat ? ports.repeat(id) : false));
 
-  return { active: (): boolean => processing || session !== null || attempt !== null };
+  return { active: (): boolean => processing || session !== null || attempt !== null || legacyAttempt !== null };
 }
