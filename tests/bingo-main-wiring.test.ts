@@ -5,6 +5,7 @@ import { BINGO_CHANNELS } from '../src/bingo-ipc.ts';
 import { createOperatorGuard } from '../src/event-ipc.ts';
 import { LINE_CHANNELS, registerLineIpc } from '../src/line-ipc.ts';
 import { createPublicEventDelivery } from '../src/public-event-delivery.ts';
+import { createPresentationWiring } from '../src/presentation-wiring.ts';
 // Dynamic import lets RED assert the missing production composition, rather than fail module bootstrap.
 const production = await import('../src/bingo-main-wiring.ts').catch(() => null);
 const base = () => ({ eventId: 'a', calledNumbers: [7], phase: 'line_declared',
@@ -52,7 +53,7 @@ function harness() {
     failPendingBingoPresentations: () => { calls.push('fail-pending'); },
   };
   const privateValues: unknown[] = [];
-  const wiring = production.registerBingoMainWiring({ handle: (channel, handler) => handlers.set(channel, handler) }, store, {
+  const ports = {
     authorize: createOperatorGuard(sender, () => frame, frame.url), now: () => new Date('2026-10-01T10:00:00Z'),
     otherSetupActive: () => state.line, tongoPlaying: () => state.tongo, presentationBusy: () => state.busy,
     publishCommitted: (snapshot) => {
@@ -63,7 +64,11 @@ function harness() {
       calls.push('private'); privateValues.push(value);
       if (state.privateFail) throw new Error('operator unavailable');
     },
-  });
+    begin: undefined as ((value: ReturnType<typeof award>) => void) | undefined,
+    retry: undefined as ((id: string) => void | boolean) | undefined,
+    repeat: undefined as ((id: string) => void | boolean) | undefined,
+  };
+  const wiring = production.registerBingoMainWiring({ handle: (channel, handler) => handlers.set(channel, handler) }, store, ports);
   const invoke = (channel: string, args: unknown[] = [], from = sender, fromFrame = frame) =>
     handlers.get(channel)({ sender: from, senderFrame: fromFrame }, ...args);
   const begin = () => {
@@ -71,7 +76,7 @@ function harness() {
     assert.equal(result.state, 'setup');
     return result.session.sessionId;
   };
-  return { calls, handlers, state, store, privateValues, wiring, invoke, begin, sender, frame };
+  return { calls, handlers, state, store, ports, privateValues, wiring, invoke, begin, sender, frame };
 }
 
 test('production registers exactly eight routes; every route uses exact operator authorization', () => {
@@ -156,6 +161,116 @@ test('public and private failures cannot undo commit or suppress the other deliv
   }
 });
 
+test('only explicit confirm begins the authoritative pending award after both refreshes, once', () => {
+  for (const uncertain of [false, true]) {
+    const h = harness();
+    const begun: unknown[] = [];
+    h.ports.begin = (value) => { h.calls.push('begin'); begun.push(value); };
+    h.state.uncertain = uncertain;
+    h.state.resolved = true;
+    const id = h.begin();
+    assert.equal(h.invoke(BINGO_CHANNELS.confirm, [id, 1]).state, 'declared');
+    assert.deepEqual(h.calls, ['write', 'phase', 'public', 'award', 'private', 'begin']);
+    assert.equal(begun[0], h.state.award);
+    assert.equal(h.invoke(BINGO_CHANNELS.confirm, [id, 1]).code, 'stale_session');
+    h.invoke(BINGO_CHANNELS.read);
+    h.invoke(BINGO_CHANNELS.read);
+    assert.equal(begun.length, 1);
+  }
+});
+
+test('bound read resolution and legacy recovery refresh but never begin with the port installed', () => {
+  const h = harness();
+  h.ports.begin = () => { h.calls.push('begin'); };
+  h.state.uncertain = true;
+  assert.equal(h.invoke(BINGO_CHANNELS.confirm, [h.begin(), 1]).code, 'storage_failure');
+  assert.deepEqual(h.calls, ['write']);
+  h.state.resolved = true;
+  assert.equal(h.invoke(BINGO_CHANNELS.read).state, 'declared');
+  assert.deepEqual(h.calls, ['write', 'phase', 'public', 'award', 'private']);
+  h.calls.length = 0;
+  h.invoke(BINGO_CHANNELS.read);
+  assert.deepEqual(h.calls, ['award']);
+  h.calls.length = 0;
+  const check = legacy();
+  h.invoke(BINGO_CHANNELS.legacyCancel, [check.eventId, check.auditSequence, check.lastTransitionAt]);
+  assert.deepEqual(h.calls, ['recover', 'phase', 'public', 'award', 'private']);
+});
+
+test('begin eligibility comes only from the refresh award, never a generic fallback or write result', () => {
+  for (const status of ['started', 'failed', 'completed', 'interrupted', null, 'unknown', undefined]) {
+    const h = harness();
+    h.ports.begin = () => { h.calls.push('begin'); };
+    const value = award();
+    value.presentation.status = status;
+    h.store.loadBingoAward = () => { h.calls.push('award'); return value; };
+    assert.equal(h.invoke(BINGO_CHANNELS.confirm, [h.begin(), 1]).state, 'declared');
+    assert.deepEqual(h.calls, ['write', 'phase', 'public', 'award', 'private']);
+    assert.equal(h.privateValues[0], value);
+  }
+  for (const unreadable of [false, true]) {
+    const h = harness();
+    h.ports.begin = () => { h.calls.push('begin'); };
+    h.store.loadBingoAward = () => {
+      h.calls.push('award');
+      if (unreadable) throw new Error('unreadable');
+      return null;
+    };
+    assert.equal(h.invoke(BINGO_CHANNELS.confirm, [h.begin(), 1]).state, 'declared');
+    assert.deepEqual(h.calls, ['write', 'phase', 'public', 'award', 'private']);
+    assert.deepEqual(h.privateValues, [null]);
+  }
+});
+
+test('each refresh delivery failure is contained; begin failure cannot undo durable IPC success', () => {
+  for (const flag of ['publicFail', 'privateFail', 'phaseFail', 'beginFail']) {
+    const h = harness();
+    h.state[flag] = true;
+    if (flag === 'phaseFail') h.store.load = () => { h.calls.push('phase'); throw new Error('snapshot'); };
+    h.ports.begin = () => {
+      h.calls.push('begin');
+      if (flag === 'beginFail') throw new Error('playback');
+    };
+    assert.equal(h.invoke(BINGO_CHANNELS.confirm, [h.begin(), 1]).state, 'declared');
+    assert.deepEqual(h.calls, flag === 'phaseFail'
+      ? ['write', 'phase', 'award', 'private', 'begin']
+      : ['write', 'phase', 'public', 'award', 'private', 'begin']);
+    h.calls.length = 0;
+    assert.equal(h.invoke(BINGO_CHANNELS.read).state, 'declared');
+    assert.deepEqual(h.calls, ['award']);
+  }
+});
+
+test('manual routes resolve mutable ports once at invocation and leave refresh and playback to the coordinator', () => {
+  for (const [channel, port] of [[BINGO_CHANNELS.retryPresentation, 'retry'], [BINGO_CHANNELS.repeatPresentation, 'repeat']]) {
+    const h = harness();
+    h.state.award = award();
+    h.ports.begin = () => { h.calls.push('begin'); };
+    assert.equal(h.invoke(channel, ['exact-id']).code, 'presentation_refused');
+    assert.deepEqual(h.calls, []);
+    for (const outcome of ['void', 'true', 'false', 'throw', 'readback-failure']) {
+      h.calls.length = 0;
+      h.state.loadFail = outcome === 'readback-failure';
+      h.ports[port] = (id) => {
+        h.calls.push(`${port}:${id}`);
+        if (outcome === 'throw') throw new Error('transition');
+        if (outcome === 'false') return false;
+        if (outcome === 'true') return true;
+      };
+      const result = h.invoke(channel, ['exact-id']);
+      const accepted = outcome === 'void' || outcome === 'true';
+      assert.equal(accepted ? result.state : result.code,
+        accepted ? 'declared' : outcome === 'false' ? 'presentation_refused' : 'storage_failure');
+      assert.deepEqual(h.calls, outcome === 'false' || outcome === 'throw'
+        ? [`${port}:exact-id`] : [`${port}:exact-id`, 'award']);
+    }
+    h.ports[port] = undefined;
+    h.calls.length = 0;
+    assert.equal(h.invoke(channel, ['exact-id']).code, 'presentation_refused');
+    assert.deepEqual(h.calls, []);
+  }
+});
+
 test('real Line and Bingo registrations exclude reciprocal setups, including Bingo callback processing', () => {
   const h = harness();
   const handlers = new Map();
@@ -216,8 +331,45 @@ test('main uses production composition before windows and shared guards, keeping
   assert.match(main, /PUBLIC_LINE_RECEIPT_CHANNEL,[\s\S]*presentations\.lineReceipt\(event, id\)/);
   assert.match(main, /PUBLIC_BINGO_RECEIPT_CHANNEL,[\s\S]*presentations\.bingoReceipt\(event, id\)/);
   assert.match(main, /acceptBingoReceipt\(event, id, publicUrl\)/);
+  const registration = main.match(/registerBingoMainWiring\(ipcMain, store, \{[\s\S]*?\}\);/)?.[0];
+  assert.ok(registration);
+  for (const port of ['begin', 'retry', 'repeat']) {
+    assert.ok(registration.includes(`${port}: presentations.bingo.${port}`));
+    assert.equal(main.split(`presentations.bingo.${port}`).length - 1, 1);
+  }
   assert.doesNotMatch(main, /bingo\.begin\(|bingo\.retry\(|bingo\.repeat\(/);
   // Existing public delivery is the whitelist owner; no private award is sent through a public port here.
   const helper = readFileSync(new URL('../src/bingo-main-wiring.ts', import.meta.url), 'utf8');
-  assert.doesNotMatch(helper, /publishCommitted\(award|\.begin\(|retry:|repeat:/);
+  assert.doesNotMatch(helper, /publishCommitted\(award/);
+  assert.match(helper, /origin === 'confirm' && award\?\.presentation\.status === 'pending'/);
+  assert.equal(helper.split('ports.begin?.(award)').length - 1, 1);
+});
+
+test('confirmation reaches the existing coordinator once; reads never publish or regenerate a clock', () => {
+  const h = harness();
+  const published: unknown[] = [];
+  let clockReads = 0;
+  const coordinator = createPresentationWiring(h.store, {
+    now: () => { clockReads++; return 1000; },
+    schedule: () => 1, cancel: () => {},
+    publish: (signal) => { published.push(signal); return true; },
+    notifyLine: () => {}, notifyBingo: h.ports.notifyBingo,
+    acceptLineReceipt: () => false, acceptBingoReceipt: () => false,
+  });
+  h.ports.begin = coordinator.bingo.begin;
+  production!.recoverBingoPresentations(h.store);
+  assert.deepEqual(published, []);
+  const id = h.begin();
+  assert.equal(h.invoke(BINGO_CHANNELS.confirm, [id, 1]).state, 'declared');
+  assert.equal(published.length, 1, 'explicit confirm must publish through the real Bingo coordinator');
+  assert.equal(published[0].kind, 'bingo');
+  assert.equal(published[0].id, 'private-id');
+  assert.equal(coordinator.busy(), true);
+  const afterConfirm = clockReads;
+  coordinator.bingo.begin(h.state.award!); // Existing coordinator owns current-ID deduplication.
+  h.invoke(BINGO_CHANNELS.read);
+  h.invoke(BINGO_CHANNELS.read);
+  assert.equal(published.length, 1);
+  assert.equal(clockReads, afterConfirm);
+  assert.equal(h.calls.includes('begin'), false); // No synthetic store transition or extra dispatch.
 });

@@ -87,8 +87,8 @@ if (!app.requestSingleInstanceLock()) {
   const theme = registerThemeIpc(ipcMain, { load: store.loadTheme, save: store.saveTheme },
     operatorOnly, publicDelivery.publishTheme);
   // The line and Bingo coordinators own every presentation state change and are mutually exclusive; main only supplies
-  // the clock, timers, the public signal, the receipt authorization and the operator notification. Nothing here
-  // begins a Bingo: E1a only registers declarations and refreshes facts/status; playback remains for E1b.
+  // the clock, timers, the public signal, the receipt authorization and the operator notification. The confirmation
+  // helper starts only a freshly confirmed pending Bingo after refresh; reads and window attachment never play.
   const notifyBingo = (award: StoredBingoAward | null): void => {
     if (!operator.isDestroyed()) operator.webContents.send('bingo:presentation', award);
   };
@@ -111,7 +111,8 @@ if (!app.requestSingleInstanceLock()) {
     otherSetupActive: () => bingo.active() });
   const bingo = registerBingoMainWiring(ipcMain, store, { authorize: operatorOnly, now: () => new Date(),
     otherSetupActive: line.active, tongoPlaying: tongo.playing, presentationBusy: presentations.busy,
-    publishCommitted: publicDelivery.publishCommitted, notifyBingo });
+    publishCommitted: publicDelivery.publishCommitted, notifyBingo,
+    begin: presentations.bingo.begin, retry: presentations.bingo.retry, repeat: presentations.bingo.repeat });
   const setupActive = sharedSetupActive(line, bingo);
   // The manual lot draw plus its one-shot public handoff; any operator document or active-event change voids a pending one.
   const lotPresentation = registerLineLotPresentation(ipcMain, store, { authorize: operatorOnly, busy: presentations.busy,
