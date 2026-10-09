@@ -245,3 +245,25 @@ test('describeLineAward states the committed share and never claims a celebratio
     lotResolution: 'pending' })), 'Línea declarada · 2 ganadores · 5 € cada uno · Lote: Jamón (pendiente de desempate)');
   assert.doesNotMatch(describeLineAward(award()), /celebra|felicidades|ganó|premio entregado/i);
 });
+
+test('validBingoAward checks frozen arithmetic, count, lot and resolution and admits no lot result', async () => {
+  const { validBingoAward } = await import('../src/public-controller.mjs') as Record<string, (a: unknown) => boolean>;
+  assert.equal(typeof validBingoAward, 'function');
+  assert.equal(validBingoAward(award()), true);
+  assert.equal(validBingoAward(award({ winnerCount: 2, lot: 'Cesta', lotResolution: 'pending', shareCents: 500, remainderCents: 0 })), true);
+  for (const bad of [null, [], award({ eventId: '' }), award({ winnerCount: 0 }), award({ totalCents: 1001 }),
+    award({ shareCents: 334 }), award({ remainderCents: 0 }), award({ lot: ' Cesta ' }), award({ lotResolution: 'pending' }),
+    award({ lotResolution: 'resolved' }), award({ lotResolution: 'unknown' }),
+    award({ lotResult: { origin: 'none', resolution: 'not_required' } })]) {
+    assert.equal(validBingoAward(bad), false, JSON.stringify(bad));
+  }
+});
+
+test('describeBingoAward states Bingo declarado, frozen shares, remainder and pending lot like the line', async () => {
+  const { describeBingoAward } = await import('../src/public-controller.mjs') as Record<string, (a: unknown) => string>;
+  assert.equal(typeof describeBingoAward, 'function');
+  assert.equal(describeBingoAward(award()), 'Bingo declarado · 3 ganadores · 3,33 € cada uno · 1 céntimo sin repartir');
+  assert.equal(describeBingoAward(award({ winnerCount: 2, shareCents: 500, remainderCents: 0, lot: 'Cesta',
+    lotResolution: 'pending' })), 'Bingo declarado · 2 ganadores · 5 € cada uno · Lote: Cesta (pendiente de desempate)');
+  assert.doesNotMatch(describeBingoAward(award()), /Línea|celebra|felicidades|ganó/i);
+});

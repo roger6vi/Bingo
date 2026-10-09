@@ -79,7 +79,7 @@ if (!app.requestSingleInstanceLock()) {
   };
   const activePrizes = () => store.loadPrizes()?.prizes ?? null;
   const publicDelivery = createPublicEventDelivery(store, () => theme.current(), activeMeta, activePrizes,
-    () => store.loadLineAward(), () => store.loadLineLotResult());
+    () => store.loadLineAward(), () => store.loadLineLotResult(), () => store.loadBingoAward());
   const operatorOnly = createOperatorGuard(operator.webContents, operatorFrame, operatorUrl);
   const theme = registerThemeIpc(ipcMain, { load: store.loadTheme, save: store.saveTheme },
     operatorOnly, publicDelivery.publishTheme);

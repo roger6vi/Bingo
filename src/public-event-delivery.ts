@@ -1,6 +1,6 @@
 import type { EventSnapshot } from './event-core';
 import type { EventPrizes } from './event-prizes';
-import type { LineLotSnapshot, StoredLineAward } from './event-store';
+import type { LineLotSnapshot, StoredBingoAward, StoredLineAward } from './event-store';
 import { parseLineLotResolution } from './line-lot-contract.ts';
 import type { LotResolution } from './line-award';
 import type { GamePhase } from './game-phase';
@@ -18,6 +18,7 @@ export const PUBLIC_PRESENTATION_CHANNEL = 'public:presentation';
 export const PUBLIC_PRIZES_CHANNEL = 'public:event-prizes';
 export const PUBLIC_LINE_AWARD_CHANNEL = 'public:line-award';
 export const PUBLIC_LINE_LOT_CHANNEL = 'public:line-lot';
+export const PUBLIC_BINGO_AWARD_CHANNEL = 'public:bingo-award';
 // Renderer -> main, the only send of the public window: the line overlay has actually started rendering.
 export const PUBLIC_LINE_RECEIPT_CHANNEL = 'public:line-presentation-started';
 
@@ -33,15 +34,22 @@ export type PublicLineAward = {
   // The strict stored winner fact; present only when a strict lot loader is wired. Never inferred from arithmetic.
   readonly lotResult?: PublicLineLotResult;
 } | null;
+// The active event's committed Bingo award as static facts only; null when absent or unreadable. No presentation,
+// claimant or lot-result provenance, so hydrating it can never celebrate.
+export type PublicBingoAward = {
+  readonly eventId: string; readonly winnerCount: number; readonly totalCents: number; readonly shareCents: number;
+  readonly remainderCents: number; readonly lot: string; readonly lotResolution: LotResolution;
+} | null;
 export type PublicLineLotResult =
   | { readonly origin: 'none'; readonly resolution: 'not_required' | 'pending' }
   | { readonly origin: 'legacy_v8'; readonly resolution: 'resolved'; readonly winner: 'unknown' }
   | { readonly origin: 'numbered_v1'; readonly resolution: 'resolved'; readonly paletteVersion: 1;
     readonly participantNumber: number; readonly colorId: string };
 type CommittedLineAward = Pick<StoredLineAward, 'eventId' | 'award' | 'presentation'> | null;
+type CommittedBingoAward = Pick<StoredBingoAward, 'eventId' | 'award'> | null;
 type CommittedLineLot = Pick<LineLotSnapshot, 'eventId' | 'winnerCount' | 'lot' | 'presentation' | 'fact'> | null;
-type Payload = PublicEventResult | ThemeId | PublicEventMeta | PublicEventPrizes | PublicLineAward | TongoPresentation
-  | LinePresentationSignal | LineLotSignal;
+type Payload = PublicEventResult | ThemeId | PublicEventMeta | PublicEventPrizes | PublicLineAward | PublicBingoAward
+  | TongoPresentation | LinePresentationSignal | LineLotSignal;
 
 export type PublicEventResult =
   | { ok: true; snapshot: PhaseSnapshot; eventChanged?: true }
@@ -82,7 +90,7 @@ function strictLotResult(stored: NonNullable<CommittedLineAward>, snap: Committe
 export function createPublicEventDelivery(
   store: Store, committedTheme?: () => ThemeId, committedMeta?: () => PublicEventMeta,
   committedPrizes?: () => PublicEventPrizes, committedLineAward?: () => CommittedLineAward,
-  committedLineLot?: () => CommittedLineLot,
+  committedLineLot?: () => CommittedLineLot, committedBingoAward?: () => CommittedBingoAward,
 ) {
   let current: Target | null = null;
   // The one line signal whose receipt may still arrive: the exact window and main frame it was sent to.
@@ -144,6 +152,15 @@ export function createPublicEventDelivery(
     } catch { return null; }
   }
 
+  function loadBingoAward(): PublicBingoAward {
+    try {
+      const stored = committedBingoAward?.() ?? null;
+      if (stored === null) return null;
+      const { winnerCount, totalCents, shareCents, remainderCents, lot, lotResolution } = stored.award;
+      return { eventId: stored.eventId, winnerCount, totalCents, shareCents, remainderCents, lot, lotResolution };
+    } catch { return null; }
+  }
+
   // Sends the metadata unless the target was replaced or closed; reports whether it is still current.
   function sendMeta(target: Target): boolean {
     if (committedMeta !== undefined) send(target, loadMeta(), PUBLIC_META_CHANNEL);
@@ -155,8 +172,23 @@ export function createPublicEventDelivery(
     return current === target;
   }
 
+  // The read may reenter and replace or detach the target, so it is rechecked before the send.
   function sendLineAward(target: Target): boolean {
-    if (committedLineAward !== undefined) send(target, loadLineAward(), PUBLIC_LINE_AWARD_CHANNEL);
+    if (committedLineAward === undefined) return current === target;
+    const award = loadLineAward();
+    if (current !== target) return false;
+    send(target, award, PUBLIC_LINE_AWARD_CHANNEL);
+    return current === target;
+  }
+
+  // Both static awards, line first, each guarded like the line. A missing Bingo or a failure of the Bingo read
+  // alone clears only Bingo; real storage corruption fails the whole event read (both awards and history) instead.
+  function sendAwards(target: Target): boolean {
+    if (!sendLineAward(target)) return false;
+    if (committedBingoAward === undefined) return true;
+    const award = loadBingoAward();
+    if (current !== target) return false;
+    send(target, award, PUBLIC_BINGO_AWARD_CHANNEL);
     return current === target;
   }
 
@@ -167,7 +199,7 @@ export function createPublicEventDelivery(
       generation++;
       // Theme first, so the page is revealed in the committed theme.
       if (committedTheme !== undefined) send(target, committedTheme(), PUBLIC_THEME_CHANNEL);
-      if (current !== target || !sendMeta(target) || !sendPrizes(target) || !sendLineAward(target)) return;
+      if (current !== target || !sendMeta(target) || !sendPrizes(target) || !sendAwards(target)) return;
       const result = loadResult();
       // A reentrant load may have replaced or closed this target.
       if (current === target) send(target, result);
@@ -188,7 +220,7 @@ export function createPublicEventDelivery(
     },
     publishCommitted(snapshot: PhaseSnapshot): void {
       const target = current;
-      if (target === null || !sendLineAward(target)) return;
+      if (target === null || !sendAwards(target)) return;
       send(target, success(snapshot));
     },
     publishTheme(theme: ThemeId): void {
@@ -275,7 +307,7 @@ export function createPublicEventDelivery(
       const target = current;
       if (target === null) return;
       send(target, theme, PUBLIC_THEME_CHANNEL);
-      if (current !== target || !sendMeta(target) || !sendPrizes(target) || !sendLineAward(target)) return;
+      if (current !== target || !sendMeta(target) || !sendPrizes(target) || !sendAwards(target)) return;
       const result = loadResult();
       // A different event's history is not a continuation of the one on screen.
       if (current === target) send(target, result.ok ? { ...result, eventChanged: true } : result);

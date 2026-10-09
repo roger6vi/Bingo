@@ -8,7 +8,7 @@ import './components/bingo-prize-display.mjs';
 import './components/bingo-tongo.mjs';
 import './components/bingo-line-celebration.mjs';
 import './screen.css';
-import { createPublicController, describeLineAward, validLineAward } from './public-controller.mjs';
+import { createPublicController, describeBingoAward, describeLineAward, validBingoAward, validLineAward } from './public-controller.mjs';
 import { applyTheme, revealAfter } from './theme-controller.mjs';
 import { publicBridges, validEventMeta } from './public-bridge.mjs';
 import { validPrizes } from './prize-format.mjs';
@@ -76,6 +76,24 @@ const unsubscribeLineAward = bridges.lineAward.subscribe((award) => {
   showAward(award);
   lotPlayback.observeAward(award);
 });
+// The committed Bingo award, static like the line one and independent of it: an invalid or cleared Bingo payload
+// removes only this text. It never plays anything and never reaches the line celebration overlay.
+let bingoFresh = false;
+const bingoAward = document.createElement('p');
+bingoAward.id = 'bingo-award';
+bingoAward.lang = 'es';
+bingoAward.hidden = true;
+// Appended after the line award and its transient lot line, so the two line facts stay adjacent.
+prizes.parentElement.append(bingoAward);
+function showBingo(award) {
+  const valid = validBingoAward(award);
+  bingoAward.textContent = valid ? describeBingoAward(award) : '';
+  bingoAward.hidden = !valid;
+}
+const unsubscribeBingoAward = bridges.bingoAward.subscribe((award) => {
+  bingoFresh = true;
+  showBingo(award);
+});
 
 const controller = createPublicController(bridges.event, {
   render: (state, frame) => {
@@ -100,7 +118,9 @@ const controller = createPublicController(bridges.event, {
     // An unusable frame, or a new event without a fresh award, must not keep the previous event's facts.
     if (frame !== undefined) {
       if (state.error || (frame.eventChanged && !awardFresh)) showAward(null);
+      if (state.error || (frame.eventChanged && !bingoFresh)) showBingo(null);
       awardFresh = false;
+      bingoFresh = false;
     }
     lotPlayback.observeFrame(state, frame);
   },
@@ -131,5 +151,6 @@ window.addEventListener('pagehide', () => {
   unsubscribeMeta();
   unsubscribePrizes();
   unsubscribeLineAward();
+  unsubscribeBingoAward();
   clearTimeout(revealTimer);
 }, { once: true });

@@ -55,15 +55,24 @@ function validLotResult(result, award) {
 
 // Committed first-line award shape and arithmetic, mirroring line-award.ts (renderer cannot import it).
 // Static state only: it carries no presentation identity, so receiving it never starts a celebration.
-export function validLineAward(award) {
+function validAwardFacts(award) {
   if (award === null || typeof award !== 'object' || Array.isArray(award)) return false;
   const { eventId, winnerCount, totalCents, shareCents, remainderCents, lot, lotResolution } = award;
   if (typeof eventId !== 'string' || eventId.trim() === '' || !Number.isSafeInteger(winnerCount) || winnerCount < 1 ||
       !Number.isSafeInteger(totalCents) || totalCents < 0 || totalCents > 10_000_000 || totalCents % 100 !== 0 ||
       shareCents !== Math.floor(totalCents / winnerCount) || remainderCents !== totalCents % winnerCount ||
       typeof lot !== 'string' || lot !== lot.trim() || lot.length > 120 || !lotResolutions.has(lotResolution)) return false;
-  if (award.lotResult !== undefined && !validLotResult(award.lotResult, award)) return false;
   return (lot !== '' && winnerCount >= 2) === (lotResolution !== 'not_required');
+}
+
+export function validLineAward(award) {
+  return validAwardFacts(award) && (award.lotResult === undefined || validLotResult(award.lotResult, award));
+}
+
+// Committed Bingo award: the same frozen arithmetic and lot rules, but static facts only. Lot-result provenance is
+// not part of this contract yet, so any payload carrying one is rejected rather than shown.
+export function validBingoAward(award) {
+  return validAwardFacts(award) && !Object.hasOwn(award, 'lotResult');
 }
 
 const centsText = (cents) => {
@@ -72,17 +81,27 @@ const centsText = (cents) => {
 };
 
 // Plain committed facts only; deliberately silent about whether any celebration was shown.
-export function describeLineAward(award) {
-  const parts = ['Línea declarada', `${award.winnerCount} ${award.winnerCount === 1 ? 'ganador' : 'ganadores'}`,
+function describeAward(title, award) {
+  const parts = [title, `${award.winnerCount} ${award.winnerCount === 1 ? 'ganador' : 'ganadores'}`,
     award.winnerCount === 1 ? centsText(award.shareCents) : `${centsText(award.shareCents)} cada uno`];
   if (award.remainderCents > 0) parts.push(`${award.remainderCents} ${award.remainderCents === 1 ? 'céntimo' : 'céntimos'} sin repartir`);
   if (award.lot !== '') parts.push(`Lote: ${award.lot}${award.lotResolution === 'pending' ? ' (pendiente de desempate)' : ''}`);
+  return parts;
+}
+
+export function describeLineAward(award) {
+  const parts = describeAward('Línea declarada', award);
   const { lotResult } = award;
   if (lotResult?.origin === 'legacy_v8') parts.push('Ganador del lote desconocido (registro anterior)');
   if (lotResult?.origin === 'numbered_v1') {
     parts.push(`Ganador del lote: nº ${lotResult.participantNumber} · ${paletteV1.find(([id]) => id === lotResult.colorId)[1]}`);
   }
   return parts.join(' · ');
+}
+
+// Plain committed Bingo facts; silent about any celebration, claimant or lot winner.
+export function describeBingoAward(award) {
+  return describeAward('Bingo declarado', award).join(' · ');
 }
 
 export function createPublicController(api, view) {

@@ -1,5 +1,11 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import * as fs from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import test, { after } from 'node:test';
+import { drawManual } from '../src/event-core.ts';
+import { createEventStore } from '../src/event-store.ts';
 import {
   createPublicEventDelivery, PUBLIC_EVENT_CHANNEL, PUBLIC_META_CHANNEL, PUBLIC_PRESENTATION_CHANNEL,
   PUBLIC_LINE_AWARD_CHANNEL, PUBLIC_LINE_RECEIPT_CHANNEL, PUBLIC_PRIZES_CHANNEL, PUBLIC_THEME_CHANNEL, type PublicEventMeta, type PublicEventPrizes,
@@ -630,4 +636,133 @@ test('refreshLineAward neither disturbs a pending line receipt binding nor sends
   f.delivery.refreshLineAward('event-a');
   assert.ok(f.messages.slice(before).every((m) => m.channel === PUBLIC_LINE_AWARD_CHANNEL));
   assert.equal(f.delivery.acceptLineReceipt({ sender: bound, senderFrame: frame }, 'p1', PAGE), true);
+});
+
+// Bingo award transport (BG04B): static committed facts beside the line award, never a celebration or a lot result.
+const BINGO_AWARD = 'public:bingo-award';
+const storedBingo = (eventId = 'event-a', lot = 'Cesta', winnerCount = 2) => ({ eventId,
+  award: { winnerCount, totalCents: 5000, shareCents: 2500, remainderCents: 0, lot,
+    lotResolution: lot !== '' && winnerCount >= 2 ? 'pending' as const : 'not_required' as const },
+  presentation: { id: 'secret-bingo-presentation', status: 'started' as const, startedAt: 10, deadlineAt: 4010 } });
+function bingoFixture(line: ReturnType<typeof storedAward> | null, bingo: ReturnType<typeof storedBingo> | null) {
+  let current: unknown = bingo;
+  const messages: Message[] = [];
+  const delivery = createPublicEventDelivery({ load: () => snapshot([5]) }, () => 'light',
+    () => ({ name: 'N', date: '2026-01-01', place: 'P' }),
+    () => ({ line: { amount: 10, lot: '' }, bingo: { amount: 50, lot: 'Cesta' } }), () => line, undefined,
+    (() => { if (current instanceof Error) throw current; return current; }) as never);
+  const target = { messages, isDestroyed: () => false, send: (channel: string, result: unknown) => { messages.push({ channel, result }); } };
+  return { delivery, target, messages, set: (next: unknown) => { current = next; } };
+}
+const publicBingo = { eventId: 'event-a', winnerCount: 2, totalCents: 5000, shareCents: 2500, remainderCents: 0,
+  lot: 'Cesta', lotResolution: 'pending' };
+
+test('attach, reload and switch restore the line then the Bingo award before history, never celebrating', () => {
+  const f = bingoFixture(storedAward(), storedBingo());
+  f.delivery.attachAfterLoad(f.target);
+  assert.deepEqual(channelsOf(f.messages), [PUBLIC_THEME_CHANNEL, PUBLIC_META_CHANNEL, PUBLIC_PRIZES_CHANNEL,
+    PUBLIC_LINE_AWARD_CHANNEL, BINGO_AWARD, PUBLIC_EVENT_CHANNEL]);
+  assert.deepEqual(f.messages[4].result, publicBingo);
+  assert.deepEqual(Object.keys(f.messages[4].result as object).sort(),
+    ['eventId', 'lot', 'lotResolution', 'remainderCents', 'shareCents', 'totalCents', 'winnerCount']);
+  f.messages.length = 0;
+  f.delivery.navigationStarted(f.target);
+  f.delivery.attachAfterLoad(f.target);
+  f.delivery.publishCommitted(snapshot([5, 6], 'line_declared', '2026-01-01T00:00:00.000Z'));
+  f.delivery.publishActive('jules');
+  const reveal = [PUBLIC_THEME_CHANNEL, PUBLIC_META_CHANNEL, PUBLIC_PRIZES_CHANNEL, PUBLIC_LINE_AWARD_CHANNEL, BINGO_AWARD,
+    PUBLIC_EVENT_CHANNEL];
+  assert.deepEqual(channelsOf(f.messages), [...reveal, PUBLIC_LINE_AWARD_CHANNEL, BINGO_AWARD, PUBLIC_EVENT_CHANNEL, ...reveal]);
+  assert.doesNotMatch(JSON.stringify(f.messages), /secret-bingo-presentation|startedAt|deadlineAt|status/);
+  assert.equal(channelsOf(f.messages).includes(PUBLIC_PRESENTATION_CHANNEL), false);
+});
+
+// A loader-only failure (mocked here) is isolated; real storage corruption fails the whole event read instead (below).
+test('a missing Bingo, or a failure confined to the Bingo loader, clears only Bingo and the line award remains', () => {
+  for (const broken of [null, new Error('private detail'), { eventId: 'event-a' }]) {
+    const f = bingoFixture(storedAward(), storedBingo());
+    f.set(broken);
+    f.delivery.attachAfterLoad(f.target);
+    assert.deepEqual(f.messages[4], { channel: BINGO_AWARD, result: null });
+    assert.deepEqual(f.messages[3].result, publicAward);
+    assert.equal(channelsOf(f.messages).at(-1), PUBLIC_EVENT_CHANNEL);
+    assert.doesNotMatch(JSON.stringify(f.messages), /private detail/);
+  }
+  const unwired = awardFixture(storedAward()), target = unwired.target();
+  unwired.delivery.attachAfterLoad(target);
+  assert.equal(channelsOf(target.messages).includes(BINGO_AWARD), false);
+});
+
+test('a Bingo award send is a defensive copy and refreshLineAward never touches it', () => {
+  const f = bingoFixture(storedAward(), storedBingo());
+  f.delivery.attachAfterLoad(f.target);
+  (f.messages[4].result as { lot: string }).lot = 'mutated';
+  f.messages.length = 0;
+  f.delivery.publishCommitted(snapshot([5]));
+  assert.equal((f.messages[1].result as { lot: string }).lot, 'Cesta');
+  f.messages.length = 0;
+  f.delivery.refreshLineAward('event-a');
+  assert.deepEqual(channelsOf(f.messages), [PUBLIC_LINE_AWARD_CHANNEL]);
+});
+
+test('a reentrant award read that replaces or detaches the target stops the old sequence before any further send', () => {
+  for (const loader of ['line', 'bingo'] as const) {
+    for (const action of ['replace', 'detach'] as const) {
+      const old: Message[] = [], next: Message[] = [];
+      const make = (messages: Message[]) => ({ isDestroyed: () => false,
+        send: (channel: string, result: unknown) => { messages.push({ channel, result }); } });
+      const oldTarget = make(old), nextTarget = make(next);
+      let fired = false;
+      const hook = () => {
+        if (fired) return;
+        fired = true;
+        if (action === 'replace') delivery.attachAfterLoad(nextTarget); else delivery.detachIfCurrent(oldTarget);
+      };
+      const delivery = createPublicEventDelivery({ load: () => snapshot([5]) }, undefined, undefined, undefined,
+        () => { if (loader === 'line') hook(); return storedAward(); }, undefined,
+        () => { if (loader === 'bingo') hook(); return storedBingo(); });
+      delivery.attachAfterLoad(oldTarget);
+      const label = `${loader}/${action}`;
+      assert.deepEqual(channelsOf(old), loader === 'line' ? [] : [PUBLIC_LINE_AWARD_CHANNEL], label);
+      if (action === 'replace') {
+        assert.deepEqual(channelsOf(next), [PUBLIC_LINE_AWARD_CHANNEL, BINGO_AWARD, PUBLIC_EVENT_CHANNEL], label);
+      }
+    }
+  }
+});
+
+// Integration with the real strict store: corrupt Bingo storage fails the whole event read closed.
+const storeDirs: string[] = [];
+after(() => { for (const d of storeDirs) fs.rmSync(d, { recursive: true, force: true }); });
+test('a corrupt stored Bingo award fails the whole public state closed: no stale line, Bingo or history', () => {
+  const dir = fs.mkdtempSync(join(tmpdir(), 'bingo-public-delivery-'));
+  storeDirs.push(dir);
+  const path = join(dir, 'event.sqlite');
+  const store = createEventStore(path);
+  try {
+    const event = store.createEvent({ name: 'A', date: '2025-01-01', place: 'X' });
+    store.selectEvent(event.id);
+    store.updateEventPrizes(event.id, { line: { amount: 5, lot: '' }, bingo: { amount: 10, lot: 'Jamón' } });
+    store.update((c) => drawManual(c, 7));
+    const line = store.declareLineDirectly(store.loadLineDeclarationBaseline(), 1, '2025-01-01T00:00:01.000Z');
+    store.startLinePresentation(line.presentation.id, 1000);
+    store.completeLinePresentation(line.presentation.id, 5000);
+    store.declareBingoDirectly(store.loadBingoDeclarationBaseline(), 2, '2025-01-01T00:00:02.000Z');
+    const delivery = createPublicEventDelivery(store, undefined, undefined, undefined, () => store.loadLineAward(),
+      () => store.loadLineLotResult(), () => store.loadBingoAward());
+    const messages: Message[] = [];
+    const target = { isDestroyed: () => false, send: (channel: string, result: unknown) => { messages.push({ channel, result }); } };
+    delivery.attachAfterLoad(target);
+    assert.deepEqual(channelsOf(messages), [PUBLIC_LINE_AWARD_CHANNEL, BINGO_AWARD, PUBLIC_EVENT_CHANNEL]);
+    assert.deepEqual(messages[1].result, { eventId: event.id, winnerCount: 2, totalCents: 1000, shareCents: 500,
+      remainderCents: 0, lot: 'Jamón', lotResolution: 'pending' });
+    assert.equal((messages[0].result as { eventId: string }).eventId, event.id);
+    const db = new DatabaseSync(path);
+    try { db.exec('PRAGMA ignore_check_constraints = 1; UPDATE bingo_awards SET share_cents = 1'); } finally { db.close(); }
+    messages.length = 0;
+    delivery.publishActive('light');
+    assert.deepEqual(messages.slice(1), [{ channel: PUBLIC_LINE_AWARD_CHANNEL, result: null },
+      { channel: BINGO_AWARD, result: null },
+      { channel: PUBLIC_EVENT_CHANNEL, result: { ok: false, code: 'storage_failure', message: 'Could not read the current event. Try again.' } }]);
+  } finally { store.close(); }
 });
