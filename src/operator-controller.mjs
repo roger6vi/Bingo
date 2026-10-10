@@ -128,7 +128,7 @@ const validAwardParts = (award) => {
   return tied ? award.lotResolution === 'pending' || award.lotResolution === 'resolved' : award.lotResolution === 'not_required';
 };
 // A missing presentation is the legacy shape (shown, never actionable); a present one must be fully valid.
-const validLineAward = (value) => value !== null && typeof value === 'object' && typeof value.eventId === 'string' &&
+export const validLineAward = (value) => value !== null && typeof value === 'object' && typeof value.eventId === 'string' &&
   validAwardParts(value.award) && (value.presentation === undefined || validPresentation(value.presentation));
 
 // The exact identity main reports for a legacy checking_line; the cancellation sends it back unchanged.
