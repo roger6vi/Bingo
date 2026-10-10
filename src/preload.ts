@@ -23,6 +23,21 @@ contextBridge.exposeInMainWorld('desktop', Object.freeze({
   readLegacyLineCheck: () => ipcRenderer.invoke('line:legacy-check:read'),
   cancelLegacyLineCheck: (eventId: string, auditSequence: number, lastTransitionAt: string) =>
     ipcRenderer.invoke('line:legacy-check:cancel', eventId, auditSequence, lastTransitionAt),
+  beginBingoSetup: () => ipcRenderer.invoke('bingo:begin'),
+  readBingoSetup: () => ipcRenderer.invoke('bingo:read'),
+  cancelBingoSetup: (sessionId: string, eventId: string) => ipcRenderer.invoke('bingo:cancel', sessionId, eventId),
+  confirmBingo: (sessionId: string, winnerCount: number) =>
+    ipcRenderer.invoke('bingo:confirm', sessionId, winnerCount),
+  readLegacyBingoCheck: () => ipcRenderer.invoke('bingo:legacy-check:read'),
+  cancelLegacyBingoCheck: (eventId: string, auditSequence: number, lastTransitionAt: string) =>
+    ipcRenderer.invoke('bingo:legacy-check:cancel', eventId, auditSequence, lastTransitionAt),
+  retryBingoPresentation: (id: string) => ipcRenderer.invoke('bingo:retry-presentation', id),
+  repeatBingoPresentation: (id: string) => ipcRenderer.invoke('bingo:repeat-presentation', id),
+  onBingoPresentation: (callback: (award: unknown) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, award: unknown) => callback(award);
+    ipcRenderer.on('bingo:presentation', listener);
+    return () => ipcRenderer.removeListener('bingo:presentation', listener);
+  },
   readLineLot: () => ipcRenderer.invoke('line:lot:read'),
   drawLineLot: (expected: { eventId: string; auditSequence: number; presentationId: string }) =>
     ipcRenderer.invoke('line:lot:draw', expected),
