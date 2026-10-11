@@ -2,9 +2,10 @@
 // and explicit confirm with an optional committed fact-refresh hook (F2b), and held-award presentation pushes (F3a).
 // Modes: unknown (not read for this event), idle, setup (a main-owned session is open), uncertain (an answer was
 // lost, refused or invalid, or the bridge is unavailable: only an explicit read may continue) and declared.
-// Deliberately incomplete: there are no retry, repeat or legacy actions yet, pushes during begin, cancel, confirm or
-// a read owning a setup are ignored until F3b, and nothing is connected to the operator UI. Nothing here reads,
-// writes or plays by itself; the only writes are the explicit begin, cancel and confirm, sharing the read's flight.
+// F3b stages pushes during a dispatched confirm and a read owning a setup; begin and cancel ignore them.
+// Deliberately incomplete: there are no retry, repeat or legacy actions yet and nothing is connected to the operator
+// UI. Nothing here reads, writes or plays by itself; the only writes are the explicit begin, cancel and confirm,
+// sharing the read's flight.
 import { validLineAward } from './operator-controller.mjs';
 
 const MAX_ID = 64;
@@ -105,9 +106,9 @@ export function createBingoController(api, view, { committed = () => {} } = {}) 
     if (!keepSession) session = null;
   }
 
-  // A private award/null update. Ignored without a live event, for another identifiable event or a retired id, and
-  // while an action or a read owning a setup is in flight (F3b). A read without a setup only stages it for its
-  // answer; it never renders, releases or settles. Otherwise only a held award moves: the same id to a later legal
+  // A private award/null update. Ignored without a live event, for another identifiable event or a retired id, during
+  // begin or cancel, and before a confirm is dispatched. A read or a dispatched confirm only stages it for its
+  // answer; it never renders, releases, settles, consumes a session or proves a confirm. Otherwise only a held award moves: the same id to a later legal
   // status. Anything else held is ambiguous or corrupt and turns uncertain, keeping the award known; never a read.
   const onPush = (value) => {
     if (disposed || unavailable || context === null) return;
@@ -116,7 +117,7 @@ export function createBingoController(api, view, { committed = () => {} } = {}) 
     if (next !== null && retired.has(next.presentation.id)) return;
     if (flight !== null) {
       const stage = flight.stage;
-      if (stage === null) return;
+      if (stage === null || stage === 'dispatch') return;
       const known = stage.award ?? (anchor?.presentation.id === next?.presentation.id ? anchor : null);
       const merged = next === null ? null : known === null ? next :
         known.presentation.id === next.presentation.id ? merge(known, next) : null;
@@ -150,12 +151,8 @@ export function createBingoController(api, view, { committed = () => {} } = {}) 
   // observed award stays known and uncertain: none, a setup, a refusal or a lost answer never unlock it.
   function settleRead(stage, result) {
     const seen = stage?.award ?? null;
-    // An observation of the held id (or the only award seen) stays known at its strongest legal status, so later
-    // answers merge against it; anything incompatible leaves the held award as it was.
     const failClosed = (message) => {
-      if (seen !== null && (anchor === null || seen.presentation.id === anchor.presentation.id)) {
-        anchor = merge(anchor ?? seen, seen) ?? anchor;
-      }
+      keepSeen(stage);
       uncertain(message);
     };
     if (stage?.conflict) return failClosed(invalidUpdate);
@@ -178,6 +175,15 @@ export function createBingoController(api, view, { committed = () => {} } = {}) 
     return failClosed(result === null ? connectionError : result?.ok === false ? refusal(result) : invalidUpdate);
   }
 
+  // An observation of the held id (or the only award seen) stays known at its strongest legal status, so later
+  // answers merge against it; anything incompatible leaves the held award as it was. It never shows or commits.
+  function keepSeen(stage) {
+    const seen = stage?.award ?? null;
+    if (seen !== null && (anchor === null || seen.presentation.id === anchor.presentation.id)) {
+      anchor = merge(anchor ?? seen, seen) ?? anchor;
+    }
+  }
+
   // Only none, a setup and a declared award bound to the current event are recognized; anything else fails closed.
   function apply(result) {
     if (result?.ok === true && result.state === 'none') {
@@ -197,9 +203,11 @@ export function createBingoController(api, view, { committed = () => {} } = {}) 
     try {
       render();
       if (disposed || flight !== own || !ready()) return;
+      // A confirm stages only what arrives once it is really sent, never during the render before.
+      if (own.stage === 'dispatch') own.stage = { award: null, conflict: false };
       let result;
       try { result = await send(); } catch { result = null; }
-      if (flight === own) settle(result);
+      if (flight === own) settle(result, own.stage);
     } finally {
       if (flight === own) {
         flight = null;
@@ -213,7 +221,7 @@ export function createBingoController(api, view, { committed = () => {} } = {}) 
 
   // Establish the shared settlement before any view or API callback, so every reentrant or competing start, begin
   // or cancel joins this flight's actual promise and sends nothing of its own.
-  // `stage` collects pushes for a read without a setup; actions and reads owning a setup have none.
+  // `stage` collects pushes for a read, or 'dispatch' for a confirm; begin and cancel have none.
   function fly(ready, send, settle, stage = null) {
     let resolve;
     let reject;
@@ -235,7 +243,7 @@ export function createBingoController(api, view, { committed = () => {} } = {}) 
       render();
       return Promise.resolve();
     }
-    const stage = session === null ? { award: null, conflict: false } : null;
+    const stage = { award: null, conflict: false };
     return fly(() => true, () => api.readBingoSetup(), (result) => settleRead(stage, result), stage);
   }
 
@@ -313,14 +321,24 @@ export function createBingoController(api, view, { committed = () => {} } = {}) 
     }
     const { sessionId } = owned;
     return fly(() => allowed() && typeof api.confirmBingo === 'function',
-      () => api.confirmBingo(sessionId, winnerCount), (result) => {
+      () => api.confirmBingo(sessionId, winnerCount), (result, stage) => {
         if (exactlyDeclared(result, eventId, winnerCount)) {
-          mode = 'declared'; anchor = award = copyAward(result.award); session = null; error = null;
-          refreshDue = generation;
-        } else if (result?.ok === false && result.code === 'stale_session') uncertain(refusal(result), false);
-        else if (knownRefusal(result) && result.code !== 'storage_failure') error = result.message;
-        else uncertain(result?.ok === false ? refusal(result) : result === null ? connectionError : invalidUpdate);
-      });
+          // Only the exact answer commits and owes one refresh. A compatible push of its id may advance it; any
+          // conflicting observation keeps the owned award held but shown as uncertain.
+          const owned = copyAward(result.award);
+          const seen = stage.award;
+          const best = seen === null ? owned : seen.presentation.id === owned.presentation.id ? merge(owned, seen) : null;
+          anchor = best ?? owned; session = null; refreshDue = generation;
+          if (best === null || stage.conflict) uncertain(invalidUpdate);
+          else { mode = 'declared'; award = anchor; error = null; }
+        } else if (knownRefusal(result) && result.code !== 'storage_failure') error = result.message;
+        else {
+          // Lost, stale or invalid: nothing commits or is owed, but an observed award stays known (never shown).
+          keepSeen(stage);
+          if (result?.ok === false && result.code === 'stale_session') uncertain(refusal(result), false);
+          else uncertain(result?.ok === false ? refusal(result) : result === null ? connectionError : invalidUpdate);
+        }
+      }, 'dispatch');
   }
 
   // The page's active event and its fresh phase. A different event drops everything held and orphans the read in
