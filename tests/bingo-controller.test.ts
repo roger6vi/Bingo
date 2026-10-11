@@ -5,7 +5,8 @@ import { createBingoController } from '../src/bingo-controller.mjs';
 // Bingo operator controller: validated read, event context, lifecycle (F1), explicit begin/cancel (F2a) and
 // confirmation with a fact-refresh hook (F2b), and held-award pushes with read-only staging (F3a, a subset of F3).
 // Pushes never settle begin or cancel; a dispatched confirm or a read stages them for its answer (F3b). Explicit manual
-// retry of the shown failed award behind fresh clear guards, and the rotation to the id main returns (G1a).
+// retry (failed) and repeat (interrupted) of the shown award behind fresh clear guards, and the rotation to the id
+// main returns (G1a, G1b).
 const session = { sessionId: 's1', eventId: 'e1', calledNumbers: [12, 5, 90], bingoPrize: { amount: 50, lot: 'Jamón' } };
 const award = { eventId: 'e1', award: { winnerCount: 2, totalCents: 5000, shareCents: 2500, remainderCents: 0, lot: '',
   lotResolution: 'not_required' }, presentation: { id: 'p1', status: 'started', startedAt: 1000, deadlineAt: 5000 } };
@@ -61,7 +62,7 @@ function bingoFixture(overrides: Record<string, unknown> = {}, onRender: (state:
 test('bingo subscribes before any read and never reads, writes or plays by itself', async () => {
   const f = bingoFixture();
   assert.deepEqual(Object.keys(f.controller).sort(),
-    ['begin', 'cancel', 'confirm', 'dispose', 'getState', 'retry', 'setEvent', 'setGuards', 'start']);
+    ['begin', 'cancel', 'confirm', 'dispose', 'getState', 'repeat', 'retry', 'setEvent', 'setGuards', 'start']);
   assert.deepEqual(f.calls, ['subscribe']);
   assert.equal(f.last().mode, 'unknown');
   f.controller.setEvent('e1', 'drawing');
@@ -1292,46 +1293,131 @@ test('bingo confirm staging dies with its event or controller; API reentry joins
   }
 });
 
-// G1a: explicit retry of the shown failed award, only behind fresh clear guards. Only the exact answer rotates to
-// the new id main returns; pushes alone never rotate, and nothing reads or acts by itself.
+// G1a/G1b: explicit retry of the shown failed award and repeat of the shown interrupted one, only behind fresh clear
+// guards. Only the exact answer rotates to the new id main returns; pushes alone never rotate, and nothing reads or
+// acts by itself.
 const clear = { tongoPlaying: false, presentationBusy: false, otherSetupActive: false };
 const manualAt = async (f: ReturnType<typeof bingoFixture>, status = 'failed') => {
   await declaredAt(f, at(status));
   f.controller.setGuards(clear);
 };
-const sent = (f: ReturnType<typeof bingoFixture>) => f.calls.filter((call) => call.startsWith('retry'));
+const sent = (f: ReturnType<typeof bingoFixture>) => f.calls.filter((call) => /^(retry|repeat)/.test(call));
 const none = { ok: true, state: 'none' };
+const kinds = [['retry', 'failed'], ['repeat', 'interrupted']] as const;
+
+test('bingo setGuards is synchronous and side-effect free, and manual actions need every guard freshly false', async () => {
+  const f = bingoFixture();
+  await declaredAt(f, at('failed'));
+  const before = f.controller.getState();
+  const seen = f.renders.length;
+  await f.controller.retry('p1');
+  const throwing = { get tongoPlaying() { throw new Error('getter'); }, presentationBusy: false, otherSetupActive: false };
+  const unknown = [undefined, null, 'clear', [], {}, throwing, { tongoPlaying: false, presentationBusy: false },
+    { ...clear, tongoPlaying: true }, { ...clear, presentationBusy: true }, { ...clear, otherSetupActive: true },
+    { ...clear, tongoPlaying: 0 }, { ...clear, presentationBusy: 'false' }, { ...clear, otherSetupActive: new Boolean(false) }];
+  for (const guards of unknown) {
+    f.controller.setGuards(clear);
+    assert.equal(f.controller.setGuards(guards), undefined);
+    await f.controller.retry('p1');
+  }
+  await flush();
+  assert.deepEqual([f.calls, f.renders.length, f.controller.getState()], [['subscribe', 'read:0'], seen, before]);
+  f.controller.setGuards(clear);
+  assert.equal(f.renders.length, seen);
+  f.answer(declared(at('pending', 'p2')));
+  await f.controller.retry('p1');
+  assert.deepEqual([sent(f), f.last().mode, f.last().award], [['retry:p1'], 'declared', at('pending', 'p2')]);
+});
+
+test('bingo manual actions admit only the exact shown id and status, bingo_declared and no setup', async () => {
+  type Case = [string, (f: ReturnType<typeof bingoFixture>) => Promise<unknown>, (f: ReturnType<typeof bingoFixture>) => unknown];
+  const cases: Case[] = [];
+  for (const id of ['p2', ' p1', 'P1', '', 'p'.repeat(65), new String('p1'), ['p1'], undefined, 1]) {
+    cases.push([`id ${String(id)}`, (f) => manualAt(f), (f) => f.controller.retry(id)]);
+  }
+  for (const status of ['pending', 'started', 'completed', 'interrupted']) {
+    cases.push([`retry ${status}`, (f) => manualAt(f, status), (f) => f.controller.retry('p1')]);
+  }
+  for (const status of ['pending', 'started', 'completed', 'failed']) {
+    cases.push([`repeat ${status}`, (f) => manualAt(f, status), (f) => f.controller.repeat('p1')]);
+  }
+  // A phase or event change resets the guards, so fresh clear guards are sent again to isolate the gate under test.
+  for (const phase of ['drawing', 'line_declared', 'checking_bingo', null]) {
+    cases.push([`phase ${phase}`, async (f) => {
+      await manualAt(f);
+      f.controller.setEvent('e1', phase);
+      f.controller.setGuards(clear);
+    }, (f) => f.controller.retry('p1')]);
+  }
+  cases.push(['uncertain', async (f) => { await manualAt(f); f.push(at('started')); }, (f) => f.controller.retry('p1')]);
+  cases.push(['other event', async (f) => {
+    await manualAt(f);
+    f.controller.setEvent('e2', 'bingo_declared');
+    f.controller.setGuards(clear);
+  }, (f) => f.controller.retry('p1')]);
+  cases.push(['owned setup', async (f) => { await setupAt(f, 'bingo_declared'); f.controller.setGuards(clear); },
+    (f) => f.controller.retry('p1')]);
+  cases.push(['idle', async (f) => { await idleAt(f, 'bingo_declared'); f.controller.setGuards(clear); },
+    (f) => f.controller.repeat('p1')]);
+  for (const [label, prepare, call] of cases) {
+    const f = bingoFixture();
+    await prepare(f);
+    const before = f.controller.getState();
+    const calls = [...f.calls];
+    const seen = f.renders.length;
+    await call(f);
+    await flush();
+    assert.deepEqual([f.calls, f.renders.length, f.controller.getState()], [calls, seen, before], label);
+  }
+});
+
+test('bingo manual actions without their bridge show an error, never dispatch and keep reads usable', async () => {
+  for (const bridge of [undefined, null, 'nope']) {
+    for (const [kind, status] of [['retry', 'failed'], ['repeat', 'interrupted']] as const) {
+      const f = bingoFixture({ retryBingoPresentation: bridge, repeatBingoPresentation: bridge });
+      await manualAt(f, status);
+      await f.controller[kind]('p1');
+      assert.deepEqual([f.last().mode, f.last().award, f.last().pending, typeof f.last().error],
+        ['declared', at(status), false, 'string'], kind);
+      f.reply(declared(at(status)));
+      await f.controller.start();
+      assert.deepEqual([f.last().mode, f.last().award, f.last().error, f.calls], ['declared', at(status), null,
+        ['subscribe', 'read:0', 'read:0']], kind);
+    }
+  }
+});
 
 test('bingo guards reset on every event or phase change, so only a fresh complete update permits one retry', async () => {
-  const failedIn = (eventId: string) => ({ ...at('failed'), eventId });
-  const readIn = async (f: ReturnType<typeof bingoFixture>, eventId: string) => {
+  const shownIn = (eventId: string, status: string) => ({ ...at(status), eventId });
+  const readIn = async (f: ReturnType<typeof bingoFixture>, eventId: string, status: string) => {
     f.controller.setEvent(eventId, 'bingo_declared');
-    f.reply(declared(failedIn(eventId)));
+    f.reply(declared(shownIn(eventId, status)));
     await f.controller.start();
   };
-  const changes: Record<string, (f: ReturnType<typeof bingoFixture>) => Promise<unknown>> = {
-    'A->B': (f) => readIn(f, 'e2'),
-    'A->B->A': async (f) => { f.controller.setEvent('e2', 'bingo_declared'); await readIn(f, 'e1'); },
+  const changes: Record<string, (f: ReturnType<typeof bingoFixture>, status: string) => Promise<unknown>> = {
+    'A->B': (f, status) => readIn(f, 'e2', status),
+    'A->B->A': async (f, status) => { f.controller.setEvent('e2', 'bingo_declared'); await readIn(f, 'e1', status); },
     'ineligible phase': async (f) => { f.controller.setEvent('e1', 'drawing'); f.controller.setEvent('e1', 'bingo_declared'); },
     'unknown phase': async (f) => { f.controller.setEvent('e1', null); f.controller.setEvent('e1', 'bingo_declared'); },
   };
-  for (const [label, change] of Object.entries(changes)) {
+  for (const [kind, status] of kinds) for (const [name, change] of Object.entries(changes)) {
+    const label = `${kind}:${name}`;
     const f = bingoFixture();
-    await declaredAt(f, at('failed'));
-    await f.controller.retry('p1');
+    await declaredAt(f, at(status));
+    await f.controller[kind]('p1');
     f.controller.setGuards(clear);
-    await change(f);
+    await change(f, status);
     const eventId = f.last().eventId as string;
-    assert.deepEqual([f.last().mode, f.last().award], ['declared', failedIn(eventId)], label);
-    await f.controller.retry('p1');
+    assert.deepEqual([f.last().mode, f.last().award], ['declared', shownIn(eventId, status)], label);
+    await f.controller[kind]('p1');
     f.controller.setGuards({ tongoPlaying: false, presentationBusy: false });
-    await f.controller.retry('p1');
+    await f.controller[kind]('p1');
     assert.deepEqual(sent(f), [], label);
     f.controller.setGuards(clear);
     f.answer(declared({ ...at('pending', 'p2'), eventId }));
-    await f.controller.retry('p1');
-    await f.controller.retry('p1');
-    assert.deepEqual([sent(f), f.last().mode, f.last().award], [['retry:p1'], 'declared', { ...at('pending', 'p2'), eventId }],
+    await f.controller[kind]('p1');
+    await f.controller[kind]('p1');
+    assert.deepEqual([sent(f), f.last().mode, f.last().award], [[`${kind}:p1`], 'declared', { ...at('pending', 'p2'), eventId }],
       label);
   }
 });
@@ -1345,18 +1431,18 @@ test('bingo manual actions recheck every gate after render and every competing c
     switch: (f) => { f.controller.setEvent('e2', 'bingo_declared'); f.controller.setEvent('e1', 'bingo_declared'); },
     dispose: (f) => f.controller.dispose(),
   };
-  for (const [name, change] of Object.entries(changes)) {
+  for (const [kind, status] of kinds) for (const [name, change] of Object.entries(changes)) {
     let armed = false;
     const f = bingoFixture({}, () => {
       if (!armed) return;
       armed = false;
       change(f);
     });
-    await manualAt(f);
+    await manualAt(f, status);
     armed = true;
-    await f.controller.retry('p1');
+    await f.controller[kind]('p1');
     await flush();
-    assert.deepEqual(sent(f), [], name);
+    assert.deepEqual(sent(f), [], `${kind}:${name}`);
     if (name !== 'dispose') assert.deepEqual([f.last().pending, f.last().error], [false, null], name);
   }
   // Only the exact shown failed id, with no owned setup; a missing bridge shows an error and reads stay usable.
@@ -1379,7 +1465,8 @@ test('bingo manual actions recheck every gate after render and every competing c
   g.reply(declared(at('failed')));
   await g.controller.start();
   assert.deepEqual([g.last().mode, g.last().error, g.calls], ['declared', null, ['subscribe', 'read:0', 'read:0']]);
-  for (const source of ['none', 'render', 'api']) {
+  for (const [source, kind, status] of [['none', 'retry', 'failed'], ['render', 'retry', 'failed'], ['api', 'retry', 'failed'],
+    ['render', 'repeat', 'interrupted'], ['api', 'repeat', 'interrupted']] as const) {
     const d = deferred();
     let armed = false;
     const joined: Promise<unknown>[] = [];
@@ -1387,39 +1474,39 @@ test('bingo manual actions recheck every gate after render and every competing c
       if (!armed) return;
       armed = false;
       joined.push(f.controller.retry('p1'), f.controller.retry('p2'), f.controller.retry('zz'), f.controller.start(),
-        f.controller.begin(), f.controller.confirm(2), f.controller.cancel());
+        f.controller.begin(), f.controller.confirm(2), f.controller.cancel(), f.controller.repeat('p1'));
     };
     const f = bingoFixture({}, () => { if (source === 'render') reenter(); });
-    await manualAt(f);
+    await manualAt(f, status);
     f.actions.push(() => {
       if (source === 'api') reenter();
       return d.promise;
     });
     armed = true;
-    const flight = f.controller.retry('p1');
-    const others = [f.controller.retry('p1'), f.controller.retry(undefined), f.controller.start()];
+    const flight = f.controller[kind]('p1');
+    const others = [f.controller.retry('p1'), f.controller.retry(undefined), f.controller.start(), f.controller.repeat('p1'),
+      f.controller.repeat(undefined)];
     await flush();
     assert.deepEqual([f.controller.getState().pending, f.controller.getState().mode], [true, 'declared'], source);
     d.resolve(declared(at('pending', 'p2')));
     await Promise.all([flight, ...others, ...joined]);
-    assert.equal(joined.length, source === 'none' ? 0 : 7, source);
+    assert.equal(joined.length, source === 'none' ? 0 : 8, source);
     for (const promise of [...others, ...joined]) assert.equal(promise, flight, source);
-    assert.deepEqual([f.calls, f.last().mode, f.last().award], [['subscribe', 'read:0', 'retry:p1'], 'declared',
+    assert.deepEqual([f.calls, f.last().mode, f.last().award], [['subscribe', 'read:0', `${kind}:p1`], 'declared',
       at('pending', 'p2')], source);
   }
 });
 
 test('bingo manual rotation adopts the exact new id, merges its pushes and retires the source id', async () => {
-  for (const order of ['before', 'after', 'reverse']) {
-    const label = order;
-    const status = 'failed';
+  for (const [kind, status] of kinds) for (const order of ['before', 'after', 'reverse']) {
+    const label = `${kind}:${order}`;
     let hooks = 0;
     const args: unknown[][] = [];
     const d = deferred();
-    const f = bingoFixture({ retryBingoPresentation: (...given: unknown[]) => { args.push(given); return d.promise; } },
+    const f = bingoFixture({ [`${kind}BingoPresentation`]: (...given: unknown[]) => { args.push(given); return d.promise; } },
       () => {}, { committed: () => { hooks++; } });
     await manualAt(f, status);
-    const flight = f.controller.retry('p1');
+    const flight = f.controller[kind]('p1');
     const values = [at(status), at('pending', 'p2'), at('started', 'p2')];
     // Reverse: the returned id's started push arrives first, then the compatible source push, then the pending reply.
     const pushes = () => (order === 'reverse' ? values.reverse() : values).forEach((value) => f.push(value));
@@ -1431,7 +1518,7 @@ test('bingo manual rotation adopts the exact new id, merges its pushes and retir
     const reply = declared(at('pending', 'p2'));
     d.resolve(reply);
     await flight;
-    (reply.award as any).presentation.status = 'failed';
+    (reply.award as any).presentation.status = status;
     if (order === 'after') pushes();
     await flush();
     assert.deepEqual([args, f.last().mode, f.last().award, f.last().error, hooks],
@@ -1441,8 +1528,8 @@ test('bingo manual rotation adopts the exact new id, merges its pushes and retir
     const seen = f.renders.length;
     f.push(at(status));
     f.push(at('started'));
-    await f.controller.retry('p1');
-    await f.controller.retry('p2');
+    await f.controller[kind]('p1');
+    await f.controller[kind]('p2');
     assert.deepEqual([f.renders.length, f.controller.getState().award, args.length], [seen, at('started', 'p2'), 1], label);
     f.reply(declared(at(status)));
     await f.controller.start();
@@ -1496,7 +1583,7 @@ test('bingo manual answer rotates despite ambiguous evidence but stays uncertain
 
 test('bingo manual refusals keep the old award; lost, invalid or same-id answers stay uncertain on the old id', async () => {
   const p2 = at('pending', 'p2');
-  const answers: Array<[() => unknown, boolean]> = [
+  const answers: Array<[(() => unknown) | 'same', boolean]> = [
     ...['invalid_request', 'not_available', 'setup_active', 'tongo_active', 'presentation_busy', 'presentation_refused']
       .map((code): [() => unknown, boolean] => [async () => failure(code, `No ${code}.`), true]),
     [async () => failure('storage_failure', 'Later.'), false], [() => Promise.reject(new Error('lost')), false],
@@ -1505,61 +1592,65 @@ test('bingo manual refusals keep the old award; lost, invalid or same-id answers
     [async () => declared({ ...p2, eventId: 'e2' }), false],
     [async () => declared({ ...p2, award: { ...award.award, totalCents: 6000, shareCents: 3000 } }), false],
     [async () => declared({ ...p2, presentation: { ...p2.presentation, status: 'playing' } }), false],
-    [async () => declared(at('failed')), false], [async () => failure('stale_session', 'Gone.'), false],
+    // The same id as the source, for either action.
+    ['same', false], [async () => failure('stale_session', 'Gone.'), false],
     [async () => failure('mystery', 'Hm.'), false], [async () => failure('not_available', ' '), false],
   ];
   for (const [answer, refused] of answers) {
-    for (const push of [false, true]) {
-      const label = `${String(answer)}:${push}`;
+    for (const [kind, status] of kinds) for (const push of [false, true]) {
+      const label = `${kind}:${String(answer)}:${push}`;
       let hooks = 0;
       const f = bingoFixture({}, () => {}, { committed: () => { hooks++; } });
-      await manualAt(f);
+      await manualAt(f, status);
       f.actions.push(() => {
         if (push) f.push(at('started', 'p2'));
-        return answer();
+        return answer === 'same' ? declared(at(status)) : (answer as () => unknown)();
       });
-      await f.controller.retry('p1');
+      await f.controller[kind]('p1');
       await flush();
       const shown = refused && !push;
       assert.deepEqual([f.last().mode, f.last().award, f.last().pending, typeof f.last().error],
-        [shown ? 'declared' : 'uncertain', shown ? at('failed') : null, false, 'string'], label);
+        [shown ? 'declared' : 'uncertain', shown ? at(status) : null, false, 'string'], label);
       if (refused) assert.match(f.last().error as string, /^No /, label);
-      await f.controller.retry('p1');
+      await f.controller[kind]('p1');
       if (!shown) {
         f.reply(none);
         await f.controller.start();
         assert.equal(f.last().mode, 'uncertain', label);
       }
       // A push alone never rotated: the old id still settles an explicit read.
-      f.reply(declared(at('failed')));
+      f.reply(declared(at(status)));
       await f.controller.start();
       await flush();
-      assert.deepEqual([f.last().mode, f.last().award, sent(f).length, hooks], ['declared', at('failed'), shown ? 2 : 1, 0],
+      assert.deepEqual([f.last().mode, f.last().award, sent(f).length, hooks], ['declared', at(status), shown ? 2 : 1, 0],
         label);
     }
   }
-  const f = bingoFixture();
-  await manualAt(f);
-  f.answer(declared(p2));
-  await f.controller.retry('p1');
-  f.push(at('failed', 'p2'));
-  f.answer(declared(at('pending')));
-  await f.controller.retry('p2');
-  assert.deepEqual([f.last().mode, f.last().award, sent(f)], ['uncertain', null, ['retry:p1', 'retry:p2']]);
-  f.reply(declared(at('failed', 'p2')));
-  await f.controller.start();
-  assert.deepEqual([f.last().mode, f.last().award], ['declared', at('failed', 'p2')]);
+  // An answer with a retired id rotates nothing.
+  for (const [kind, status] of kinds) {
+    const f = bingoFixture();
+    await manualAt(f, status);
+    f.answer(declared(p2));
+    await f.controller[kind]('p1');
+    f.push(at(status, 'p2'));
+    f.answer(declared(at('pending')));
+    await f.controller[kind]('p2');
+    assert.deepEqual([f.last().mode, f.last().award, sent(f)], ['uncertain', null, [`${kind}:p1`, `${kind}:p2`]], kind);
+    f.reply(declared(at(status, 'p2')));
+    await f.controller.start();
+    assert.deepEqual([f.last().mode, f.last().award], ['declared', at(status, 'p2')], kind);
+  }
 });
 
 test('bingo manual answers die with their event or controller, and a later phase change never discards one', async () => {
-  for (const change of ['switch', 'dispose', 'phase']) {
+  for (const [kind, status] of kinds) for (const change of ['switch', 'dispose', 'phase']) {
     const d = deferred();
     const fresh = deferred();
     let replacement: Promise<unknown> | undefined;
     const f = bingoFixture();
-    await manualAt(f);
+    await manualAt(f, status);
     f.actions.push(() => d.promise);
-    const flight = f.controller.retry('p1');
+    const flight = f.controller[kind]('p1');
     f.push(at('pending', 'p2'));
     if (change === 'switch') {
       f.controller.setEvent('e2', 'bingo_declared');
@@ -1580,8 +1671,8 @@ test('bingo manual answers die with their event or controller, and a later phase
     assert.deepEqual([f.renders.length, f.controller.getState()], [seen, before], change);
     if (change === 'dispose') continue;
     assert.deepEqual([before.pending, before.mode], [true, 'unknown']);
-    fresh.resolve(declared(at('failed')));
+    fresh.resolve(declared(at(status)));
     await replacement;
-    assert.deepEqual([f.last().mode, f.last().award, sent(f)], ['declared', at('failed'), ['retry:p1']]);
+    assert.deepEqual([f.last().mode, f.last().award, sent(f)], ['declared', at(status), [`${kind}:p1`]], change);
   }
 });

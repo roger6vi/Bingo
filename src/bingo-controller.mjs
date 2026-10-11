@@ -3,9 +3,9 @@
 // Modes: unknown (not read for this event), idle, setup (a main-owned session is open), uncertain (an answer was
 // lost, refused or invalid, or the bridge is unavailable: only an explicit read may continue) and declared.
 // F3b stages pushes during a dispatched confirm and a read owning a setup; begin and cancel ignore them.
-// G1a adds explicit manual retry behind fresh guards. Deliberately incomplete: there are no repeat or legacy actions yet
+// G1 adds explicit manual retry and repeat behind fresh guards. Deliberately incomplete: there are no legacy actions yet
 // and nothing is connected to the operator UI. Nothing here reads, writes or plays by itself; the only writes are the
-// explicit begin, cancel, confirm and retry, sharing the read's flight.
+// explicit begin, cancel, confirm, retry and repeat, sharing the read's flight.
 import { validLineAward } from './operator-controller.mjs';
 
 const MAX_ID = 64;
@@ -407,9 +407,10 @@ export function createBingoController(api, view, { committed = () => {} } = {}) 
   const guardsClear = () => guards.tongoPlaying === false && guards.presentationBusy === false &&
     guards.otherSetupActive === false;
 
-  // A manual action on a presentation in `status` (retry: failed): only the exact id of the award shown for the current event,
-  // in bingo_declared, with no setup and clear guards, all rechecked after render. Main's coordinator dispatches once
-  // and plays; this never begins, notifies, reads or retries by itself, and owes no committed refresh.
+  // A manual action on a presentation in `status` (retry: failed, repeat: interrupted, never completed): only the
+  // exact id of the award shown for the current event, in bingo_declared, with no setup and clear guards, all rechecked
+  // after render. Main's coordinator dispatches once and plays; this never begins, notifies, reads or retries by
+  // itself, and owes no committed refresh.
   function manual(name, status) {
     return (id) => {
       const source = anchor;
@@ -444,6 +445,7 @@ export function createBingoController(api, view, { committed = () => {} } = {}) 
     else uncertain(result === null ? connectionError : result?.ok === false ? refusal(result) : invalidUpdate);
   }
   const retry = manual('retryBingoPresentation', 'failed');
+  const repeat = manual('repeatBingoPresentation', 'interrupted');
 
-  return { start, begin, cancel, confirm, retry, setGuards, setEvent, dispose, getState: snapshot };
+  return { start, begin, cancel, confirm, retry, repeat, setGuards, setEvent, dispose, getState: snapshot };
 }
