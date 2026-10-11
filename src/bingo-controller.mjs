@@ -3,9 +3,10 @@
 // Modes: unknown (not read for this event), idle, setup (a main-owned session is open), uncertain (an answer was
 // lost, refused or invalid, or the bridge is unavailable: only an explicit read may continue) and declared.
 // F3b stages pushes during a dispatched confirm and a read owning a setup; begin and cancel ignore them.
-// G1 adds explicit manual retry and repeat behind fresh guards. Deliberately incomplete: there are no legacy actions yet
-// and nothing is connected to the operator UI. Nothing here reads, writes or plays by itself; the only writes are the
-// explicit begin, cancel, confirm, retry and repeat, sharing the read's flight.
+// G1 adds explicit manual retry and repeat behind fresh guards; G2 an explicit read of the legacy check's identity.
+// Deliberately incomplete: there is no legacy cancellation yet and nothing is connected to the operator UI. Nothing
+// here reads, writes or plays by itself; the only writes are the explicit begin, cancel, confirm, retry and repeat,
+// sharing the read's flight.
 import { validLineAward } from './operator-controller.mjs';
 
 const MAX_ID = 64;
@@ -46,6 +47,22 @@ const exactlyCancelled = (result) => isObject(result) && Object.keys(result).len
 const exactlyDeclared = (result, eventId, count) => isObject(result) && Object.keys(result).length === 3 &&
   result.ok === true && result.state === 'declared' && validBingoAward(result.award, eventId) &&
   result.award.award.winnerCount === count;
+const canonicalTime = (value) => typeof value === 'string' && Number.isFinite(Date.parse(value)) &&
+  new Date(Date.parse(value)).toISOString() === value;
+const exactKeys = (value, keys) => isObject(value) && Object.keys(value).length === keys.length &&
+  keys.every((key) => Object.hasOwn(value, key));
+// Main's detached legacy check: exactly the four-field identity of this event's checking_bingo head, as a copy.
+const legacyIdentity = (result, eventId) => {
+  const c = result?.check;
+  if (!exactKeys(result, ['ok', 'state', 'check']) || result.ok !== true || result.state !== 'legacy_check' ||
+      !exactKeys(c, ['eventId', 'phase', 'auditSequence', 'lastTransitionAt']) || !validId(c.eventId) ||
+      c.eventId !== eventId || c.phase !== 'checking_bingo' || !Number.isSafeInteger(c.auditSequence) ||
+      c.auditSequence < 1 || !canonicalTime(c.lastTransitionAt)) return null;
+  return { eventId: c.eventId, phase: c.phase, auditSequence: c.auditSequence, lastTransitionAt: c.lastTransitionAt };
+};
+// Only main's exact typed answer means there is no legacy check; any other failure leaves it unknown.
+const noLegacyCheck = (result) => exactKeys(result, ['ok', 'code', 'message']) && knownRefusal(result) &&
+  result.code === 'not_available';
 
 // Copies keep only validated fields, so nothing the bridge, the view or a caller holds aliases the owner's state.
 const copySession = (s) => ({ sessionId: s.sessionId, eventId: s.eventId, calledNumbers: [...s.calledNumbers],
@@ -97,9 +114,16 @@ export function createBingoController(api, view, { committed = () => {} } = {}) 
   // The operator's latest Tongo, presentation and other-setup guards: true, false or null when unknown. Manual
   // actions need all three freshly false. They are not part of the snapshot: the page that supplies them knows them.
   let guards = { tongoPlaying: null, presentationBusy: null, otherSetupActive: null };
+  // The legacy check last read for this event and phase: none, available (with its identity) or uncertain. Any event
+  // or phase change, or disposal, moves the epoch, so a late legacy answer from before it is dropped.
+  let legacy = { status: 'none', check: null };
+  let legacyEpoch = 0;
+  const legacyView = () => (legacy.status === 'available' && legacy.check.eventId === context &&
+    phase === 'checking_bingo' ? { status: 'available', check: { ...legacy.check } } : { status: legacy.status, check: null });
 
   const snapshot = () => ({ mode, pending, error, eventId: context, phase,
-    session: session === null ? null : copySession(session), award: award === null ? null : copyAward(award) });
+    session: session === null ? null : copySession(session), award: award === null ? null : copyAward(award),
+    legacy: legacyView() });
   function render() {
     if (!disposed) view.render(snapshot());
   }
@@ -361,7 +385,11 @@ export function createBingoController(api, view, { committed = () => {} } = {}) 
     const previous = phase;
     phase = typeof nextPhase === 'string' ? nextPhase : null;
     // Guards hold only for the event and phase they were given in: any change makes all three unknown before render.
-    if (id !== context || phase !== previous) guards = { tongoPlaying: null, presentationBusy: null, otherSetupActive: null };
+    if (id !== context || phase !== previous) {
+      guards = { tongoPlaying: null, presentationBusy: null, otherSetupActive: null };
+      legacyEpoch += 1;
+      legacy = { status: 'none', check: null };
+    }
     if (id !== context) {
       context = id;
       generation += 1;
@@ -382,6 +410,8 @@ export function createBingoController(api, view, { committed = () => {} } = {}) 
     if (disposed) return;
     disposed = true;
     flight = null;
+    legacyEpoch += 1;
+    legacy = { status: 'none', check: null };
     const release = unsubscribe;
     unsubscribe = null;
     if (release !== null) {
@@ -447,5 +477,37 @@ export function createBingoController(api, view, { committed = () => {} } = {}) 
   const retry = manual('retryBingoPresentation', 'failed');
   const repeat = manual('repeatBingoPresentation', 'interrupted');
 
-  return { start, begin, cancel, confirm, retry, repeat, setGuards, setEvent, dispose, getState: snapshot };
+  // The explicit legacy check read: only for a known event in a fresh checking_bingo phase, with no setup and no held
+  // award, rechecked after render. Its identity is kept only for the same event and phase; a typed not_available is
+  // none, anything else uncertain. It reads nothing else and never cancels, recovers, declares, plays or retries.
+  function checkLegacy() {
+    const eventId = context;
+    const epoch = legacyEpoch;
+    const allowed = () => context !== null && context === eventId && legacyEpoch === epoch &&
+      phase === 'checking_bingo' && session === null && anchor === null;
+    const joined = action('readLegacyBingoCheck', allowed);
+    if (joined !== undefined) return joined ?? Promise.resolve();
+    // The read only informs the legacy view: an earlier uncertain mode keeps its message.
+    const kept = mode === 'uncertain' ? error : null;
+    const ready = () => {
+      if (allowed() && typeof api.readLegacyBingoCheck === 'function') return true;
+      // Not sent: the same still-uncertain view gets its message back (an event switch has already reset it).
+      if (mode === 'uncertain' && error === null) error = kept;
+      return false;
+    };
+    return fly(ready, () => api.readLegacyBingoCheck(), (result) => {
+      // Only the live owner of this event settles here; a late answer from an earlier phase changes nothing else.
+      error = kept;
+      if (legacyEpoch !== epoch || context !== eventId) return;
+      const check = legacyIdentity(result, eventId);
+      if (check !== null) legacy = { status: 'available', check };
+      else if (noLegacyCheck(result)) legacy = { status: 'none', check: null };
+      else {
+        legacy = { status: 'uncertain', check: null };
+        error = kept ?? (result === null ? connectionError : result?.ok === false ? refusal(result) : invalidUpdate);
+      }
+    });
+  }
+
+  return { start, begin, cancel, confirm, retry, repeat, checkLegacy, setGuards, setEvent, dispose, getState: snapshot };
 }
