@@ -1,9 +1,10 @@
-// Bingo operator controller: validated read, active-event context and lifecycle (F1), explicit begin/cancel (F2a).
+// Bingo operator controller: validated read, active-event context and lifecycle (F1), explicit begin/cancel (F2a)
+// and explicit confirm with an optional committed fact-refresh hook (F2b).
 // Modes: unknown (not read for this event), idle, setup (a main-owned session is open), uncertain (an answer was
 // lost, refused or invalid, or the bridge is unavailable: only an explicit read may continue) and declared.
-// Deliberately incomplete: there are no confirm, retry, repeat or legacy actions yet, presentation pushes are
-// subscribed but ignored, and nothing is connected to the operator UI. Nothing here reads, writes or plays by
-// itself; the only writes are the explicit begin and cancel, sharing the read's single flight.
+// Deliberately incomplete: there are no retry, repeat or legacy actions yet, presentation pushes are subscribed
+// but ignored, and nothing is connected to the operator UI. Nothing here reads, writes or plays by itself; the only
+// writes are the explicit begin, cancel and confirm, sharing the read's single flight.
 import { validLineAward } from './operator-controller.mjs';
 
 const MAX_ID = 64;
@@ -13,6 +14,7 @@ const connectionError = 'Could not reach the Bingo state. Check it again.';
 const invalidUpdate = 'Invalid Bingo update. Check the state again.';
 const unavailableError = 'Bingo is unavailable in this window. Reload the operator.';
 const noEventError = 'No active event. Choose an event before checking Bingo.';
+const countError = 'Choose how many players share the Bingo (a whole number of at least 1).';
 
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const validId = (value) => typeof value === 'string' && value.trim() !== '' && value.length <= MAX_ID;
@@ -36,6 +38,10 @@ const knownRefusal = (result) => isObject(result) && result.ok === false && refu
   typeof result.message === 'string' && result.message.trim() !== '';
 const exactlyCancelled = (result) => isObject(result) && Object.keys(result).length === 2 && result.ok === true &&
   result.state === 'cancelled';
+// Main's confirm answers exactly ok, state and the award it committed for this event and this winner count.
+const exactlyDeclared = (result, eventId, count) => isObject(result) && Object.keys(result).length === 3 &&
+  result.ok === true && result.state === 'declared' && validBingoAward(result.award, eventId) &&
+  result.award.award.winnerCount === count;
 
 // Copies keep only validated fields, so nothing the bridge, the view or a caller holds aliases the owner's state.
 const copySession = (s) => ({ sessionId: s.sessionId, eventId: s.eventId, calledNumbers: [...s.calledNumbers],
@@ -45,7 +51,8 @@ const copyAward = ({ eventId, award: a, presentation: p }) => ({ eventId,
     remainderCents: a.remainderCents, lot: a.lot, lotResolution: a.lotResolution },
   presentation: { id: p.id, status: p.status, startedAt: p.startedAt, deadlineAt: p.deadlineAt } });
 
-export function createBingoController(api, view) {
+// `committed` only refreshes the page's facts after a valid explicit confirm; it never plays or writes anything.
+export function createBingoController(api, view, { committed = () => {} } = {}) {
   let mode = 'unknown';
   let pending = false;
   let error = null;
@@ -58,6 +65,10 @@ export function createBingoController(api, view) {
   let flight = null;
   let disposed = false;
   let unavailable = false;
+  // Changes with every event switch, so a queued hook from an earlier event never runs, even if it comes back.
+  let generation = 0;
+  // The generation of a committed fact refresh still owed to the page, or null. Held while any flight is pending.
+  let refreshDue = null;
 
   const snapshot = () => ({ mode, pending, error, eventId: context, phase,
     session: session === null ? null : copySession(session), award: award === null ? null : copyAward(award) });
@@ -115,6 +126,8 @@ export function createBingoController(api, view) {
         flight = null;
         pending = false;
         render();
+        // Every live release offers the owed refresh; a flight started from that render keeps holding it.
+        if (refreshDue !== null) queueMicrotask(deliverRefresh);
       }
     }
   }
@@ -188,6 +201,47 @@ export function createBingoController(api, view) {
       });
   }
 
+  // Once, for the same event and a live controller, only when no flight is pending: a read started by the settled
+  // render keeps it owed until that read is released, without polling. Hook failures are contained: they never
+  // revert the committed award or trigger another action.
+  function deliverRefresh() {
+    if (refreshDue === null) return;
+    if (disposed || refreshDue !== generation) {
+      refreshDue = null;
+      return;
+    }
+    if (flight !== null) return;
+    refreshDue = null;
+    try { Promise.resolve(committed()).catch(() => {}); } catch { /* The award stays committed. */ }
+  }
+
+  // Only the known setup owned by the current event in a fresh line_declared phase, with an explicit positive safe
+  // integer: never coerced or defaulted. Main's storage failure cannot tell "nothing written" from "unknown", so it
+  // keeps the setup uncertain like a lost answer; only an explicit read settles it, never a retry or re-declaration.
+  function confirm(winnerCount) {
+    const owned = session;
+    const eventId = context;
+    const allowed = () => mode === 'setup' && owned !== null && session === owned && owned.eventId === context &&
+      context === eventId && phase === 'line_declared';
+    const joined = action('confirmBingo', allowed);
+    if (joined !== undefined) return joined ?? Promise.resolve();
+    if (!Number.isSafeInteger(winnerCount) || winnerCount < 1) {
+      error = countError;
+      render();
+      return Promise.resolve();
+    }
+    const { sessionId } = owned;
+    return fly(() => allowed() && typeof api.confirmBingo === 'function',
+      () => api.confirmBingo(sessionId, winnerCount), (result) => {
+        if (exactlyDeclared(result, eventId, winnerCount)) {
+          mode = 'declared'; award = copyAward(result.award); session = null; error = null;
+          refreshDue = generation;
+        } else if (result?.ok === false && result.code === 'stale_session') uncertain(refusal(result), false);
+        else if (knownRefusal(result) && result.code !== 'storage_failure') error = result.message;
+        else uncertain(result?.ok === false ? refusal(result) : result === null ? connectionError : invalidUpdate);
+      });
+  }
+
   // The page's active event and its fresh phase. A different event drops everything held and orphans the read in
   // flight; the same event only updates the phase and keeps the session and the read. Never reads by itself.
   function setEvent(eventId, nextPhase = null) {
@@ -196,6 +250,7 @@ export function createBingoController(api, view) {
     phase = typeof nextPhase === 'string' ? nextPhase : null;
     if (id !== context) {
       context = id;
+      generation += 1;
       flight = null;
       pending = false;
       session = null;
@@ -219,5 +274,5 @@ export function createBingoController(api, view) {
   }
 
   render();
-  return { start, begin, cancel, setEvent, dispose, getState: snapshot };
+  return { start, begin, cancel, confirm, setEvent, dispose, getState: snapshot };
 }
