@@ -3,8 +3,8 @@ import test from 'node:test';
 import { createBingoController } from '../src/bingo-controller.mjs';
 
 // Bingo operator controller: validated read, event context, lifecycle (F1), explicit begin/cancel (F2a) and
-// confirmation with a fact-refresh hook (F2b).
-// Pushes are inert until F3.
+// confirmation with a fact-refresh hook (F2b), and held-award pushes with read-only staging (F3a, a subset of F3).
+// Pushes owned by an action or by a read owning a setup stay inert until F3b.
 const session = { sessionId: 's1', eventId: 'e1', calledNumbers: [12, 5, 90], bingoPrize: { amount: 50, lot: 'Jamón' } };
 const award = { eventId: 'e1', award: { winnerCount: 2, totalCents: 5000, shareCents: 2500, remainderCents: 0, lot: '',
   lotResolution: 'not_required' }, presentation: { id: 'p1', status: 'started', startedAt: 1000, deadlineAt: 5000 } };
@@ -263,7 +263,7 @@ test('bingo dispose unsubscribes exactly once, even if it throws, and late answe
   assert.deepEqual([f.renders.length, f.controller.getState(), f.calls], [seen, before, ['read:0']]);
 });
 
-test('bingo F1 ignores presentation pushes until the push slice exists', async () => {
+test('bingo ignores presentation pushes while it holds a setup and no trusted award', async () => {
   const f = bingoFixture();
   f.controller.setEvent('e1', 'drawing');
   f.reply(setup());
@@ -855,5 +855,266 @@ test('bingo holds the committed hook while a read started from the settled rende
     await flush();
     assert.equal(seen.length, expected, change);
     assert.equal(f.calls.filter((call) => call.startsWith('confirm')).length, 1, change);
+  }
+});
+
+// F3a: pushes update only a held, trusted award; a read without a setup stages them and reconciles at its answer.
+// Not full F3: pushes during begin, cancel, confirm or a read owning a setup stay inert until F3b.
+const at = (status: string, id = 'p1', startedAt: number | null = ['pending', 'failed'].includes(status) ? null : 1000) =>
+  ({ ...award, presentation: { id, status, startedAt, deadlineAt: startedAt === null ? null : startedAt + 4000 } });
+const declaredAt = async (f: ReturnType<typeof bingoFixture>, value: unknown = at('started')) => {
+  f.controller.setEvent('e1', 'bingo_declared');
+  f.reply(declared(value));
+  await f.controller.start();
+};
+const reads = (f: ReturnType<typeof bingoFixture>) => f.calls.filter((call) => call !== 'subscribe');
+
+test('bingo held award adopts only legal same-id lifecycle advances from pushes, as clones', async () => {
+  let hooks = 0;
+  const f = bingoFixture({}, () => {}, { committed: () => { hooks++; } });
+  await declaredAt(f, at('pending'));
+  const seen = f.renders.length;
+  const started = at('started');
+  f.push(started);
+  assert.deepEqual([f.last().mode, f.last().award, f.renders.length], ['declared', at('started'), seen + 1]);
+  started.presentation.status = 'completed';
+  f.last().award.presentation.status = 'failed';
+  assert.deepEqual(f.controller.getState().award, at('started'));
+  f.push(at('pending'));
+  f.push(at('started'));
+  assert.equal(f.renders.length, seen + 1);
+  f.push(at('completed'));
+  f.push(at('started'));
+  f.push(at('pending'));
+  assert.deepEqual([f.last().mode, f.last().award, f.renders.length], ['declared', at('completed'), seen + 2]);
+  for (const [from, to] of [['pending', 'failed'], ['pending', 'interrupted'], ['pending', 'completed']]) {
+    const g = bingoFixture();
+    await declaredAt(g, at(from));
+    g.push(at(to));
+    assert.deepEqual([g.last().mode, g.last().award], ['declared', at(to)], to);
+  }
+  await flush();
+  assert.deepEqual([reads(f), hooks], [['read:0'], 0]);
+});
+
+test('bingo impossible, conflicting or corrupt pushes fail closed and never unlock the held award', async () => {
+  const tied = { ...award.award, lot: 'Jamón', lotResolution: 'pending' };
+  const cases: Array<[unknown, unknown]> = [
+    [at('started'), at('failed')], [at('failed'), at('started')], [at('completed'), at('interrupted')],
+    [at('interrupted'), at('completed')], [at('started'), at('started', 'p1', 2000)],
+    [at('started'), at('completed', 'p1', 2000)], [at('completed'), at('started', 'p1', 2000)],
+    [at('started'), { ...at('started'), award: { ...award.award, winnerCount: 1, shareCents: 5000 } }],
+    [at('started'), { ...at('started'), award: { ...award.award, totalCents: 6000, shareCents: 3000 } }],
+    [{ ...at('started'), award: tied }, { ...at('started'), award: { ...tied, lotResolution: 'resolved' } }],
+    [at('started'), null], [at('started'), 'x'], [at('started'), {}], [at('started'), { ...at('started'), eventId: '' }],
+    [at('started'), { eventId: 'e1', presentation: 'corrupt' }],
+    [at('started'), { ...at('started'), presentation: { ...at('started').presentation, status: 'playing' } }],
+  ];
+  for (const [held, pushed] of cases) {
+    const label = JSON.stringify([held, pushed]);
+    const f = bingoFixture();
+    await declaredAt(f, held);
+    f.push(pushed);
+    assert.deepEqual([f.last().mode, f.last().award, f.last().pending, typeof f.last().error],
+      ['uncertain', null, false, 'string'], label);
+    for (const reply of [{ ok: true, state: 'none' }, setup({ ...session })]) {
+      f.reply(reply);
+      await f.controller.start();
+      assert.deepEqual([f.last().mode, f.last().session, f.last().award], ['uncertain', null, null], label);
+    }
+    f.reply(declared(held));
+    await f.controller.start();
+    assert.deepEqual([f.last().mode, f.last().award, reads(f).length], ['declared', held, 4], label);
+  }
+});
+
+test('bingo pushes without a trusted award, a known event or a live controller change nothing', async () => {
+  const f = bingoFixture();
+  const quiet = (label: string) => {
+    const seen = f.renders.length;
+    const before = f.controller.getState();
+    for (const value of [at('started'), at('completed'), null, { eventId: 'e1' }]) f.push(value);
+    assert.deepEqual([f.renders.length, f.controller.getState()], [seen, before], label);
+  };
+  quiet('no event');
+  f.controller.setEvent('e1', 'drawing');
+  quiet('unknown');
+  await f.controller.start();
+  quiet('idle');
+  f.reply(setup());
+  await f.controller.start();
+  quiet('setup');
+  f.reply(failure('storage_failure', 'Later.'));
+  await f.controller.start();
+  quiet('uncertain');
+  await declaredAt(f);
+  const seen = f.renders.length;
+  f.push({ ...at('completed'), eventId: 'e2' });
+  f.push({ ...at('failed', 'p9'), eventId: 'e2' });
+  assert.deepEqual([f.renders.length, f.last().mode, f.last().award], [seen, 'declared', at('started')]);
+  f.controller.dispose();
+  f.push(at('completed'));
+  f.push(null);
+  assert.deepEqual([f.renders.length, f.controller.getState().award], [seen, at('started')]);
+  assert.deepEqual(reads(f), ['read:0', 'read:0', 'read:0', 'read:0']);
+});
+
+test('bingo treats a different pushed id as ambiguous; only an explicit read replaces it and retires the old', async () => {
+  const f = bingoFixture();
+  await declaredAt(f);
+  f.push(at('pending', 'p2'));
+  assert.deepEqual([f.last().mode, f.last().award, reads(f)], ['uncertain', null, ['read:0']]);
+  f.push(at('completed'));
+  assert.deepEqual([f.last().mode, f.last().award], ['uncertain', null]);
+  f.reply(declared(at('pending', 'p2')));
+  await f.controller.start();
+  assert.deepEqual([f.last().mode, f.last().award], ['declared', at('pending', 'p2')]);
+  const seen = f.renders.length;
+  f.push(at('completed'));
+  f.push(at('interrupted'));
+  assert.deepEqual([f.renders.length, f.last().award], [seen, at('pending', 'p2')]);
+  f.reply(declared(at('completed')));
+  await f.controller.start();
+  assert.deepEqual([f.last().mode, f.last().award], ['uncertain', null]);
+  f.push(at('started', 'p2'));
+  f.reply(declared(at('pending', 'p2')));
+  await f.controller.start();
+  assert.deepEqual([f.last().mode, f.last().award, reads(f).length], ['declared', at('started', 'p2'), 4]);
+});
+
+test('bingo read without a setup stages pushes and reconciles them with its answer', async () => {
+  const none = { ok: true, state: 'none' };
+  // [held award or null, pushes during the read, answer, expected award or null for uncertain]
+  const cases: Array<[unknown, unknown[], unknown, unknown]> = [
+    [null, [at('started')], none, null], [null, [at('started')], setup(), null],
+    [null, [at('started')], failure('storage_failure', 'Later.'), null], [null, [at('started')], null, null],
+    [null, [at('started')], { ok: true, state: 'mystery' }, null],
+    [null, [at('completed')], declared(at('pending')), at('completed')],
+    [null, [at('pending')], declared(at('started')), at('started')],
+    [null, [at('started'), at('pending', 'p2')], declared(at('pending', 'p2')), null],
+    [null, [at('started')], declared(at('failed')), null], [null, [null], declared(at('started')), null],
+    [null, [{ eventId: 'e1', presentation: 'x' }], declared(at('started')), null],
+    [null, [{ ...at('completed'), eventId: 'e2' }], declared(at('started')), at('started')],
+    [at('started'), [at('pending', 'p2')], declared(at('started', 'p2')), at('started', 'p2')],
+    [at('started'), [at('pending', 'p2')], declared(at('started')), null],
+    [at('started'), [at('completed')], none, null], [at('started'), [at('completed')], null, null],
+    [at('started'), [at('completed')], declared(at('started')), at('completed')],
+    [at('started'), [at('interrupted')], declared(at('completed')), null],
+  ];
+  for (const [held, pushes, answer, expected] of cases) {
+    const label = JSON.stringify([held, pushes, answer]);
+    const d = deferred();
+    const f = bingoFixture();
+    if (held === null) f.controller.setEvent('e1', 'bingo_declared');
+    else await declaredAt(f, held);
+    f.replies.push(() => d.promise);
+    const read = f.controller.start();
+    const state = f.controller.getState();
+    const seen = f.renders.length;
+    for (const value of pushes) f.push(value);
+    assert.deepEqual([f.renders.length, f.controller.getState()], [seen, state], label);
+    d.resolve(answer);
+    await read;
+    assert.deepEqual([f.last().mode, f.last().award, f.last().pending],
+      [expected === null ? 'uncertain' : 'declared', expected, false], label);
+    if (expected !== null) continue;
+    // A held award or a valid observation stays a known commit: a later none never unlocks it. Null or corrupt
+    // evidence only failed this read closed.
+    f.reply(none);
+    await f.controller.start();
+    const known = held !== null || pushes.some((value: any) => value?.eventId === 'e1' && value.presentation?.id === 'p1');
+    assert.equal(f.last().mode, known ? 'uncertain' : 'idle', label);
+  }
+});
+
+test('bingo pushes during begin, cancel, confirm or a read owning a setup stay inert until F3b', async () => {
+  for (const kind of ['begin', 'cancel', 'confirm', 'read']) {
+    let hooks = 0;
+    const d = deferred();
+    const f = bingoFixture({}, () => {}, { committed: () => { hooks++; } });
+    if (kind === 'begin') await idleAt(f);
+    else await setupAt(f);
+    if (kind === 'read') f.replies.push(() => d.promise);
+    else f.actions.push(() => d.promise);
+    const flight = kind === 'read' ? f.controller.start() : f.controller[kind](2);
+    const state = f.controller.getState();
+    const seen = f.renders.length;
+    for (const value of [at('completed'), at('pending', 'p2'), null, { eventId: 'e1' }]) f.push(value);
+    assert.deepEqual([f.renders.length, f.controller.getState(), state.pending], [seen, state, true], kind);
+    d.resolve({ begin: setup(), cancel: { ok: true, state: 'cancelled' }, confirm: declared(), read: setup() }[kind]);
+    await flight;
+    await flush();
+    const expected = { begin: ['setup', session, null], cancel: ['idle', null, null], confirm: ['declared', null, award],
+      read: ['setup', session, null] }[kind];
+    assert.deepEqual([f.last().mode, f.last().session, f.last().award, f.last().pending], [...expected, false], kind);
+    assert.equal(hooks, kind === 'confirm' ? 1 : 0, kind);
+  }
+});
+
+test('bingo event switches clear held, staged and retired ids; push renders join reads and refresh nothing', async () => {
+  let hooks = 0;
+  let reenter = false;
+  const joined: Promise<unknown>[] = [];
+  const d = deferred();
+  const f = bingoFixture({}, () => {
+    if (!reenter) return;
+    reenter = false;
+    joined.push(f.controller.start(), f.controller.start());
+  }, { committed: () => { hooks++; } });
+  await declaredAt(f);
+  f.push(at('pending', 'p2'));
+  f.reply(declared(at('pending', 'p2')));
+  await f.controller.start();
+  f.controller.setEvent('e2', 'drawing');
+  f.controller.setEvent('e1', 'bingo_declared');
+  const seen = f.renders.length;
+  f.push(at('completed', 'p2'));
+  assert.deepEqual([f.renders.length, f.last().mode], [seen, 'unknown']);
+  f.reply(declared());
+  await f.controller.start();
+  assert.deepEqual([f.last().mode, f.last().award], ['declared', award]);
+  f.replies.push(() => d.promise);
+  reenter = true;
+  f.push(at('completed'));
+  assert.deepEqual([joined.length, joined[0] === joined[1], f.controller.getState().pending], [2, true, true]);
+  f.push(at('interrupted'));
+  f.controller.setEvent('e2', 'drawing');
+  assert.deepEqual([f.last().pending, f.last().mode], [false, 'unknown']);
+  d.resolve(declared(at('completed')));
+  await Promise.all(joined);
+  f.controller.setEvent('e1', 'bingo_declared');
+  await f.controller.start();
+  await flush();
+  assert.deepEqual([f.last().mode, f.last().award, hooks], ['idle', null, 0]);
+  assert.deepEqual(reads(f), ['read:0', 'read:0', 'read:0', 'read:0', 'read:0']);
+});
+
+test('bingo keeps a compatible advance seen during a failed read, so later answers cannot regress or conflict', async () => {
+  const lost = [{ ok: true, state: 'none' }, setup(), failure('storage_failure', 'Later.'), null, { ok: true, state: 'x' },
+    'reject', declared(at('pending', 'p2')), declared({ ...at('started'), award: { ...award.award, lot: 'Jamón' } })];
+  for (const answer of lost) {
+    const label = JSON.stringify(answer);
+    const d = deferred();
+    const f = bingoFixture();
+    await declaredAt(f);
+    f.replies.push(() => d.promise);
+    const read = f.controller.start();
+    const completed = at('completed');
+    f.push(completed);
+    completed.presentation.startedAt = 9;
+    assert.deepEqual([f.controller.getState().pending, f.controller.getState().award], [true, at('started')], label);
+    if (answer === 'reject') d.reject(new Error('lost'));
+    else d.resolve(answer);
+    await read;
+    assert.deepEqual([f.last().mode, f.last().award, f.last().pending], ['uncertain', null, false], label);
+    f.reply(declared(at('started')));
+    await f.controller.start();
+    assert.deepEqual([f.last().mode, f.last().award], ['declared', at('completed')], label);
+    for (const [reply, mode, shown] of [[at('interrupted'), 'uncertain', null], [at('completed'), 'declared', at('completed')]]) {
+      f.reply(declared(reply));
+      await f.controller.start();
+      assert.deepEqual([f.last().mode, f.last().award], [mode, shown], label);
+    }
+    assert.equal(reads(f).length, 5, label);
   }
 });

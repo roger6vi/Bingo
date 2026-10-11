@@ -1,10 +1,10 @@
 // Bingo operator controller: validated read, active-event context and lifecycle (F1), explicit begin/cancel (F2a)
-// and explicit confirm with an optional committed fact-refresh hook (F2b).
+// and explicit confirm with an optional committed fact-refresh hook (F2b), and held-award presentation pushes (F3a).
 // Modes: unknown (not read for this event), idle, setup (a main-owned session is open), uncertain (an answer was
 // lost, refused or invalid, or the bridge is unavailable: only an explicit read may continue) and declared.
-// Deliberately incomplete: there are no retry, repeat or legacy actions yet, presentation pushes are subscribed
-// but ignored, and nothing is connected to the operator UI. Nothing here reads, writes or plays by itself; the only
-// writes are the explicit begin, cancel and confirm, sharing the read's single flight.
+// Deliberately incomplete: there are no retry, repeat or legacy actions yet, pushes during begin, cancel, confirm or
+// a read owning a setup are ignored until F3b, and nothing is connected to the operator UI. Nothing here reads,
+// writes or plays by itself; the only writes are the explicit begin, cancel and confirm, sharing the read's flight.
 import { validLineAward } from './operator-controller.mjs';
 
 const MAX_ID = 64;
@@ -51,6 +51,23 @@ const copyAward = ({ eventId, award: a, presentation: p }) => ({ eventId,
     remainderCents: a.remainderCents, lot: a.lot, lotResolution: a.lotResolution },
   presentation: { id: p.id, status: p.status, startedAt: p.startedAt, deadlineAt: p.deadlineAt } });
 
+// The store's lifecycle of one presentation id (src/line-award.ts): pending starts or fails, a started run completes or
+// is interrupted. Retry and replay continue under a new id, so failed, completed and interrupted end an id.
+const LATER = { pending: ['started', 'failed', 'completed', 'interrupted'], started: ['completed', 'interrupted'] };
+const reaches = (from, to) => (LATER[from] ?? []).includes(to);
+const sameFacts = (a, b) => a.eventId === b.eventId &&
+  ['winnerCount', 'totalCents', 'shareCents', 'remainderCents', 'lot', 'lotResolution'].every((k) => a.award[k] === b.award[k]);
+// Two observations of the same id: the most advanced one, or null when they cannot both be true. The money, count
+// and lot never change; a run keeps its start and deadline; an older observation adds nothing.
+function merge(known, next) {
+  const a = known.presentation;
+  const b = next.presentation;
+  if (!sameFacts(known, next) || (a.startedAt !== null && b.startedAt !== null &&
+      (a.startedAt !== b.startedAt || a.deadlineAt !== b.deadlineAt))) return null;
+  if (a.status === b.status || reaches(b.status, a.status)) return known;
+  return reaches(a.status, b.status) ? next : null;
+}
+
 // `committed` only refreshes the page's facts after a valid explicit confirm; it never plays or writes anything.
 export function createBingoController(api, view, { committed = () => {} } = {}) {
   let mode = 'unknown';
@@ -58,6 +75,10 @@ export function createBingoController(api, view, { committed = () => {} } = {}) 
   let error = null;
   let session = null;
   let award = null;
+  // The trusted committed award of this event, kept while the view is uncertain, and ids an explicit read replaced.
+  // Ids carry no order: only a local observation and an explicit read ever change which one is current.
+  let anchor = null;
+  const retired = new Set();
   let context = null;
   let phase = null;
   // The one read or action in flight. Only its owner may apply an answer or release it; a new event or disposal
@@ -76,7 +97,7 @@ export function createBingoController(api, view, { committed = () => {} } = {}) 
     if (!disposed) view.render(snapshot());
   }
 
-  // Fails closed: nothing held about an award survives. A valid setup is kept, shown as uncertain, unless stale.
+  // Fails closed: no award is shown, though a trusted one stays known. A valid setup is kept as uncertain, unless stale.
   function uncertain(message, keepSession = true) {
     mode = 'uncertain';
     error = message;
@@ -84,8 +105,35 @@ export function createBingoController(api, view, { committed = () => {} } = {}) 
     if (!keepSession) session = null;
   }
 
-  // Inert until the push slice: a presentation update is neither validated nor adopted, and never renders.
-  const onPush = () => {};
+  // A private award/null update. Ignored without a live event, for another identifiable event or a retired id, and
+  // while an action or a read owning a setup is in flight (F3b). A read without a setup only stages it for its
+  // answer; it never renders, releases or settles. Otherwise only a held award moves: the same id to a later legal
+  // status. Anything else held is ambiguous or corrupt and turns uncertain, keeping the award known; never a read.
+  const onPush = (value) => {
+    if (disposed || unavailable || context === null) return;
+    if (isObject(value) && validId(value.eventId) && value.eventId !== context) return;
+    const next = validBingoAward(value, context) ? copyAward(value) : null;
+    if (next !== null && retired.has(next.presentation.id)) return;
+    if (flight !== null) {
+      const stage = flight.stage;
+      if (stage === null) return;
+      const known = stage.award ?? (anchor?.presentation.id === next?.presentation.id ? anchor : null);
+      const merged = next === null ? null : known === null ? next :
+        known.presentation.id === next.presentation.id ? merge(known, next) : null;
+      if (merged === null) stage.conflict = true;
+      else stage.award = merged;
+      return;
+    }
+    if (anchor === null) return;
+    const merged = next !== null && next.presentation.id === anchor.presentation.id ? merge(anchor, next) : null;
+    if (merged === anchor) return;
+    if (merged === null) uncertain(invalidUpdate);
+    else {
+      anchor = merged;
+      if (mode === 'declared') award = anchor;
+    }
+    render();
+  };
   // Subscribed before any read. A missing or throwing subscriber, a non-function cleanup or a missing read bridge
   // leaves the controller unavailable for good: no read is ever sent and it can never look idle.
   let unsubscribe = null;
@@ -97,14 +145,45 @@ export function createBingoController(api, view, { committed = () => {} } = {}) 
   if (typeof api?.readBingoSetup !== 'function') unavailable = true;
   if (unavailable) uncertain(unavailableError);
 
+  // A read answer, with what was observed while it was in flight. A declared answer is shown only when it agrees with
+  // every observation and the held award; a different id replaces the held one and retires it. Otherwise a known or
+  // observed award stays known and uncertain: none, a setup, a refusal or a lost answer never unlock it.
+  function settleRead(stage, result) {
+    const seen = stage?.award ?? null;
+    // An observation of the held id (or the only award seen) stays known at its strongest legal status, so later
+    // answers merge against it; anything incompatible leaves the held award as it was.
+    const failClosed = (message) => {
+      if (seen !== null && (anchor === null || seen.presentation.id === anchor.presentation.id)) {
+        anchor = merge(anchor ?? seen, seen) ?? anchor;
+      }
+      uncertain(message);
+    };
+    if (stage?.conflict) return failClosed(invalidUpdate);
+    if (result?.ok === true && result.state === 'declared' && validBingoAward(result.award, context)) {
+      const id = result.award.presentation.id;
+      const held = anchor?.presentation.id === id ? anchor : null;
+      let next = copyAward(result.award);
+      for (const known of [seen, held]) {
+        if (next !== null && known !== null) next = known.presentation.id === id ? merge(known, next) : null;
+      }
+      if (next === null || retired.has(id)) return failClosed(invalidUpdate);
+      if (anchor !== null && held === null) retired.add(anchor.presentation.id);
+      anchor = next; award = next; mode = 'declared'; session = null; error = null;
+      return undefined;
+    }
+    if (seen !== null && anchor !== null && seen.presentation.id !== anchor.presentation.id) {
+      return failClosed(invalidUpdate);
+    }
+    if (anchor === null && seen === null) return apply(result);
+    return failClosed(result === null ? connectionError : result?.ok === false ? refusal(result) : invalidUpdate);
+  }
+
   // Only none, a setup and a declared award bound to the current event are recognized; anything else fails closed.
   function apply(result) {
     if (result?.ok === true && result.state === 'none') {
       mode = 'idle'; session = null; award = null; error = null;
     } else if (result?.ok === true && result.state === 'setup' && validSetup(result.session, context)) {
       mode = 'setup'; session = copySession(result.session); award = null; error = null;
-    } else if (result?.ok === true && result.state === 'declared' && validBingoAward(result.award, context)) {
-      mode = 'declared'; award = copyAward(result.award); session = null; error = null;
     } else if (result?.ok === false && result.code === 'stale_session') {
       uncertain(refusal(result), false);
     } else {
@@ -134,11 +213,12 @@ export function createBingoController(api, view, { committed = () => {} } = {}) 
 
   // Establish the shared settlement before any view or API callback, so every reentrant or competing start, begin
   // or cancel joins this flight's actual promise and sends nothing of its own.
-  function fly(ready, send, settle) {
+  // `stage` collects pushes for a read without a setup; actions and reads owning a setup have none.
+  function fly(ready, send, settle, stage = null) {
     let resolve;
     let reject;
     const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
-    const own = { promise };
+    const own = { promise, stage };
     flight = own;
     pending = true;
     error = null;
@@ -155,7 +235,8 @@ export function createBingoController(api, view, { committed = () => {} } = {}) 
       render();
       return Promise.resolve();
     }
-    return fly(() => true, () => api.readBingoSetup(), apply);
+    const stage = session === null ? { award: null, conflict: false } : null;
+    return fly(() => true, () => api.readBingoSetup(), (result) => settleRead(stage, result), stage);
   }
 
   // Shared entry of the explicit actions: join a flight, or refuse without dispatch when the bridge is missing.
@@ -234,7 +315,7 @@ export function createBingoController(api, view, { committed = () => {} } = {}) 
     return fly(() => allowed() && typeof api.confirmBingo === 'function',
       () => api.confirmBingo(sessionId, winnerCount), (result) => {
         if (exactlyDeclared(result, eventId, winnerCount)) {
-          mode = 'declared'; award = copyAward(result.award); session = null; error = null;
+          mode = 'declared'; anchor = award = copyAward(result.award); session = null; error = null;
           refreshDue = generation;
         } else if (result?.ok === false && result.code === 'stale_session') uncertain(refusal(result), false);
         else if (knownRefusal(result) && result.code !== 'storage_failure') error = result.message;
@@ -255,6 +336,8 @@ export function createBingoController(api, view, { committed = () => {} } = {}) 
       pending = false;
       session = null;
       award = null;
+      anchor = null;
+      retired.clear();
       mode = unavailable ? 'uncertain' : 'unknown';
       error = unavailable ? unavailableError : null;
     }
