@@ -173,6 +173,49 @@ test('bingo with a missing, throwing or invalid subscriber or read bridge stays 
   }
 });
 
+test('bingo start is single-flight, including a start re-entered from render', async () => {
+  const d = deferred();
+  let reenter = false;
+  const f = bingoFixture({}, () => { if (reenter) void f.controller.start(); });
+  f.controller.setEvent('e1', 'drawing');
+  f.replies.push(() => d.promise);
+  reenter = true;
+  const first = f.controller.start();
+  const second = f.controller.start();
+  reenter = false;
+  assert.deepEqual([f.calls, f.last().pending], [['subscribe', 'read:0'], true]);
+  d.resolve(setup());
+  await Promise.all([first, second]);
+  assert.deepEqual([f.calls.length, f.last().mode, f.last().pending], [2, 'setup', false]);
+});
+
+test('bingo drops an answer from a previous event and its flight never clears the new one', async () => {
+  const old = deferred();
+  const fresh = deferred();
+  const f = bingoFixture();
+  f.controller.setEvent('e1', 'drawing');
+  f.replies.push(() => old.promise, () => fresh.promise);
+  const first = f.controller.start();
+  f.controller.setEvent('e2', 'drawing');
+  assert.deepEqual([f.last().mode, f.last().pending, f.last().eventId], ['unknown', false, 'e2']);
+  const second = f.controller.start();
+  assert.equal(f.last().pending, true);
+  const seen = f.renders.length;
+  old.resolve(setup());
+  await first;
+  assert.deepEqual([f.renders.length, f.controller.getState().pending, f.controller.getState().session], [seen, true, null]);
+  fresh.resolve(setup({ ...session, eventId: 'e2' }));
+  await second;
+  assert.deepEqual([f.last().mode, f.last().pending, f.last().session.eventId], ['setup', false, 'e2']);
+  const late = deferred();
+  f.replies.push(() => late.promise);
+  const third = f.controller.start();
+  f.controller.setEvent('e1', 'drawing');
+  late.reject(new Error('lost'));
+  await third;
+  assert.deepEqual([f.last().mode, f.last().pending, f.last().error, f.last().session], ['unknown', false, null, null]);
+});
+
 test('bingo keeps its session and flight across a same-event phase update without reading', async () => {
   const d = deferred();
   const f = bingoFixture();
@@ -187,4 +230,117 @@ test('bingo keeps its session and flight across a same-event phase update withou
   f.controller.setEvent('e1', null);
   await flush();
   assert.deepEqual([f.calls.length, f.controller.getState().session, f.controller.getState().phase], [2, session, null]);
+});
+
+test('bingo dispose unsubscribes exactly once, even if it throws, and late answers change nothing', async () => {
+  let released = 0;
+  const d = deferred();
+  const f = bingoFixture({ onBingoPresentation: () => () => { released++; throw new Error('gone'); } });
+  f.controller.setEvent('e1', 'drawing');
+  f.replies.push(() => d.promise);
+  const read = f.controller.start();
+  const before = f.controller.getState();
+  const seen = f.renders.length;
+  f.controller.dispose();
+  f.controller.dispose();
+  assert.equal(released, 1);
+  d.resolve(setup());
+  await read;
+  f.controller.setEvent('e2', 'drawing');
+  await f.controller.start();
+  assert.deepEqual([f.renders.length, f.controller.getState(), f.calls], [seen, before, ['read:0']]);
+});
+
+test('bingo F1 ignores presentation pushes until the push slice exists', async () => {
+  const f = bingoFixture();
+  f.controller.setEvent('e1', 'drawing');
+  f.reply(setup());
+  await f.controller.start();
+  const seen = f.renders.length;
+  f.push(declared().award);
+  f.push({ eventId: 'e1', presentation: 'corrupt' });
+  f.push(null);
+  await flush();
+  assert.deepEqual([f.renders.length, f.controller.getState().mode, f.controller.getState().session], [seen, 'setup', session]);
+  assert.deepEqual(f.calls, ['subscribe', 'read:0']);
+  f.controller.dispose();
+  assert.equal(f.unsubscribed(), 1);
+});
+
+test('bingo presentation status must be a string, not a coercible array or object', async () => {
+  const statuses = [['started'], { toString: () => 'started' }, new String('started'), null, undefined, 1, true];
+  for (const status of statuses) {
+    const f = bingoFixture();
+    f.controller.setEvent('e1', 'drawing');
+    f.reply(declared({ ...award, presentation: { ...award.presentation, status } }));
+    await f.controller.start();
+    assert.deepEqual([f.last().mode, f.last().award, f.last().pending], ['uncertain', null, false]);
+  }
+});
+
+test('bingo checks ownership after render before dispatching a read', async () => {
+  for (const change of ['dispose', 'switch']) {
+    const fresh = deferred();
+    let armed = false;
+    let joined: Promise<unknown> | undefined;
+    const f = bingoFixture({}, () => {
+      if (!armed) return;
+      armed = false;
+      if (change === 'dispose') f.controller.dispose();
+      else {
+        f.controller.setEvent('e2', 'drawing');
+        joined = f.controller.start();
+      }
+    });
+    f.controller.setEvent('e1', 'drawing');
+    if (change === 'switch') f.replies.push(() => fresh.promise);
+    armed = true;
+    const old = f.controller.start();
+    await old;
+    const callsBeforeSettlement = [...f.calls];
+    const pendingBeforeSettlement = f.controller.getState().pending;
+    if (change === 'switch') {
+      fresh.resolve(setup({ ...session, eventId: 'e2' }));
+      await joined;
+    }
+    assert.deepEqual(callsBeforeSettlement, change === 'dispose' ? ['subscribe'] : ['subscribe', 'read:0']);
+    if (change === 'switch') {
+      assert.equal(pendingBeforeSettlement, true);
+      assert.deepEqual([f.last().mode, f.last().pending, f.last().session.eventId], ['setup', false, 'e2']);
+    } else assert.equal(f.unsubscribed(), 1);
+  }
+});
+
+test('bingo reentrant starts from render and API join the actual flight settlement', async () => {
+  for (const source of ['render', 'api']) {
+    const d = deferred();
+    let armed = false;
+    let joined: Promise<unknown> | undefined;
+    let settled = false;
+    const reenter = () => {
+      if (!armed) return;
+      armed = false;
+      joined = f.controller.start();
+      joined.then(() => { settled = true; });
+    };
+    const f = bingoFixture({}, () => { if (source === 'render') reenter(); });
+    f.controller.setEvent('e1', 'drawing');
+    f.replies.push(() => {
+      if (source === 'api') reenter();
+      return d.promise;
+    });
+    armed = true;
+    const first = f.controller.start();
+    const second = f.controller.start();
+    await flush();
+    const settledBeforeReply = settled;
+    const pendingBeforeReply = f.controller.getState().pending;
+    d.resolve(setup());
+    await Promise.all([first, second, joined]);
+    assert.equal(settledBeforeReply, false, source);
+    assert.equal(pendingBeforeReply, true, source);
+    assert.equal(joined, first, source);
+    assert.equal(second, first, source);
+    assert.deepEqual([f.calls, f.last().mode, f.last().pending], [['subscribe', 'read:0'], 'setup', false]);
+  }
 });

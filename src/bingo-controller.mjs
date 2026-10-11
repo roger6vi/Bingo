@@ -25,8 +25,9 @@ const validSetup = (value, eventId) => isObject(value) && validId(value.sessionI
   value.eventId === eventId && validCalled(value.calledNumbers) && validPrize(value.bingoPrize);
 // The line award rules (share, remainder, lot, status and 4 s presentation timing) plus what a Bingo award always has:
 // the bound current event and a presentation. The line's legacy award without a presentation is never accepted here.
-const validBingoAward = (value, eventId) => validLineAward(value) && validId(value.eventId) && value.eventId === eventId &&
-  isObject(value.presentation) && validId(value.presentation.id);
+const validBingoAward = (value, eventId) => isObject(value) && isObject(value.presentation) &&
+  typeof value.presentation.status === 'string' && validLineAward(value) && validId(value.eventId) &&
+  value.eventId === eventId && validId(value.presentation.id);
 const refusal = (result) => (typeof result.message === 'string' && result.message.trim() !== '' ? result.message : invalidUpdate);
 
 // Copies keep only validated fields, so nothing the bridge, the view or a caller holds aliases the owner's state.
@@ -95,6 +96,7 @@ export function createBingoController(api, view) {
   async function read(own) {
     try {
       render();
+      if (disposed || flight !== own) return;
       let result;
       try { result = await api.readBingoSetup(); } catch { result = null; }
       if (flight === own) apply(result);
@@ -110,19 +112,22 @@ export function createBingoController(api, view) {
   // The explicit read. Never retried by itself; a second start while one is in flight joins it.
   function start() {
     if (disposed) return Promise.resolve();
-    if (flight !== null) return flight.promise ?? Promise.resolve();
+    if (flight !== null) return flight.promise;
     if (unavailable || context === null) {
       uncertain(unavailable ? unavailableError : noEventError);
       render();
       return Promise.resolve();
     }
-    // Reserved before any view or API callback, so a start re-entered from either sends nothing.
-    const own = { promise: null };
+    // Establish the shared settlement before any view or API callback, so reentrant starts join this read.
+    let resolve;
+    let reject;
+    const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
+    const own = { promise };
     flight = own;
     pending = true;
     error = null;
-    own.promise = read(own);
-    return own.promise;
+    read(own).then(resolve, reject);
+    return promise;
   }
 
   // The page's active event and its fresh phase. A different event drops everything held and orphans the read in
