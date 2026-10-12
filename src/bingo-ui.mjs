@@ -71,22 +71,47 @@ export function createFactRefresh({ owner, settled = () => undefined, busy, read
 }
 
 // Subscribes at once (inside the controller), before any read. `refresh` serves both the committed and the recovered
-// fact refresh: the committed one follows a valid explicit confirm (H3), the recovered one is unreachable before H5.
+// fact refresh. The committed one runs once, after a valid explicit confirm has released its flight; its outcome is
+// kept for the event it ran under (pending, failed or none) and only an explicit retry runs it again.
 export function createBingoBinding(api, { render, refresh }) {
   let applied = null;
-  const controller = createBingoController(api, { render }, { committed: refresh, recovered: refresh });
+  let owed = null;
+  let disposed = false;
+  const controller = createBingoController(api, { render }, { committed: () => committed(), recovered: refresh });
+  // Only the live binding's current attempt may refresh, settle or paint: a disposal, event change or newer attempt,
+  // also from the pending render itself, orphans it before the refresh is called or after it settles.
+  const live = (own) => !disposed && owed === own;
+  const committed = async () => {
+    if (disposed) return;
+    const own = { eventId: controller.getState().eventId, state: 'pending' };
+    owed = own;
+    render(controller.getState());
+    if (!live(own)) return;
+    let ok = false;
+    try { ok = await refresh() === true; } catch { /* Reported as failed below. */ }
+    if (!live(own)) return;
+    owed = ok ? null : { ...own, state: 'failed' };
+    render(controller.getState());
+  };
   return {
     begin: () => controller.begin(),
     cancel: () => controller.cancel(),
     confirm: (count) => controller.confirm(count),
     // The explicit read of an uncertain answer: never a begin, confirm or playback.
     read: () => controller.start(),
+    // The committed refresh of the given event: pending, failed or none.
+    refreshState: (eventId) => (owed !== null && owed.eventId === eventId ? owed.state : 'none'),
+    retryRefresh() {
+      if (!disposed && owed?.state === 'failed') committed().catch(() => {});
+    },
     // The event and fresh phase first, so a change makes the guards unknown before the fresh ones are given. Only a
     // change is passed on (the controller renders on every call). Never reads.
     sync(eventId, phase, guards) {
+      if (disposed) return;
       const key = JSON.stringify([eventId, phase ?? null]);
       if (key !== applied) {
         applied = key;
+        if (owed !== null && owed.eventId !== eventId) owed = null;
         controller.setEvent(eventId, phase);
       }
       controller.setGuards(guards);
@@ -96,6 +121,12 @@ export function createBingoBinding(api, { render, refresh }) {
       if (controller.getState().pending) await controller.start();
       await controller.start();
     },
-    dispose: () => controller.dispose(),
+    // Idempotent. The owed refresh is dropped first, so no settlement, retry or render can revive it.
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      owed = null;
+      controller.dispose();
+    },
   };
 }

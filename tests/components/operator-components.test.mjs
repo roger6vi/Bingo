@@ -2598,6 +2598,30 @@ it('the Bingo dialog starts at one winner, keeps every invalid count unsent and 
   } finally { op.cleanup(); await setViewport({ width: 800, height: 600 }); }
 });
 
+it('a valid confirmation refreshes the event once after its release; a failed refresh stays visible until \u00abRecargar evento\u00bb', async () => {
+  const log = [];
+  let event = lineDeclared;
+  const op = await loadBingo({ replies: { getCurrentEvent: () => { log.push('event'); return event; } }, bingo: {
+    confirmBingo: async (id, count) => { log.push('confirm'); return { ok: true, state: 'declared', award: bingoAward(count) }; } } });
+  try {
+    const ui = await openBingo(op);
+    log.length = 0;
+    event = { ok: false, message: 'Could not read the current event. Try again.' };
+    ui.action('confirm').button.click();
+    await settle();
+    await settle();
+    expect(log).to.deep.equal(['confirm', 'event']);
+    expect(ui.status.message).to.include('no se pudo releer el evento');
+    event = bingoDeclared;
+    op.bingo.read = async () => ({ ok: true, state: 'declared', award: bingoAward(1) });
+    op.main.querySelector('#draw-controls').reloadButton.click();
+    await settle();
+    await settle();
+    expect([ui.status.message.includes('no se pudo releer'), ui.status.message.startsWith('Bingo cantado con 1 ganador.')]).to.deep.equal([false, true]);
+    expect([bingoWrites(op), op.requests.includes('draw')]).to.deep.equal([['bingo:beginBingoSetup:', 'bingo:confirmBingo:b1:1'], false]);
+  } finally { op.cleanup(); }
+});
+
 it('an unknown confirmation stays uncertain, offers only an explicit read and resumes the same setup with what was typed', async () => {
   const op = await loadBingo({ bingo: { confirmBingo: async () => ({ ok: false, code: 'storage_failure', message: 'Could not read the clock. Try again.' }) } });
   try {
