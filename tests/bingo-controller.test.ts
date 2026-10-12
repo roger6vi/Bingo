@@ -6,7 +6,8 @@ import { createBingoController } from '../src/bingo-controller.mjs';
 // confirmation with a fact-refresh hook (F2b), and held-award pushes with read-only staging (F3a, a subset of F3).
 // Pushes never settle begin or cancel; a dispatched confirm or a read stages them for its answer (F3b). Explicit manual
 // retry (failed) and repeat (interrupted) of the shown award behind fresh clear guards, and the rotation to the id
-// main returns (G1a, G1b). An explicit legacy check read, bound to its event and checking_bingo phase (G2).
+// main returns (G1a, G1b). An explicit legacy check read, bound to its event and checking_bingo phase (G2). Guarded
+// legacy cancellation whose uncertain outcome only an explicit, main-bound legacy read settles (G3a).
 const session = { sessionId: 's1', eventId: 'e1', calledNumbers: [12, 5, 90], bingoPrize: { amount: 50, lot: 'Jamón' } };
 const award = { eventId: 'e1', award: { winnerCount: 2, totalCents: 5000, shareCents: 2500, remainderCents: 0, lot: '',
   lotResolution: 'not_required' }, presentation: { id: 'p1', status: 'started', startedAt: 1000, deadlineAt: 5000 } };
@@ -62,8 +63,8 @@ function bingoFixture(overrides: Record<string, unknown> = {}, onRender: (state:
 test('bingo subscribes before any read and never reads, writes or plays by itself', async () => {
   const f = bingoFixture();
   assert.deepEqual(Object.keys(f.controller).sort(),
-    ['begin', 'cancel', 'checkLegacy', 'confirm', 'dispose', 'getState', 'repeat', 'retry', 'setEvent', 'setGuards',
-      'start']);
+    ['begin', 'cancel', 'cancelLegacy', 'checkLegacy', 'confirm', 'dispose', 'getState', 'repeat', 'retry', 'setEvent',
+      'setGuards', 'start']);
   assert.deepEqual(f.calls, ['subscribe']);
   assert.equal(f.last().mode, 'unknown');
   f.controller.setEvent('e1', 'drawing');
@@ -1682,13 +1683,18 @@ test('bingo manual answers die with their event or controller, and a later phase
 const check = { eventId: 'e1', phase: 'checking_bingo', auditSequence: 7, lastTransitionAt: '2024-05-01T10:00:00.000Z' };
 const legacyCheck = (value: unknown = check) => ({ ok: true, state: 'legacy_check', check: value });
 const noLegacy = { status: 'none', check: null };
-function legacyFixture(answers: Array<() => unknown> = [], onRender?: (state: State) => void) {
+function legacyFixture(answers: Array<() => unknown> = [], onRender?: (state: State) => void,
+  options?: { committed?: () => unknown }, extra: Record<string, unknown> = {}) {
+  const cancels: Array<() => unknown> = [];
   const f = bingoFixture({ readLegacyBingoCheck: (...args: unknown[]) => {
     f.calls.push(`legacy:${args.length}`);
     return (answers.shift() ?? (async () => legacyCheck()))();
-  } }, onRender);
+  }, cancelLegacyBingoCheck: (...args: unknown[]) => {
+    f.calls.push(['cancel-legacy', ...args].join(':'));
+    return (cancels.shift() ?? (async () => recoveredReply))();
+  }, ...extra }, onRender, options);
   f.controller.setEvent('e1', 'checking_bingo');
-  return { ...f, answers };
+  return { ...f, answers, cancels };
 }
 
 test('bingo legacy check reads only when asked and exposes an isolated four-field identity', async () => {
@@ -1874,4 +1880,204 @@ test('bingo legacy context changes drop late answers and the available identity 
   await last;
   await f.controller.checkLegacy();
   assert.deepEqual([f.renders.length, f.controller.getState().legacy, f.calls.length], [seen, noLegacy, 9]);
+});
+
+// G3a: cancellation of the identity read for e1 and main's bound attempt, settled only by an explicit legacy read.
+const recoveredReply = { ok: true, state: 'recovered' };
+const cancelSent = 'cancel-legacy:e1:7:2024-05-01T10:00:00.000Z';
+const cancels = (f: ReturnType<typeof legacyFixture>) => f.calls.filter((call) => call.startsWith('cancel-legacy'));
+const availableAt = async (f: ReturnType<typeof legacyFixture>) => {
+  await f.controller.checkLegacy();
+  f.controller.setGuards(clear);
+};
+
+test('bingo legacy cancel sends the captured identity once; only an exact recovered answer recovers', async () => {
+  let committed = 0;
+  const f = legacyFixture([], undefined, { committed: () => { committed++; } });
+  await availableAt(f);
+  const d = deferred();
+  f.cancels.push(() => d.promise);
+  const flight = f.controller.cancelLegacy();
+  assert.deepEqual([cancels(f), f.controller.getState().pending, f.controller.getState().legacy],
+    [[cancelSent], true, { status: 'uncertain', check: null }]);
+  assert.equal(f.controller.cancelLegacy(), flight);
+  d.resolve(recoveredReply);
+  await flight;
+  assert.deepEqual([f.last().legacy, f.last().pending, f.last().error, f.last().mode],
+    [{ status: 'recovered', check: null }, false, null, 'unknown']);
+  await f.controller.cancelLegacy();
+  f.controller.setEvent('e1', 'line_declared');
+  await f.controller.checkLegacy();
+  await flush();
+  assert.deepEqual([f.calls, committed], [['subscribe', 'legacy:0', cancelSent], 0]);
+});
+
+test('bingo legacy cancel needs the read identity, fresh checking_bingo, clear guards and no setup, award or bound attempt', async () => {
+  type Fixture = ReturnType<typeof legacyFixture>;
+  const cases: Array<[string, (f: Fixture) => unknown]> = [
+    ['none', (f) => { f.answers.push(async () => failure('not_available', 'x')); return f.controller.checkLegacy(); }],
+    ['uncertain', (f) => { f.answers.push(async () => null); return f.controller.checkLegacy(); }],
+    ['phase', (f) => { f.controller.setEvent('e1', 'drawing'); f.controller.setEvent('e1', 'checking_bingo'); }],
+    ['switch', (f) => { f.controller.setEvent('e2', 'checking_bingo'); f.controller.setEvent('e1', 'checking_bingo'); }],
+    ['setup', (f) => { f.reply(setup()); return f.controller.start(); }],
+    ['award', (f) => { f.reply(declared()); return f.controller.start(); }],
+    ['bound', async (f) => { f.cancels.push(async () => null); await f.controller.cancelLegacy(); }],
+    ['dispose', (f) => f.controller.dispose()],
+    ['guards', (f) => f.controller.setGuards(undefined)],
+  ];
+  for (const key of Object.keys(clear)) {
+    for (const value of [null, true, 'false', undefined]) {
+      cases.push([`${key}:${value}`, (f) => f.controller.setGuards({ ...clear, [key]: value })]);
+    }
+  }
+  for (const [name, change] of cases) {
+    const f = legacyFixture();
+    await availableAt(f);
+    await change(f);
+    if (!name.includes(':') && name !== 'guards') f.controller.setGuards(clear);
+    const before = f.calls.length;
+    await f.controller.cancelLegacy();
+    await flush();
+    assert.deepEqual([f.calls.length, cancels(f).length], [before, name === 'bound' ? 1 : 0], name);
+  }
+  for (const bridge of [undefined, null, 'nope']) {
+    const f = legacyFixture([], undefined, {}, { cancelLegacyBingoCheck: bridge });
+    await availableAt(f);
+    await f.controller.cancelLegacy();
+    assert.deepEqual([f.calls, f.last().legacy, f.last().pending, typeof f.last().error],
+      [['subscribe', 'legacy:0'], { status: 'available', check }, false, 'string']);
+  }
+  const closed = legacyFixture([], undefined, {}, { readBingoSetup: undefined });
+  closed.controller.setGuards(clear);
+  await closed.controller.cancelLegacy();
+  assert.deepEqual([closed.calls, closed.last().mode], [['subscribe'], 'uncertain']);
+});
+
+test('bingo lost or invalid legacy cancel answers stay bound and uncertain; only an explicit legacy read settles them', async () => {
+  const lost: Array<() => unknown> = [failure('storage_failure', 'Could not confirm legacy Bingo recovery.'), null,
+    failure('storage_failure', 'Could not read the clock. Try again.'), undefined, { ...recoveredReply, extra: 1 },
+    { ok: true, state: 'cancelled' }, failure('not_available', 'x'), failure('setup_active', ''), legacyCheck()]
+    .map((value) => async () => value);
+  lost.push(() => Promise.reject(new Error('lost')), () => { throw new Error('sync'); });
+  for (const [index, answer] of lost.entries()) {
+    const f = legacyFixture();
+    await availableAt(f);
+    f.cancels.push(answer);
+    await f.controller.cancelLegacy();
+    assert.deepEqual([f.last().legacy, f.last().pending, typeof f.last().error],
+      [{ status: 'uncertain', check: null }, false, 'string'], String(index));
+    for (const [id, phase] of [['e1', 'line_declared'], ['e2', 'checking_bingo'], ['e1', 'line_declared']] as const) {
+      f.controller.setEvent(id, phase);
+    }
+    f.controller.setGuards(clear);
+    await f.controller.cancelLegacy();
+    await flush();
+    assert.deepEqual([cancels(f).length, f.last().legacy], [1, { status: 'uncertain', check: null }]);
+    f.answers.push(async () => recoveredReply);
+    await f.controller.checkLegacy();
+    assert.deepEqual(f.last().legacy, { status: 'recovered', check: null }, String(index));
+    await flush();
+    assert.deepEqual([cancels(f).length, f.calls.filter((call) => call === 'legacy:0').length], [1, 2]);
+  }
+  for (const [answer, status, bound, sent] of [[legacyCheck(), 'available', false, 2],
+    [failure('stale_session', 'x'), 'uncertain', false, 1], [failure('storage_failure', 'x'), 'uncertain', true, 1],
+    [failure('not_available', 'There is no legacy Bingo check to recover.'), 'none', false, 1],
+    [{ ...recoveredReply, extra: 1 }, 'uncertain', true, 1]] as const) {
+    const f = legacyFixture();
+    await availableAt(f);
+    f.cancels.push(async () => null);
+    await f.controller.cancelLegacy();
+    f.answers.push(async () => answer);
+    await f.controller.checkLegacy();
+    assert.equal(f.last().legacy.status, status, JSON.stringify(answer));
+    f.controller.setGuards(clear);
+    await f.controller.cancelLegacy();
+    assert.equal(cancels(f).length, sent, JSON.stringify(answer));
+    f.controller.setEvent('e1', 'drawing');
+    assert.equal(f.last().legacy.status, bound ? 'uncertain' : 'none', JSON.stringify(answer));
+  }
+  const stale = legacyFixture();
+  await availableAt(stale);
+  stale.cancels.push(async () => failure('stale_session', 'This Bingo setup is no longer current. Reopen it.'));
+  await stale.controller.cancelLegacy();
+  assert.deepEqual([stale.last().legacy.status, stale.last().error], ['uncertain', 'This Bingo setup is no longer current. Reopen it.']);
+  stale.controller.setGuards(clear);
+  await stale.controller.cancelLegacy();
+  stale.controller.setEvent('e1', 'drawing');
+  assert.deepEqual([cancels(stale).length, stale.last().legacy.status], [1, 'none']);
+  stale.controller.setEvent('e1', 'checking_bingo');
+  await availableAt(stale);
+  await stale.controller.cancelLegacy();
+  assert.deepEqual([cancels(stale).length, stale.last().legacy.status], [2, 'recovered']);
+  for (const code of ['invalid_request', 'setup_active', 'tongo_active', 'presentation_busy']) {
+    const f = legacyFixture();
+    await availableAt(f);
+    f.cancels.push(async () => failure(code, 'Wait.'));
+    await f.controller.cancelLegacy();
+    assert.deepEqual([f.last().legacy, f.last().error], [{ status: 'available', check }, 'Wait.'], code);
+    await f.controller.cancelLegacy();
+    assert.deepEqual([cancels(f), f.last().legacy.status], [[cancelSent, cancelSent], 'recovered'], code);
+  }
+});
+
+test('bingo legacy cancel shares the actual flight, rechecks after render and keeps its answer across a phase push', async () => {
+  let armed = false;
+  const joined: unknown[] = [];
+  const d = deferred();
+  let f!: ReturnType<typeof legacyFixture>;
+  f = legacyFixture([], (state) => {
+    if (!armed || !state.pending) return;
+    armed = false;
+    joined.push(f.controller.cancelLegacy(), f.controller.checkLegacy(), f.controller.start(), f.controller.begin());
+  });
+  await availableAt(f);
+  f.cancels.push(() => d.promise);
+  armed = true;
+  const first = f.controller.cancelLegacy();
+  assert.deepEqual([...joined, f.controller.cancelLegacy()].map((p) => p === first), [true, true, true, true, true]);
+  f.controller.setEvent('e1', 'line_declared');
+  assert.deepEqual([f.last().legacy, f.last().pending], [{ status: 'uncertain', check: null }, true]);
+  d.resolve(recoveredReply);
+  await first;
+  await flush();
+  assert.deepEqual([f.calls, f.last().legacy.status], [['subscribe', 'legacy:0', cancelSent], 'recovered']);
+  for (const change of ['phase', 'guards', 'switch', 'dispose']) {
+    let go = false;
+    let g!: ReturnType<typeof legacyFixture>;
+    g = legacyFixture([], (state) => {
+      if (!go || !state.pending) return;
+      go = false;
+      if (change === 'phase') g.controller.setEvent('e1', 'drawing');
+      else if (change === 'guards') g.controller.setGuards({ ...clear, presentationBusy: true });
+      else if (change === 'switch') g.controller.setEvent('e2', 'checking_bingo');
+      else g.controller.dispose();
+    });
+    await availableAt(g);
+    go = true;
+    await g.controller.cancelLegacy();
+    await flush();
+    assert.deepEqual([cancels(g), g.controller.getState().legacy.status],
+      [[], change === 'guards' ? 'available' : 'none'], change);
+  }
+  for (const change of ['switch', 'dispose']) {
+    const late = deferred();
+    const g = legacyFixture();
+    await availableAt(g);
+    g.cancels.push(() => late.promise);
+    const sent = g.controller.cancelLegacy();
+    if (change === 'switch') g.controller.setEvent('e2', 'checking_bingo');
+    else g.controller.dispose();
+    const seen = g.renders.length;
+    late.resolve(recoveredReply);
+    await sent;
+    await flush();
+    assert.deepEqual([g.renders.length, g.controller.getState().legacy], [seen, noLegacy], change);
+    if (change === 'dispose') continue;
+    g.controller.setEvent('e1', 'line_declared');
+    assert.deepEqual(g.last().legacy, { status: 'uncertain', check: null });
+    g.answers.push(async () => recoveredReply);
+    await g.controller.checkLegacy();
+    await flush();
+    assert.deepEqual([g.last().legacy.status, cancels(g).length], ['recovered', 1]);
+  }
 });
