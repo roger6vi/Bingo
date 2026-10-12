@@ -3169,6 +3169,39 @@ it('the Bingo confirmation is a Spanish modal that conserves the line, numbers a
   } finally { op.cleanup(); }
 });
 
+it('the pagehide wins the race with the Bingo legacy confirmation: it never opens, closes an open one and writes nothing', async () => {
+  const { op, ui } = await loadBingoRecovery();
+  try {
+    op.main.querySelector('#tab-bingo').click();
+    await settle();
+    // The page hides in the same task as the recover click: the modal never opens and nothing is written.
+    ui.button.button.click();
+    window.dispatchEvent(new Event('pagehide'));
+    await settle();
+    expect(dialogOpen(ui.dialog)).to.equal(false, 'the pagehide beats the dialog update');
+    expect(ui.cancels()).to.deep.equal([]);
+    // No later click opens the confirmation either.
+    ui.button.button.click();
+    await settle();
+    expect(dialogOpen(ui.dialog)).to.equal(false, 'nothing opens after the pagehide');
+    expect(ui.cancels()).to.deep.equal([]);
+  } finally { op.cleanup(); }
+  // An already-open confirmation is closed by the pagehide without writing.
+  const open = await loadBingoRecovery();
+  try {
+    open.op.main.querySelector('#tab-bingo').click();
+    await settle();
+    open.ui.button.button.click();
+    await open.ui.dialog.updateComplete;
+    await settle();
+    expect(dialogOpen(open.ui.dialog)).to.equal(true, 'the confirmation is open before the pagehide');
+    window.dispatchEvent(new Event('pagehide'));
+    await settle();
+    expect(dialogOpen(open.ui.dialog)).to.equal(false, 'the pagehide closes the open confirmation');
+    expect(open.ui.cancels()).to.deep.equal([]);
+  } finally { open.op.cleanup(); }
+});
+
 it('confirming cancels the exact four-field identity once, re-reads the event and never celebrates or presents', async () => {
   const { op, ui } = await loadBingoRecovery();
   try {
