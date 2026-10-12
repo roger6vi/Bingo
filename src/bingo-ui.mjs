@@ -28,6 +28,26 @@ export function bingoGuards(line, tongoBusy) {
 export const pageBlocked = (page) => Boolean(page.selecting || page.activating || page.eventsPending || page.eventsStale ||
   page.tongoBusy || page.lineBlocked);
 
+// A Bingo winner count as typed: only a positive safe integer in full digits, never a blank, default or coercion.
+export function parseWinners(text) {
+  const trimmed = typeof text === 'string' ? text.trim() : '';
+  const count = /^\d+$/.test(trimmed) ? Number(trimmed) : 0;
+  return Number.isSafeInteger(count) && count >= 1 ? count : null;
+}
+
+// The persisted Line evidence a Bingo needs: the active event's declared Line award with no lot to settle, or its tied lot
+// already resolved, by the award itself or by a validated lot read of exactly that award (event, celebration, winners
+// and lot). A historical line_declared without an award, or a lot still pending or unread, is not evidence.
+export function lineResolved(line, lot, eventId) {
+  const award = line.mode === 'declared' && !line.pending ? line.award : null;
+  if (eventId === null || award?.eventId !== eventId) return false;
+  const { lotResolution, winnerCount, lot: name } = award.award;
+  if (lotResolution !== 'pending') return lotResolution === 'not_required' || lotResolution === 'resolved';
+  const seen = lot?.status === 'resolved' ? lot.snapshot : null;
+  return seen !== null && seen.fact.resolution === 'resolved' && seen.eventId === eventId &&
+    seen.presentation.id === award.presentation?.id && seen.winnerCount === winnerCount && seen.lot === name;
+}
+
 // The page's shared committed-fact refresh. A read already in flight may predate the commit, so it is awaited and a
 // genuinely new read follows, never joined. An event snapshot names no event: the page's owner token (accepted active
 // event, selection and list freshness) is pinned before any read and must be the same afterwards. `settled` first
