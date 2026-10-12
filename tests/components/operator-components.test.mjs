@@ -45,7 +45,7 @@ async function loadOperator(options = {}) {
     ...options.replies };
   const reads = { prizes: 0, line: 0, event: 0, legacy: 0, bingo: 0 };
   // Bingo boundary: an idle main by default. `log` orders subscription, reads and cleanup; every other Bingo call is
-  // recorded as a request and refused, since nothing may write, recover or play before H3–H5.
+  // recorded as a request and refused unless a test scripts it under the bridge method's name.
   const bingo = { read: async () => ({ ok: true, state: 'none' }), push: null, log: [], ...options.bingo };
   // Line-lot boundary: unavailable and refusing draws unless a test scripts it; logged apart from the other requests.
   const lot = { reads: 0, draws: [], presents: [], status: null, read: async () => ({ ok: false, code: 'not_available' }),
@@ -103,7 +103,7 @@ async function loadOperator(options = {}) {
     ...Object.fromEntries(['beginBingoSetup', 'cancelBingoSetup', 'confirmBingo', 'readLegacyBingoCheck', 'cancelLegacyBingoCheck',
       'retryBingoPresentation', 'repeatBingoPresentation'].map((name) => [name, async (...args) => {
       requests.push(`bingo:${name}:${args.join(':')}`);
-      return { ok: false, code: 'not_available', message: 'unexpected' };
+      return bingo[name] ? bingo[name](...args) : { ok: false, code: 'not_available', message: 'unexpected' };
     }])),
     readLineLot: async () => { lot.reads++; return lot.read(); },
     drawLineLot: async (expected) => { lot.draws.push(expected); return lot.draw(expected); },
@@ -259,7 +259,7 @@ it('operator page is a Spanish three-tab application shell with shared panels an
     expect(page.querySelector(`footer[slot="status"] bingo-status#${id}`)).not.to.equal(null, `${id} in the status bar`);
   }
   for (const id of ['open-public', 'move-public']) expect(page.querySelector(`bingo-button#${id}`)).not.to.equal(null);
-  expect([...page.querySelectorAll('bingo-dialog')].map((dialog) => dialog.id)).to.deep.equal(['unsaved-dialog', 'line-dialog', 'legacy-dialog']);
+  expect([...page.querySelectorAll('bingo-dialog')].map((dialog) => dialog.id)).to.deep.equal(['unsaved-dialog', 'line-dialog', 'legacy-dialog', 'bingo-dialog']);
   // No English operator copy remains in the page.
   const copy = [page.title, page.body.textContent, ...[...page.querySelectorAll('[label],[heading],[message],[title],[aria-label]')]
     .flatMap((element) => ['label', 'heading', 'message', 'title', 'aria-label'].map((name) => element.getAttribute(name) ?? ''))].join(' ');
@@ -2495,4 +2495,201 @@ it('the Bingo composition module exports its locks, fresh guards, dispatch predi
   expect([await run({}), await run({ owner: () => token, read: () => { token = {}; } }),
     await run({ read: () => { throw new Error('lost'); } }), await run({ accepted: () => false }), await run({ owner: () => null })])
     .to.deep.equal([[true, 2], [false, 1], [false, 1], [false, 2], [false, 0]]);
+});
+
+// Bingo declaration (H3): a fresh line_declared event whose Line award is persisted and resolved, and a scripted main.
+const lineDeclared = { ok: true, snapshot: { calledNumbers: [4, 9], phase: 'line_declared', lastTransitionAt: HEAD } };
+const bingoDeclared = { ok: true, snapshot: { calledNumbers: [4, 9], phase: 'bingo_declared', lastTransitionAt: '2026-01-01T00:00:02.000Z' } };
+const bingoSession = (sessionId = 'b1') => ({ sessionId, eventId: 'a', calledNumbers: [4, 9], bingoPrize: { amount: 20, lot: 'Copa' } });
+const bingoAward = (count) => awardFor('pending', 'q', { winnerCount: count, totalCents: 2000, shareCents: Math.floor(2000 / count),
+  remainderCents: 2000 % count, lot: 'Copa', lotResolution: count > 1 ? 'pending' : 'not_required' });
+const loadBingo = (options = {}) => loadOperator({ ...options, replies: { getCurrentEvent: () => lineDeclared, ...options.replies },
+  line: { read: declaredAs('completed'), ...options.line }, bingo: {
+    beginBingoSetup: async () => ({ ok: true, state: 'setup', session: bingoSession() }),
+    confirmBingo: async (id, count) => ({ ok: true, state: 'declared', award: bingoAward(count) }),
+    cancelBingoSetup: async () => ({ ok: true, state: 'cancelled' }), ...options.bingo } });
+const listWith = (active) => ({ ok: true, events: ['a', 'b'].map((id, index) => ({ id, name: `Evento ${id}`, date: '2026-08-15',
+  place: 'Plaza', phase: 'line_declared', createdAt: `2026-01-0${index + 1}T00:00:00.000Z`, active: id === active })) });
+async function openBingo(op) {
+  op.main.querySelector('#tab-bingo').click();
+  await settle();
+  const claim = op.main.querySelector('#claim-bingo');
+  await claim.updateComplete;
+  claim.button.focus();
+  claim.button.click();
+  await settle();
+  const dialog = op.main.querySelector('#bingo-dialog');
+  await dialog.updateComplete;
+  const field = op.main.querySelector('#bingo-winners');
+  const input = field.shadowRoot.querySelector('input');
+  // Typing as the browser does: the input event crosses the field's shadow root.
+  const typed = (text) => { input.value = text; input.dispatchEvent(new Event('input', { bubbles: true, composed: true })); };
+  return { claim, dialog, field, type: typed, status: op.main.querySelector('#bingo-status'),
+    action: (name) => dialog.shadowRoot.querySelector(`[data-action="${name}"]`), open: () => dialog.shadowRoot.querySelector('dialog').open };
+}
+
+it('Bingo is offered only on a fresh line_declared event with its persisted, resolved Line award, and gated again at dispatch', async () => {
+  const tied = { read: declaredAs('completed', 'p', tiedAward) };
+  const cases = {
+    resolved: [{}, true],
+    // The Line still reads its lot as pending, but the lot's own validated read settled exactly that award.
+    'settled lot': [{ line: tied, lot: { read: async () => lotReply(numbered(2, 'blue')) } }, true],
+    historical: [{ line: { read: async () => ({ ok: true, state: 'none' }) } }, false],
+    drawing: [{ replies: { getCurrentEvent: () => drawing } }, false],
+    'pending lot': [{ line: tied, lot: { read: async () => lotReply(lotSnap()) } }, false],
+    'lot of another award': [{ line: tied, lot: { read: async () => lotReply(numbered(2, 'blue', { presentation: { id: 'x', status: 'completed' } })) } }, false],
+    'lot needing a read': [{ line: tied, lot: { read: async () => ({ ok: false, code: 'storage_failure' }) } }, false],
+    'running Line': [{ line: { read: declaredAs('started') } }, false],
+    'Line of another event': [{ line: { read: async () => ({ ok: true, state: 'declared', award: awardFor('completed', 'p', {}, 'b') }) } }, false],
+    tongo: [{ replies: { getCurrentEvent: () => lineDeclared, playTongo: () => new Promise(() => {}) } }, false],
+  };
+  for (const [name, [options, offered]] of Object.entries(cases)) {
+    const op = await loadBingo(options);
+    try {
+      if (name === 'tongo') {
+        op.main.querySelector('#tongo-control').dispatchEvent(new CustomEvent('tongo-play'));
+        await settle();
+      }
+      const claim = op.main.querySelector('#claim-bingo');
+      expect([claim.disabled, claim.textContent], name).to.deep.equal([!offered, 'Bingo']);
+      // Forced past the visual lock: the click itself rechecks every condition before it begins.
+      claim.disabled = false;
+      claim.click();
+      await settle();
+      expect(bingoWrites(op), name).to.deep.equal(offered ? ['bingo:beginBingoSetup:'] : []);
+    } finally { op.cleanup(); }
+  }
+});
+
+it('the Bingo dialog starts at one winner, keeps every invalid count unsent and declares the exact count once', async () => {
+  await setViewport({ width: 1280, height: 720 });
+  const op = await loadBingo();
+  try {
+    const ui = await openBingo(op);
+    expect([ui.open(), ui.dialog.label, ui.field.value, ui.action('confirm').disabled]).to.deep.equal([true, 'Declarar el bingo', '1', false]);
+    expect(ui.dialog.textContent).to.include('cart\u00f3n f\u00edsico').and.include('Premio de bingo configurado: 20 \u20ac + lote \u00abCopa\u00bb.');
+    await expect(ui.dialog).to.be.accessible();
+    for (const text of ['', ' ', '0', '-2', '2.5', '1e3', '0x2', '+2', '9007199254740992', 'dos']) {
+      ui.type(text);
+      await ui.dialog.updateComplete;
+      expect([ui.action('confirm').disabled, ui.field.error], text)
+        .to.deep.equal([true, 'Escribe cu\u00e1ntos jugadores comparten el bingo: un n\u00famero entero, 1 o m\u00e1s.']);
+      // A forced confirmation sends nothing and keeps the dialog and what was typed.
+      ui.dialog.dispatchEvent(new Event('confirm'));
+      await settle();
+      expect([ui.open(), ui.field.value], text).to.deep.equal([true, text]);
+    }
+    expect(bingoWrites(op)).to.deep.equal(['bingo:beginBingoSetup:']);
+    ui.type('3');
+    await ui.dialog.updateComplete;
+    expect([ui.action('confirm').disabled, ui.field.error]).to.deep.equal([false, '']);
+    ui.action('confirm').button.click();
+    ui.dialog.dispatchEvent(new Event('confirm'));
+    await settle();
+    expect(bingoWrites(op)).to.deep.equal(['bingo:beginBingoSetup:', 'bingo:confirmBingo:b1:3']);
+    expect([ui.open(), ui.claim.textContent, ui.claim.disabled, ui.status.hidden]).to.deep.equal([false, 'Bingo cantado', true, false]);
+    expect(ui.status.message).to.include('Bingo cantado con 3 ganadores').and.include('Lote \u00abCopa\u00bb: pendiente de resolver');
+    // The award never finishes the game or unlocks drawing; the tie settlement stays a disabled placeholder.
+    const controls = op.main.querySelector('#draw-controls');
+    expect([controls.manualDisabled, controls.digitalDisabled, op.main.querySelector('#claim-tiebreak').disabled]).to.deep.equal([true, true, true]);
+    await ui.status.updateComplete;
+    const [shown, rail] = [ui.status, op.main.querySelector('bingo-side-rail')].map((element) => element.getBoundingClientRect());
+    expect([shown.top >= rail.top, shown.bottom <= rail.bottom]).to.deep.equal([true, true], 'the award is in view at 1280\u00d7720');
+  } finally { op.cleanup(); await setViewport({ width: 800, height: 600 }); }
+});
+
+it('an unknown confirmation stays uncertain, offers only an explicit read and resumes the same setup with what was typed', async () => {
+  const op = await loadBingo({ bingo: { confirmBingo: async () => ({ ok: false, code: 'storage_failure', message: 'Could not read the clock. Try again.' }) } });
+  try {
+    const ui = await openBingo(op);
+    ui.type('4');
+    await ui.dialog.updateComplete;
+    ui.action('confirm').button.click();
+    await settle();
+    await settle();
+    expect([ui.open(), ui.claim.textContent, ui.claim.disabled, ui.status.message]).to.deep.equal([false, 'Comprobar bingo', false,
+      'No se pudo leer el reloj del equipo. Vuelve a leer el estado del bingo antes de reintentar.']);
+    const reads = op.reads.bingo;
+    op.bingo.read = async () => ({ ok: true, state: 'setup', session: bingoSession() });
+    ui.claim.button.click();
+    await settle();
+    expect([op.reads.bingo - reads, ui.open(), ui.claim.textContent]).to.deep.equal([1, false, 'Reanudar bingo']);
+    ui.claim.button.click();
+    await settle();
+    expect([ui.open(), ui.field.value, bingoWrites(op)]).to.deep.equal([true, '4', ['bingo:beginBingoSetup:', 'bingo:confirmBingo:b1:4']]);
+  } finally { op.cleanup(); }
+});
+
+it('a stale, repeated or disposed Bingo dialog never cancels or confirms another setup, and a Line read in flight holds its confirm', async () => {
+  const op = await loadBingo();
+  try {
+    let ui = await openBingo(op);
+    // Escape from the keyboard cancels the owned setup once; a repeated dismissal adds nothing.
+    await sendKeys({ press: 'Escape' });
+    ui.dialog.dispatchEvent(new Event('dismiss'));
+    await settle();
+    expect([ui.open(), ui.claim.button.getRootNode().activeElement === ui.claim.button]).to.deep.equal([false, true]);
+    op.bingo.read = async () => ({ ok: true, state: 'setup', session: bingoSession() });
+    ui = await openBingo(op);
+    const held = deferred();
+    op.line.read = () => held.promise;
+    op.main.querySelector('#reload-events').click();
+    await settle();
+    await ui.dialog.updateComplete;
+    ui.dialog.dispatchEvent(new Event('confirm'));
+    await settle();
+    expect([ui.open(), ui.action('confirm').disabled, ui.action('cancel').disabled]).to.deep.equal([true, true, false]);
+    // Main now holds another setup of the same event: the open dialog closes without cancelling it.
+    held.resolve({ ok: true, state: 'declared', award: awardFor('completed') });
+    op.bingo.read = async () => ({ ok: true, state: 'setup', session: bingoSession('b2') });
+    op.main.querySelector('#reload-events').click();
+    await settle();
+    ui.dialog.dispatchEvent(new Event('dismiss'));
+    await settle();
+    expect([ui.open(), ui.claim.textContent]).to.deep.equal([false, 'Reanudar bingo']);
+    ui.claim.button.click();
+    await settle();
+    expect([ui.open(), ui.field.value]).to.deep.equal([true, '1']);
+    // Another active event closes it too; nothing it signals afterwards reaches main.
+    op.replies.listEvents = async () => listWith('b');
+    op.main.querySelector('#reload-events').click();
+    await settle();
+    ui.dialog.dispatchEvent(new Event('dismiss'));
+    ui.dialog.dispatchEvent(new Event('confirm'));
+    await settle();
+    expect([ui.open(), bingoWrites(op)]).to.deep.equal([false,
+      ['bingo:beginBingoSetup:', 'bingo:cancelBingoSetup:b1:a', 'bingo:beginBingoSetup:']]);
+  } finally { op.cleanup(); }
+  const late = await loadBingo();
+  try {
+    const ui = await openBingo(late);
+    window.dispatchEvent(new Event('pagehide'));
+    ui.dialog.dispatchEvent(new Event('dismiss'));
+    ui.dialog.dispatchEvent(new Event('confirm'));
+    await settle();
+    expect(bingoWrites(late)).to.deep.equal(['bingo:beginBingoSetup:']);
+  } finally { late.cleanup(); }
+});
+
+it('a phase change after the confirmation was sent never discards its valid reply', async () => {
+  const held = deferred();
+  const op = await loadBingo({ bingo: { confirmBingo: () => held.promise } });
+  try {
+    const ui = await openBingo(op);
+    ui.action('confirm').button.click();
+    await settle();
+    op.replies.getCurrentEvent = () => bingoDeclared;
+    op.bingo.read = async () => ({ ok: true, state: 'declared', award: bingoAward(1) });
+    // Another read path, forced past its visual lock, changes the phase while the confirmation is in flight.
+    const reload = op.main.querySelector('#draw-controls').shadowRoot.querySelector('#reload-event');
+    reload.disabled = false;
+    reload.click();
+    await settle();
+    expect(op.main.querySelector('#phase-status').message).to.equal('Fase: Bingo cantado');
+    held.resolve({ ok: true, state: 'declared', award: bingoAward(1) });
+    await settle();
+    await settle();
+    expect([ui.status.message.startsWith('Bingo cantado con 1 ganador.'), ui.claim.textContent, bingoWrites(op)])
+      .to.deep.equal([true, 'Bingo cantado', ['bingo:beginBingoSetup:', 'bingo:confirmBingo:b1:1']]);
+  } finally { op.cleanup(); }
 });

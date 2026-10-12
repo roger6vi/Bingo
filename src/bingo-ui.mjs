@@ -1,6 +1,6 @@
 // Private Bingo composition of the operator page (H2). It binds the Bingo controller to the page's active event,
 // fresh phase and guards, offers the explicit read the page's existing read paths use, and says what Bingo locks.
-// Nothing here reads, writes or plays by itself: the declaration, manual and legacy actions stay unbound until H3–H5.
+// Nothing here reads, writes or plays by itself. H3 binds the explicit declaration; manual and legacy stay unbound until H4–H5.
 import { createBingoController } from './bingo-controller.mjs';
 
 const running = (award) => award !== null && (award.presentation.status === 'pending' || award.presentation.status === 'started');
@@ -71,11 +71,16 @@ export function createFactRefresh({ owner, settled = () => undefined, busy, read
 }
 
 // Subscribes at once (inside the controller), before any read. `refresh` serves both the committed and the recovered
-// fact refresh; neither is reachable before H3/H5 binds the actions.
+// fact refresh: the committed one follows a valid explicit confirm (H3), the recovered one is unreachable before H5.
 export function createBingoBinding(api, { render, refresh }) {
   let applied = null;
   const controller = createBingoController(api, { render }, { committed: refresh, recovered: refresh });
   return {
+    begin: () => controller.begin(),
+    cancel: () => controller.cancel(),
+    confirm: (count) => controller.confirm(count),
+    // The explicit read of an uncertain answer: never a begin, confirm or playback.
+    read: () => controller.start(),
     // The event and fresh phase first, so a change makes the guards unknown before the fresh ones are given. Only a
     // change is passed on (the controller renders on every call). Never reads.
     sync(eventId, phase, guards) {
