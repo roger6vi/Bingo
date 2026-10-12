@@ -12,8 +12,9 @@ import { MAX_PRIZE_AMOUNT, MAX_PRIZE_LOT, NO_PRIZES, normalizePrizes, validAmoun
   type EventPrizes } from './event-prizes.ts';
 
 // v6 adds prizes, v7 adds first-line awards, v8 adds interrupted presentations, v9 adds
-// numbered lot provenance and v10 adds direct Bingo awards. Keep each historical definition and migration step independent.
-const VERSION = 10;
+// numbered lot provenance, v10 adds direct Bingo awards and v11 gives them the same numbered lot provenance. Keep each
+// historical definition and migration step independent.
+const VERSION = 11;
 export const EVENT_SCHEMA_VERSION = VERSION;
 const phases = ['drawing', 'checking_line', 'line_declared', 'checking_bingo', 'bingo_declared', 'finished'];
 const phaseCheck = `CHECK (phase IN (${phases.map((phase) => `'${phase}'`).join(', ')}))`;
@@ -122,7 +123,7 @@ const originalAwardColumns = ['event_id', 'audit_sequence', 'winner_count', 'tot
 const lotPaletteV1 = ['red', 'blue', 'green', 'yellow', 'purple', 'orange'] as const;
 const lotColorV1Sql = `CASE (lot_participant_number - 1) % 6 ${lotPaletteV1
   .map((color, index) => `WHEN ${index} THEN '${color}'`).join(' ')} END`;
-const lineAwardsTable = lineAwardsTableV8.replace('  CHECK (share_cents', `  lot_result_origin TEXT NOT NULL DEFAULT 'none'
+const lotProvenanceColumns = `  lot_result_origin TEXT NOT NULL DEFAULT 'none'
     CHECK (lot_result_origin IN ('none', 'legacy_v8', 'numbered_v1')),
   lot_participant_number INTEGER,
   lot_color_id TEXT,
@@ -138,25 +139,31 @@ const lineAwardsTable = lineAwardsTableV8.replace('  CHECK (share_cents', `  lot
         AND lot_participant_number <= winner_count AND typeof(lot_color_id) = 'text'
         AND lot_color_id = ${lotColorV1Sql}
     ELSE 0 END),
-  CHECK (share_cents`);
+`;
+const lineAwardsTable = lineAwardsTableV8.replace('  CHECK (share_cents', `${lotProvenanceColumns}  CHECK (share_cents`);
 // Migration is the sole creator of legacy provenance. Existing legacy awards may still advance
 // their presentation lifecycle, but their award identity and unknown-winner provenance are frozen.
 const legacyIdentityColumns = originalAwardColumns.filter((name) => ![
   'presentation_id', 'presentation_status', 'presentation_started_at', 'presentation_deadline',
 ].includes(name)).concat(['lot_result_origin', 'lot_participant_number', 'lot_color_id']);
-const lineAwardGuards = [
-  `CREATE TRIGGER line_awards_no_legacy_insert BEFORE INSERT ON line_awards
+// The provenance guards: the migration alone may create or label legacy rows; nothing else may forge or retarget them.
+const awardGuards = (table: string) => [
+  `CREATE TRIGGER ${table}_no_legacy_insert BEFORE INSERT ON ${table}
     WHEN NEW.lot_result_origin = 'legacy_v8'
     BEGIN SELECT RAISE(ABORT, 'cannot insert legacy lot provenance'); END`,
-  `CREATE TRIGGER line_awards_no_legacy_update BEFORE UPDATE ON line_awards
+  `CREATE TRIGGER ${table}_no_legacy_update BEFORE UPDATE ON ${table}
     WHEN (NEW.lot_result_origin = 'legacy_v8' AND OLD.lot_result_origin IS NOT 'legacy_v8')
       OR (OLD.lot_result_origin = 'legacy_v8' AND (${legacyIdentityColumns
         .map((name) => `NEW.${name} IS NOT OLD.${name}`).join(' OR ')}))
     BEGIN SELECT RAISE(ABORT, 'cannot introduce or retarget legacy lot provenance'); END`,
 ];
-// Optional direct Bingo award, one per event, written with its audit row. Same money, lot and presentation columns
-// and checks as a first-line award; no lot provenance yet (a later unit settles it) and never any claimant identity.
-const bingoAwardsTable = lineAwardsTableV8.replace('line_awards', 'bingo_awards');
+const lineAwardGuards = awardGuards('line_awards');
+const bingoAwardGuards = awardGuards('bingo_awards');
+// Optional direct Bingo award, one per event, written with its audit row. Same money, lot, presentation and provenance
+// columns and checks as a first-line award; never any claimant identity. v10 files carry the award without provenance
+// (bingoAwardsTableV10) and migrate to this guarded shape exactly like line_awards did.
+const bingoAwardsTableV10 = lineAwardsTableV8.replace('line_awards', 'bingo_awards');
+const bingoAwardsTable = bingoAwardsTableV10.replace('  CHECK (share_cents', `${lotProvenanceColumns}  CHECK (share_cents`);
 const PLACEHOLDER_NAME = 'Evento actual';
 const PLACEHOLDER_PLACE = 'Sin especificar';
 
@@ -616,14 +623,37 @@ function migrateLotProvenance(db: DatabaseSync): void {
 // v9 → v10: add the empty bingo_awards table. Existing audit, line awards, calls and prizes are untouched, and a
 // legacy checking_bingo opening stays as it is (explicit recovery is a separate unit).
 function migrateBingoAwards(db: DatabaseSync): void {
-  db.exec(bingoAwardsTable);
+  db.exec(bingoAwardsTableV10);
 }
 
-function validateBingoAwardsSchema(db: DatabaseSync): void {
+// v10 → v11: give bingo_awards the same lot provenance as line_awards. Preserve every old field, label only old
+// resolved rows and invent no winner. Install guards after the copy; all DDL, data and user_version are in the
+// caller's transaction.
+function migrateBingoLotProvenance(db: DatabaseSync): void {
+  db.exec('CREATE TEMP TABLE bingo_awards_migration AS SELECT * FROM bingo_awards');
+  db.exec('DROP TABLE bingo_awards');
+  db.exec(bingoAwardsTable);
+  db.exec(`INSERT INTO bingo_awards (${originalAwardColumns.join(', ')}, lot_result_origin)
+    SELECT ${originalAwardColumns.join(', ')}, CASE WHEN lot_resolution = 'resolved'
+      THEN 'legacy_v8' ELSE 'none' END FROM bingo_awards_migration`);
+  db.exec('DROP TABLE bingo_awards_migration');
+  db.exec(bingoAwardGuards.join(';'));
+}
+
+function validateBingoAwardsSchema(db: DatabaseSync, expected = bingoAwardsTable): void {
   const normalize = (sql: string) => sql.replace(/[\s"`\[\]]/g, '').toUpperCase();
   const sql = db.prepare("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'bingo_awards'").get()?.sql;
-  if (typeof sql !== 'string' || normalize(sql) !== normalize(bingoAwardsTable)) {
+  if (typeof sql !== 'string' || normalize(sql) !== normalize(expected)) {
     throw new Error('Invalid event schema: bingo_awards table missing or malformed');
+  }
+  if (expected === bingoAwardsTable) {
+    for (const guard of bingoAwardGuards) {
+      const name = guard.split(' ')[2];
+      const stored = db.prepare("SELECT sql FROM sqlite_schema WHERE name = ? AND type = 'trigger'").get(name)?.sql;
+      if (typeof stored !== 'string' || normalize(stored) !== normalize(guard)) {
+        throw new Error('Invalid event schema: bingo_awards provenance guard missing or malformed');
+      }
+    }
   }
 }
 
@@ -719,6 +749,9 @@ function decodeLotFact(row: Record<string, unknown>, winnerCount: number, lot: s
 }
 
 type LineAwardRecord = NonNullable<ReturnType<typeof readLineAwardRecord>>;
+export type BingoLotFact = LineLotFact;
+// Identity a later guarded writer must match, plus the decoded lot facts, from one active-event snapshot.
+export type BingoLotSnapshot = LineLotSnapshot;
 function lotSnapshot(eventId: string, record: LineAwardRecord): LineLotSnapshot {
   const { award, presentation } = record.stored;
   return Object.freeze({ eventId, auditSequence: record.auditSequence, winnerCount: award.winnerCount,
@@ -797,15 +830,19 @@ function readLineAwardRecord(db: DatabaseSync, eventId: string, audit: PhaseAudi
 export type StoredBingoAward = StoredLineAward;
 
 // Strict read of the active event's Bingo award, or null only when no row exists. The row is re-derived with the pure
-// rules and must link to the one direct bingo audit entry; anything else fails closed. Never repairs or writes.
-function readBingoAward(db: DatabaseSync, eventId: string, audit: PhaseAuditEntry[]): StoredBingoAward | null {
+// rules and must link to the one direct bingo audit entry; anything else fails closed. Never repairs or writes. With
+// `provenance` (the default) the row also passes the strict lot fact decode; the every-load award check skips that
+// decode so corrupt provenance fails the validated lot reads alone, like the line award's reads.
+function readBingoAwardRecord(db: DatabaseSync, eventId: string, audit: PhaseAuditEntry[], provenance = true):
+    { stored: StoredBingoAward; auditSequence: number; fact: BingoLotFact | null } | null {
   const invalid = (reason: string, cause?: unknown): never => {
     throw new Error(`Invalid stored bingo award: ${reason}`, cause === undefined ? undefined : { cause });
   };
   let row;
   try {
     row = db.prepare(`SELECT event_id, audit_sequence, winner_count, total_cents, share_cents, remainder_cents,
-      lot, lot_resolution, presentation_id, presentation_status, presentation_started_at, presentation_deadline
+      lot, lot_resolution, presentation_id, presentation_status, presentation_started_at, presentation_deadline,
+      lot_result_origin, lot_participant_number, lot_color_id
       FROM bingo_awards WHERE event_id = ?`).get(eventId);
   } catch (error) { return invalid('unreadable row', error); }
   if (row === undefined) return null;
@@ -836,12 +873,23 @@ function readBingoAward(db: DatabaseSync, eventId: string, audit: PhaseAuditEntr
   const timed = status !== 'pending' && status !== 'failed';
   if (timed ? !(safe(startedAt, 0) && safe(deadlineAt, 0) && deadlineAt > startedAt)
     : startedAt !== null || deadlineAt !== null) invalid('presentation times');
-  return Object.freeze({
-    eventId,
-    award: Object.freeze({ ...derived, lotResolution: resolution as LineAward['lotResolution'] }),
-    presentation: Object.freeze({ id: row.presentation_id as string, status: status as LinePresentationStatus,
-      startedAt: startedAt as number | null, deadlineAt: deadlineAt as number | null }),
-  });
+  const fact = provenance
+    ? decodeLotFact(row, row.winner_count as number, row.lot as string, resolution as string, status as string, invalid)
+    : null;
+  return {
+    stored: Object.freeze({
+      eventId,
+      award: Object.freeze({ ...derived, lotResolution: resolution as LineAward['lotResolution'] }),
+      presentation: Object.freeze({ id: row.presentation_id as string, status: status as LinePresentationStatus,
+        startedAt: startedAt as number | null, deadlineAt: deadlineAt as number | null }),
+    }),
+    auditSequence: row.audit_sequence as number,
+    fact,
+  };
+}
+
+function readBingoAward(db: DatabaseSync, eventId: string, audit: PhaseAuditEntry[]): StoredBingoAward | null {
+  return readBingoAwardRecord(db, eventId, audit, false)?.stored ?? null;
 }
 
 // Every load validates the bingo award against the audit: a direct bingo audit entry without exactly its award, or
@@ -1103,6 +1151,7 @@ export function createEventStore(path: string) {
           candidate.exec(lineAwardsTable);
           candidate.exec(lineAwardGuards.join(';'));
           candidate.exec(bingoAwardsTable);
+          candidate.exec(bingoAwardGuards.join(';'));
           candidate.exec(`PRAGMA user_version = ${VERSION}; COMMIT`);
         } catch (error) {
           try { candidate.exec('ROLLBACK'); } catch { /* Preserve the original error. */ }
@@ -1125,7 +1174,7 @@ export function createEventStore(path: string) {
     db.exec('BEGIN');
     try {
       const observed = db.prepare('PRAGMA user_version').get()?.user_version;
-      if (observed !== 1 && observed !== 2 && observed !== 3 && observed !== 4 && observed !== 5 && observed !== 6 && observed !== 7 && observed !== 8 && observed !== 9 && observed !== VERSION) {
+      if (observed !== 1 && observed !== 2 && observed !== 3 && observed !== 4 && observed !== 5 && observed !== 6 && observed !== 7 && observed !== 8 && observed !== 9 && observed !== 10 && observed !== VERSION) {
         throw new Error(`Unsupported event schema version: ${String(observed)}`);
       }
       if (observed === VERSION) {
@@ -1165,7 +1214,7 @@ export function createEventStore(path: string) {
           validateV3(db);
           migrateV3ToV4(db);
           db.exec('PRAGMA user_version = 4');
-        } else if (version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== VERSION) {
+        } else if (version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== 10 && version !== VERSION) {
           throw new Error(`Unsupported event schema version: ${String(version)}`);
         }
         if (version === 1 || version === 2 || version === 3 || version === 4) {
@@ -1176,23 +1225,28 @@ export function createEventStore(path: string) {
           migratePrizes(db);
           db.exec('PRAGMA user_version = 6');
         }
-        if (version !== 7 && version !== 8 && version !== 9 && version !== VERSION) {
+        if (version !== 7 && version !== 8 && version !== 9 && version !== 10 && version !== VERSION) {
           migrateLineAwards(db);
           db.exec('PRAGMA user_version = 7');
         }
-        if (version !== 8 && version !== 9 && version !== VERSION) {
+        if (version !== 8 && version !== 9 && version !== 10 && version !== VERSION) {
           validateLineAwardsSchema(db, lineAwardsTableV7);
           migrateInterruptedPresentation(db);
           db.exec('PRAGMA user_version = 8');
         }
-        if (version !== 9 && version !== VERSION) {
+        if (version !== 9 && version !== 10 && version !== VERSION) {
           validateLineAwardsSchema(db, lineAwardsTableV8);
           migrateLotProvenance(db);
           db.exec('PRAGMA user_version = 9');
         }
-        if (version !== VERSION) {
+        if (version !== 10 && version !== VERSION) {
           validateLineAwardsSchema(db);
           migrateBingoAwards(db);
+          db.exec('PRAGMA user_version = 10');
+        }
+        if (version !== VERSION) {
+          validateBingoAwardsSchema(db, bingoAwardsTableV10);
+          migrateBingoLotProvenance(db);
           db.exec(`PRAGMA user_version = ${VERSION}`);
         }
         validateV4(db);
@@ -1573,7 +1627,18 @@ export function createEventStore(path: string) {
         const id = readActiveEventId(db);
         if (id === null) return null;
         readEvent(db);
-        return readBingoAward(db, id, replayAudit(db, id));
+        return readBingoAwardRecord(db, id, replayAudit(db, id))?.stored ?? null;
+      });
+    },
+    // Active-event lot facts only; null without an award. Corrupt or unknown provenance fails this read alone.
+    loadBingoLotResult(): BingoLotSnapshot | null {
+      return readSnapshot(() => {
+        const id = readActiveEventId(db);
+        if (id === null) return null;
+        readEvent(db);
+        const record = readBingoAwardRecord(db, id, replayAudit(db, id));
+        // With the default provenance decode the fact is always present; decodeLotFact throws otherwise.
+        return record === null ? null : lotSnapshot(id, record as LineAwardRecord);
       });
     },
     loadBingoDeclarationBaseline(): BingoDeclarationBaseline {
