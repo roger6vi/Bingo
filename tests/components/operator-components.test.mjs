@@ -2717,3 +2717,187 @@ it('a phase change after the confirmation was sent never discards its valid repl
       .to.deep.equal([true, 'Bingo cantado', ['bingo:beginBingoSetup:', 'bingo:confirmBingo:b1:1']]);
   } finally { op.cleanup(); }
 });
+
+// Manual Bingo retry (H4a): a declared Bingo whose celebration failed, read at load on a fresh bingo_declared event.
+const failedBingo = (options = {}) => loadBingo({ ...options, replies: { getCurrentEvent: () => bingoDeclared, ...options.replies },
+  bingo: { read: async () => ({ ok: true, state: 'declared', award: awardFor('failed', 'f1') }), ...options.bingo } });
+const rotated = (status = 'pending') => ({ ok: true, state: 'declared', award: awardFor(status, 'f2') });
+
+it('a failed Bingo celebration offers Reintentar celebraci\u00f3n for its exact id; keyboard and double activation send it once', async () => {
+  await setViewport({ width: 1280, height: 720 });
+  const op = await failedBingo({ bingo: { read: async () => ({ ok: true, state: 'declared', award: awardFor('pending', 'f1') }),
+    retryBingoPresentation: async () => rotated() } });
+  try {
+    const { main } = op;
+    main.querySelector('#tab-bingo').click();
+    await settle();
+    // The celebration fails while the operator watches the Bingo tab.
+    op.bingo.push(awardFor('failed', 'f1'));
+    await settle();
+    const retry = main.querySelector('#bingo-retry');
+    const claim = main.querySelector('#claim-bingo');
+    const status = main.querySelector('#bingo-status');
+    await retry.updateComplete;
+    expect([retry.hidden, retry.disabled, retry.textContent.trim(), main.querySelector('#bingo-repeat'), main.querySelector('#line-retry').hidden])
+      .to.deep.equal([false, false, 'Reintentar celebraci\u00f3n', null, true]);
+    expect([claim.textContent, claim.disabled, status.tone]).to.deep.equal(['Bingo cantado', true, 'warning']);
+    expect(status.message).to.include('Pulsa \u00abReintentar celebraci\u00f3n\u00bb');
+    const [button, rail] = [retry, main.querySelector('bingo-side-rail')].map((element) => element.getBoundingClientRect());
+    expect([button.top >= rail.top, button.bottom <= rail.bottom]).to.deep.equal([true, true], 'the retry is in view at 1280\u00d7720');
+    expect(bingoWrites(op)).to.deep.equal([], 'nothing retries by itself');
+    retry.button.focus();
+    expect(retry.button.matches(':focus')).to.equal(true);
+    await sendKeys({ press: 'Enter' });
+    retry.button.click();
+    await settle();
+    expect(bingoWrites(op)).to.deep.equal(['bingo:retryBingoPresentation:f1']);
+    expect([retry.hidden, status.message.includes('todav\u00eda no muestra la celebraci\u00f3n del bingo')]).to.deep.equal([true, true]);
+    expect(main.querySelector('#draw-controls').manualDisabled).to.equal(true, 'a retry never unlocks drawing');
+  } finally { op.cleanup(); await setViewport({ width: 800, height: 600 }); }
+});
+
+it('pending, started, completed, interrupted and uncertain Bingo states offer no retry and a forced click sends nothing', async () => {
+  const states = ['pending', 'started', 'completed', 'interrupted']
+    .map((status) => [status, async () => ({ ok: true, state: 'declared', award: awardFor(status, 'f1') })]);
+  states.push(['uncertain', async () => ({ ok: false, code: 'storage_failure', message: 'Could not read the Bingo state. Try again.' })]);
+  for (const [name, read] of states) {
+    const op = await failedBingo({ bingo: { read, retryBingoPresentation: async () => rotated() } });
+    try {
+      const retry = op.main.querySelector('#bingo-retry');
+      expect([retry.hidden, retry.disabled, op.main.querySelector('#claim-bingo').textContent], name)
+        .to.deep.equal([true, true, name === 'uncertain' ? 'Comprobar bingo' : 'Bingo cantado']);
+      // Forced past the native lock: the click itself rechecks the status shown.
+      retry.disabled = false;
+      retry.click();
+      await settle();
+      expect(bingoWrites(op), name).to.deep.equal([]);
+    } finally { op.cleanup(); }
+  }
+});
+
+it('a forced Bingo retry sends nothing while any page gate is closed, and exactly once when the page is clear', async () => {
+  const held = () => new Promise(() => {});
+  const lists = (op) => op.main.querySelector('#reload-events').click();
+  const reload = (op) => op.main.querySelector('#draw-controls').reloadButton.click();
+  const listFailure = async () => ({ ok: false, message: 'Could not list the events.' });
+  const cases = {
+    clear: [{}, () => {}],
+    'initial list failed': [{ replies: { listEvents: listFailure } }, () => {}],
+    'list pending': [{}, (op) => { op.replies.listEvents = held; lists(op); }],
+    'list stale': [{}, (op) => { op.replies.listEvents = listFailure; lists(op); }],
+    'event read pending': [{}, (op) => { op.replies.getCurrentEvent = held; reload(op); }],
+    'event read failed': [{}, (op) => { op.replies.getCurrentEvent = () => ({ ok: false, message: 'Could not read the current event. Try again.' }); reload(op); }],
+    'another phase': [{}, (op) => { op.replies.getCurrentEvent = () => lineDeclared; reload(op); }],
+    'Line read pending': [{}, (op) => { op.line.read = held; lists(op); }],
+    'Line setup': [{}, (op) => { op.line.read = async () => ({ ok: true, state: 'setup', session: op.line.session }); lists(op); }],
+    'Line celebration running': [{ line: { read: declaredAs('started') } }, () => {}],
+    'Line unknown': [{}, (op) => { op.line.read = async () => ({ ok: false, message: 'Could not read the first-line state. Try again.' }); lists(op); }],
+    'Bingo read pending': [{}, (op) => { op.bingo.read = held; reload(op); }],
+  };
+  for (const [name, [options, close]] of Object.entries(cases)) {
+    const op = await failedBingo({ ...options, bingo: { retryBingoPresentation: async () => rotated() } });
+    try {
+      close(op);
+      await settle();
+      await settle();
+      const retry = op.main.querySelector('#bingo-retry');
+      expect(retry.disabled, name).to.equal(name !== 'clear');
+      retry.click();
+      // A host left disabled swallows the click itself; cleared, the page's own dispatch check must refuse it.
+      retry.disabled = false;
+      retry.click();
+      await settle();
+      expect(bingoWrites(op), name).to.deep.equal(name === 'clear' ? ['bingo:retryBingoPresentation:f1'] : []);
+    } finally { op.cleanup(); }
+  }
+});
+
+it('a Bingo retry reply converges through the controller: rotation, kept refusal, or uncertainty settled only by an explicit read', async () => {
+  const text = { pending: 'todav\u00eda no muestra la celebraci\u00f3n del bingo', started: 'est\u00e1 en marcha' };
+  const cases = {
+    rotated: [() => rotated(), 'pending'],
+    'returned id pushed first': [(op) => { op.bingo.push(awardFor('started', 'f2')); return rotated(); }, 'started'],
+    'compatible source pushed first': [(op) => { op.bingo.push(awardFor('failed', 'f1')); return rotated(); }, 'pending'],
+    'both, reversed': [(op) => { op.bingo.push(awardFor('started', 'f2')); op.bingo.push(awardFor('failed', 'f1')); return rotated(); }, 'started'],
+    'conflicting source': [(op) => { op.bingo.push(awardFor('completed', 'f1')); return rotated(); }, 'uncertain'],
+    refused: [() => ({ ok: false, code: 'presentation_busy', message: 'Wait for the celebration to finish first.' }), 'refused'],
+    lost: [() => { throw new Error('lost'); }, 'uncertain'],
+    storage: [() => ({ ok: false, code: 'storage_failure', message: 'Could not start the Bingo presentation. Try again.' }), 'uncertain'],
+    malformed: [() => ({ ok: true }), 'uncertain'],
+    'same id': [() => ({ ok: true, state: 'declared', award: awardFor('pending', 'f1') }), 'uncertain'],
+  };
+  for (const [name, [reply, shown]] of Object.entries(cases)) {
+    let op = null;
+    op = await failedBingo({ bingo: { retryBingoPresentation: async () => reply(op) } });
+    try {
+      const { main } = op;
+      const [retry, claim, status] = ['#bingo-retry', '#claim-bingo', '#bingo-status'].map((id) => main.querySelector(id));
+      const reads = op.reads.bingo;
+      retry.click();
+      await settle();
+      expect([bingoWrites(op), op.reads.bingo - reads], name).to.deep.equal([['bingo:retryBingoPresentation:f1'], 0]);
+      if (shown === 'refused') {
+        expect([status.message, retry.hidden, retry.disabled, claim.textContent], name)
+          .to.deep.equal(['Espera a que termine la celebraci\u00f3n.', false, false, 'Bingo cantado']);
+      } else if (shown !== 'uncertain') {
+        expect([status.message.includes(text[shown]), retry.hidden, claim.textContent], name).to.deep.equal([true, true, 'Bingo cantado']);
+      } else {
+        expect([claim.textContent, claim.disabled, retry.hidden, status.tone], name).to.deep.equal(['Comprobar bingo', false, true, 'error']);
+        // Only the explicit read settles it; a completed answer is shown, never replayed, retried or declared again.
+        op.bingo.read = async () => ({ ok: true, state: 'declared', award: awardFor('completed', 'f2') });
+        claim.click();
+        await settle();
+        expect([op.reads.bingo - reads, claim.textContent, status.message.includes('termin\u00f3'), retry.hidden, bingoWrites(op).length], name)
+          .to.deep.equal([1, 'Bingo cantado', true, true, 1]);
+      }
+    } finally { op.cleanup(); }
+  }
+});
+
+it('a Bingo retry belongs to the event shown at the click: away, back and a disposed page send or adopt nothing else', async () => {
+  const op = await failedBingo({ bingo: { retryBingoPresentation: async () => rotated() } });
+  try {
+    const { main } = op;
+    const retry = main.querySelector('#bingo-retry');
+    op.replies.listEvents = async () => listWith('b');
+    main.querySelector('#reload-events').click();
+    await settle();
+    await settle();
+    expect(retry.hidden, 'another event shows no retry').to.equal(true);
+    // The control left from the earlier event, forced, retries nothing on the new one.
+    retry.hidden = false;
+    retry.disabled = false;
+    retry.click();
+    await settle();
+    expect(bingoWrites(op)).to.deep.equal([]);
+    op.replies.listEvents = async () => listWith('a');
+    main.querySelector('#reload-events').click();
+    await settle();
+    await settle();
+    expect(retry.hidden, 'back on the event, its failed celebration is offered again').to.equal(false);
+    // The Line read sent before the switch back was orphaned by it, so the retry waits for an explicit read of it.
+    main.querySelector('#reload-events').click();
+    await settle();
+    await settle();
+    expect(retry.disabled).to.equal(false);
+    retry.click();
+    await settle();
+    expect(bingoWrites(op)).to.deep.equal(['bingo:retryBingoPresentation:f1']);
+  } finally { op.cleanup(); }
+  const held = deferred();
+  const late = await failedBingo({ bingo: { retryBingoPresentation: () => held.promise } });
+  try {
+    const retry = late.main.querySelector('#bingo-retry');
+    const status = late.main.querySelector('#bingo-status');
+    retry.click();
+    await settle();
+    const shown = status.message;
+    window.dispatchEvent(new Event('pagehide'));
+    held.resolve(rotated());
+    retry.disabled = false;
+    retry.click();
+    await settle();
+    expect([bingoWrites(late), status.message, late.bingo.log.filter((entry) => entry === 'unsubscribe').length])
+      .to.deep.equal([['bingo:retryBingoPresentation:f1'], shown, 1]);
+  } finally { late.cleanup(); }
+});
