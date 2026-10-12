@@ -103,12 +103,15 @@ export function createBingoBinding(api, { render, refresh }) {
   // but true sends nothing and answers a refusal, which keeps the shown award.
   let gate = null;
   const bridge = { ...api };
-  if (typeof api?.retryBingoPresentation === 'function') {
-    bridge.retryBingoPresentation = (id) => {
-      let ready = false;
-      try { ready = gate?.() === true; } catch { /* Not admitted. */ }
-      return ready ? api.retryBingoPresentation(id) : { ok: false, code: 'not_available', message: NOT_NOW };
-    };
+  // The retry (H4a) and the repeat (H4b) share the adapter: the page's check runs last, right before the send.
+  for (const name of ['retryBingoPresentation', 'repeatBingoPresentation']) {
+    if (typeof api?.[name] === 'function') {
+      bridge[name] = (id) => {
+        let ready = false;
+        try { ready = gate?.() === true; } catch { /* Not admitted. */ }
+        return ready ? api[name](id) : { ok: false, code: 'not_available', message: NOT_NOW };
+      };
+    }
   }
   const controller = createBingoController(bridge, { render }, { committed: () => committed(), recovered: refresh });
   // Only the live binding's current attempt may refresh, settle or paint: a disposal, event change or newer attempt,
@@ -137,6 +140,13 @@ export function createBingoBinding(api, { render, refresh }) {
       const outer = gate;
       gate = ready;
       try { return controller.retry(id); } finally { gate = outer; }
+    },
+    // The explicit full repeat of exactly `id` (H4b), admitted and gated exactly like the retry.
+    repeat(id, ready) {
+      if (disposed) return Promise.resolve();
+      const outer = gate;
+      gate = ready;
+      try { return controller.repeat(id); } finally { gate = outer; }
     },
     // The explicit read of an uncertain answer: never a begin, confirm or playback.
     read: () => controller.start(),

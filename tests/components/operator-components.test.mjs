@@ -2738,8 +2738,8 @@ it('a failed Bingo celebration offers Reintentar celebraci\u00f3n for its exact 
     const claim = main.querySelector('#claim-bingo');
     const status = main.querySelector('#bingo-status');
     await retry.updateComplete;
-    expect([retry.hidden, retry.disabled, retry.textContent.trim(), main.querySelector('#bingo-repeat'), main.querySelector('#line-retry').hidden])
-      .to.deep.equal([false, false, 'Reintentar celebraci\u00f3n', null, true]);
+    expect([retry.hidden, retry.disabled, retry.textContent.trim(), main.querySelector('#bingo-repeat')?.hidden, main.querySelector('#line-retry').hidden])
+      .to.deep.equal([false, false, 'Reintentar celebraci\u00f3n', true, true]);
     expect([claim.textContent, claim.disabled, status.tone]).to.deep.equal(['Bingo cantado', true, 'warning']);
     expect(status.message).to.include('Pulsa \u00abReintentar celebraci\u00f3n\u00bb');
     const [button, rail] = [retry, main.querySelector('bingo-side-rail')].map((element) => element.getBoundingClientRect());
@@ -2900,4 +2900,194 @@ it('a Bingo retry belongs to the event shown at the click: away, back and a disp
     expect([bingoWrites(late), status.message, late.bingo.log.filter((entry) => entry === 'unsubscribe').length])
       .to.deep.equal([['bingo:retryBingoPresentation:f1'], shown, 1]);
   } finally { late.cleanup(); }
+});
+
+// Manual Bingo repeat (H4b): an interrupted celebration is repeated in full, once, through the same admission, page
+// gates and controller convergence as the failed retry; completed never repeats or redeclares and failed stays retry-only.
+const interruptedBingo = (options = {}) => failedBingo({ ...options,
+  bingo: { read: async () => ({ ok: true, state: 'declared', award: awardFor('interrupted', 'i1') }), ...options.bingo } });
+const repeatReply = (status = 'pending') => ({ ok: true, state: 'declared', award: awardFor(status, 'i2') });
+const repeatState = (main) => {
+  const repeat = main.querySelector('#bingo-repeat');
+  return [repeat?.hidden ?? true, repeat?.disabled ?? true, repeat?.textContent.trim() ?? 'ausente'];
+};
+const forceRepeatClick = (main) => {
+  const repeat = main.querySelector('#bingo-repeat');
+  if (repeat) { repeat.disabled = false; repeat.click(); }
+};
+
+it('an interrupted Bingo celebration offers Repetir celebración completa for its exact id; keyboard and double activation send it once', async () => {
+  await setViewport({ width: 1280, height: 720 });
+  const op = await interruptedBingo({ bingo: { repeatBingoPresentation: async () => repeatReply() } });
+  try {
+    const { main } = op;
+    main.querySelector('#tab-bingo').click();
+    await settle();
+    // The celebration is interrupted while the operator watches the Bingo tab.
+    op.bingo.push(awardFor('interrupted', 'i1'));
+    await settle();
+    const repeat = main.querySelector('#bingo-repeat');
+    const claim = main.querySelector('#claim-bingo');
+    const status = main.querySelector('#bingo-status');
+    await repeat?.updateComplete;
+    expect([repeatState(main), main.querySelector('#bingo-retry').hidden, claim.textContent, claim.disabled, status.tone])
+      .to.deep.equal([[false, false, 'Repetir celebración completa'], true, 'Bingo cantado', true, 'warning']);
+    expect(status.message).to.include('Pulsa «Repetir celebración completa»');
+    const [button, rail] = [repeat, main.querySelector('bingo-side-rail')].map((element) => element.getBoundingClientRect());
+    expect([button.top >= rail.top, button.bottom <= rail.bottom]).to.deep.equal([true, true],
+      'the repeat is automatically in view at 1280×720 after a visible arrival');
+    expect(bingoWrites(op)).to.deep.equal([], 'nothing repeats by itself');
+    repeat.button.focus();
+    expect(repeat.button.matches(':focus')).to.equal(true);
+    await sendKeys({ press: 'Enter' });
+    repeat.button.click();
+    await settle();
+    expect(bingoWrites(op)).to.deep.equal(['bingo:repeatBingoPresentation:i1']);
+    expect([repeatState(main), claim.textContent, status.message.includes('todavía no muestra la celebración del bingo')])
+      .to.deep.equal([[true, true, 'Repetir celebraci\u00f3n completa'], 'Bingo cantado', true]);
+    expect(main.querySelector('#draw-controls').manualDisabled).to.equal(true, 'a repeat never unlocks drawing');
+  } finally { op.cleanup(); await setViewport({ width: 800, height: 600 }); }
+});
+
+it('completed, failed, pending, started and uncertain Bingo states offer no repeat; a forced control dispatches nothing', async () => {
+  const states = ['completed', 'failed', 'pending', 'started']
+    .map((status) => [status, async () => ({ ok: true, state: 'declared', award: awardFor(status, 'i1') })]);
+  states.push(['uncertain', async () => ({ ok: false, code: 'storage_failure', message: 'Could not read the Bingo state. Try again.' })]);
+  for (const [name, read] of states) {
+    const op = await interruptedBingo({ bingo: { read, repeatBingoPresentation: async () => repeatReply() } });
+    try {
+      const repeat = op.main.querySelector('#bingo-repeat');
+      expect([repeatState(op.main), op.main.querySelector('#claim-bingo').textContent], name)
+        .to.deep.equal([[true, true, 'Repetir celebraci\u00f3n completa'], name === 'uncertain' ? 'Comprobar bingo' : 'Bingo cantado']);
+      if (name === 'failed') {
+        expect(op.main.querySelector('#bingo-retry').hidden, name).to.equal(false, 'failed stays retry-only');
+      } else {
+        expect(op.main.querySelector('#bingo-retry').hidden, name).to.equal(true);
+      }
+      // Forced past the native lock: the click itself rechecks the status shown; a missing control sends nothing.
+      forceRepeatClick(op.main);
+      await settle();
+      expect(bingoWrites(op), name).to.deep.equal([]);
+      if (name === 'completed') {
+        // A completed celebration never repeats or redeclares, not even through the claim control.
+        const claim = op.main.querySelector('#claim-bingo');
+        claim.disabled = false;
+        claim.click();
+        await settle();
+        expect(bingoWrites(op), name).to.deep.equal([]);
+      }
+    } finally { op.cleanup(); }
+  }
+});
+
+it('a forced Bingo repeat sends nothing while any page gate is closed, and exactly once when the page is clear', async () => {
+  const held = () => new Promise(() => {});
+  const lists = (op) => op.main.querySelector('#reload-events').click();
+  const reload = (op) => op.main.querySelector('#draw-controls').reloadButton.click();
+  const listFailure = async () => ({ ok: false, message: 'Could not list the events.' });
+  const cases = {
+    clear: [{}, () => {}],
+    'initial list failed': [{ replies: { listEvents: listFailure } }, () => {}],
+    'list pending': [{}, (op) => { op.replies.listEvents = held; lists(op); }],
+    'list stale': [{}, (op) => { op.replies.listEvents = listFailure; lists(op); }],
+    'event read pending': [{}, (op) => { op.replies.getCurrentEvent = held; reload(op); }],
+    'event read failed': [{}, (op) => { op.replies.getCurrentEvent = () => ({ ok: false, message: 'Could not read the current event. Try again.' }); reload(op); }],
+    'another phase': [{}, (op) => { op.replies.getCurrentEvent = () => lineDeclared; reload(op); }],
+    'Line read pending': [{}, (op) => { op.line.read = held; lists(op); }],
+    'Line setup': [{}, (op) => { op.line.read = async () => ({ ok: true, state: 'setup', session: op.line.session }); lists(op); }],
+    'Line celebration running': [{ line: { read: declaredAs('started') } }, () => {}],
+    'Line unknown': [{}, (op) => { op.line.read = async () => ({ ok: false, message: 'Could not read the first-line state. Try again.' }); lists(op); }],
+    'Bingo read pending': [{}, (op) => { op.bingo.read = held; reload(op); }],
+  };
+  for (const [name, [options, close]] of Object.entries(cases)) {
+    const op = await interruptedBingo({ ...options, bingo: { repeatBingoPresentation: async () => repeatReply() } });
+    try {
+      close(op);
+      await settle();
+      await settle();
+      const repeat = op.main.querySelector('#bingo-repeat');
+      expect(repeat?.disabled ?? true, name).to.equal(name !== 'clear');
+      repeat?.click();
+      // A host left disabled swallows the click itself; cleared, the page's own dispatch check must refuse it.
+      forceRepeatClick(op.main);
+      await settle();
+      expect(bingoWrites(op), name).to.deep.equal(name === 'clear' ? ['bingo:repeatBingoPresentation:i1'] : []);
+    } finally { op.cleanup(); }
+  }
+});
+
+it('a Bingo repeat belongs to the event shown at the click, and an arrival in a hidden tab stays reachable after switching to it', async () => {
+  const op = await interruptedBingo({ bingo: { repeatBingoPresentation: async () => repeatReply() } });
+  try {
+    const { main } = op;
+    const repeat = main.querySelector('#bingo-repeat');
+    op.replies.listEvents = async () => listWith('b');
+    main.querySelector('#reload-events').click();
+    await settle();
+    await settle();
+    expect(repeat?.hidden ?? true, 'another event shows no repeat').to.equal(true);
+    // The control left from the earlier event, forced, repeats nothing on the new one.
+    forceRepeatClick(main);
+    await settle();
+    expect(bingoWrites(op)).to.deep.equal([]);
+    op.replies.listEvents = async () => listWith('a');
+    main.querySelector('#reload-events').click();
+    await settle();
+    await settle();
+    expect(repeat?.hidden ?? true, 'back on the event, its interrupted celebration is offered again').to.equal(false);
+    // The Line read sent before the switch back was orphaned by it, so the repeat waits for an explicit read of it.
+    main.querySelector('#reload-events').click();
+    await settle();
+    await settle();
+    repeat?.click();
+    await settle();
+    expect(bingoWrites(op)).to.deep.equal(['bingo:repeatBingoPresentation:i1']);
+  } finally { op.cleanup(); }
+  // The celebration is interrupted while another tab is shown: the offer must not be lost, only the paint geometry
+  // may differ. Focus distinguishes manually scrollable from inaccessible; the rail bounds say automatically visible.
+  await setViewport({ width: 1280, height: 720 });
+  const hidden = await interruptedBingo({ bingo: { repeatBingoPresentation: async () => repeatReply() } });
+  try {
+    const { main } = hidden;
+    hidden.bingo.push(awardFor('interrupted', 'i1'));
+    await settle();
+    main.querySelector('#tab-bingo').click();
+    await settle();
+    const repeat = main.querySelector('#bingo-repeat');
+    await repeat?.updateComplete;
+    expect([repeatState(main), bingoWrites(hidden)], 'a hidden-tab arrival still offers the repeat')
+      .to.deep.equal([[false, false, 'Repetir celebración completa'], []]);
+    repeat.button.focus();
+    expect(repeat.button.matches(':focus'), 'the repeat stays keyboard-reachable after a hidden-tab arrival').to.equal(true);
+    const [button, rail] = [repeat, main.querySelector('bingo-side-rail')].map((element) => element.getBoundingClientRect());
+    expect([button.top >= rail.top, button.bottom <= rail.bottom]).to.deep.equal([true, true],
+      'the repeat is automatically in view at 1280×720 after a hidden-tab arrival');
+    repeat.button.click();
+    await settle();
+    expect(bingoWrites(hidden)).to.deep.equal(['bingo:repeatBingoPresentation:i1']);
+  } finally { hidden.cleanup(); await setViewport({ width: 800, height: 600 }); }
+});
+
+it('a tab change after the page hid never scrolls a disposed celebration control', async () => {
+  const op = await interruptedBingo({ bingo: { repeatBingoPresentation: async () => repeatReply() } });
+  try {
+    const { main } = op;
+    await settle();
+    const repeat = main.querySelector('#bingo-repeat');
+    // The award is offered at load, while the Bingo panel is still hidden: the offer could not scroll itself yet.
+    expect(repeat.hidden).to.equal(false, 'the interrupted repeat is offered while the Bingo panel is hidden');
+    const scrolls = [];
+    repeat.scrollIntoView = () => { scrolls.push('repeat'); };
+    // Switching to the Bingo tab queues the tab-show scroll; the page hiding before that microtask must drop it.
+    main.querySelector('#tab-bingo').click();
+    window.dispatchEvent(new Event('pagehide'));
+    await settle();
+    expect(scrolls, 'no scroll after disposal').to.deep.equal([]);
+    // Later tab changes after the pagehide must not scroll the disposed page's controls either.
+    main.querySelector('#tab-events').click();
+    await settle();
+    main.querySelector('#tab-bingo').click();
+    await settle();
+    expect(scrolls, 'no scroll after the pagehide at all').to.deep.equal([]);
+  } finally { op.cleanup(); }
 });

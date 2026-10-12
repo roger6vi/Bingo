@@ -302,3 +302,78 @@ test('a gate closed, an event switch or a disposal from the pending render stops
     }
   }
 });
+
+// The manual repeat (H4b): the same binding surface and page admission as the retry, for the interrupted award only.
+// The controller already refuses every status but `interrupted`; the binding must expose it and gate it exactly like
+// the retry, and `manualAdmitted` must keep admitting only the award shown under the expected id, event and status.
+const interruptedAward = { ...bingoAward, presentation: { id: 'i1', status: 'interrupted', startedAt: 1000, deadlineAt: 5000 } };
+const repeatExpected = { eventId: 'e1', id: 'i1', status: 'interrupted' };
+const interruptedState = { mode: 'declared', pending: true, eventId: 'e1', session: null, award: interruptedAward,
+  legacy: { status: 'none' }, refresh: 'none' };
+
+test('manualAdmitted admits a repeat of exactly the interrupted award shown and never another id, event or status', () => {
+  assert.equal(manualAdmitted(clearPage, interruptedState, repeatExpected), true, 'interrupted: the action\'s own reservation');
+  const shown: Array<[string, unknown]> = [['award', null], ['award', { ...interruptedAward, eventId: 'e2' }],
+    ['award', { ...interruptedAward, presentation: { ...interruptedAward.presentation, id: 'i0' } }],
+    ['award', { ...interruptedAward, presentation: { ...interruptedAward.presentation, status: 'completed' } }],
+    ['award', { ...interruptedAward, presentation: { ...interruptedAward.presentation, status: 'failed' } }],
+    ['award', failedAward]];
+  for (const [key, value] of shown) {
+    assert.equal(manualAdmitted(clearPage, { ...interruptedState, [key]: value }, repeatExpected), false, `${key}: ${JSON.stringify(value)}`);
+  }
+  for (const other of [{ id: 'i0' }, { status: 'completed' }, { eventId: 'e2' }]) {
+    assert.equal(manualAdmitted(clearPage, interruptedState, { ...repeatExpected, ...other }), false, JSON.stringify(other));
+  }
+});
+
+// A binding over the e1 interrupted award, read and guarded; `onRender` then sees every later render.
+async function interruptedBinding(onRender: (state: any) => void = () => {}) {
+  const sent: string[] = [];
+  const renders: any[] = [];
+  let armed = false;
+  const api = { onBingoPresentation: () => () => {}, readBingoSetup: async () => ({ ok: true, state: 'declared', award: interruptedAward }),
+    repeatBingoPresentation: async (id: string) => {
+      sent.push(id);
+      return { ok: true, state: 'declared', award: { ...interruptedAward,
+        presentation: { id: 'i2', status: 'pending', startedAt: null, deadlineAt: null } } };
+    } };
+  const binding = createBingoBinding(api, { render: (state: any) => { renders.push(state); if (armed) onRender(state); },
+    refresh: async () => true });
+  binding.sync('e1', 'bingo_declared', clearGuards);
+  await binding.reread();
+  assert.equal(renders.at(-1).award.presentation.status, 'interrupted');
+  armed = true;
+  return { binding, sent, renders };
+}
+
+test('the page check runs after the pending render, admits its own reservation and sends the exact repeat id once', async () => {
+  const seen: boolean[] = [];
+  const f = await interruptedBinding((state) => { seen.push(state.pending); });
+  let checks = 0;
+  await (f.binding.repeat?.('i1', () => { checks++; return manualAdmitted(clearPage, f.renders.at(-1), repeatExpected); }) ?? Promise.resolve());
+  assert.deepEqual([seen[0], checks, f.sent], [true, 1, ['i1']]);
+  assert.deepEqual([f.renders.at(-1).mode, f.renders.at(-1).award.presentation.id], ['declared', 'i2']);
+});
+
+test('a gate closed, an event switch or a disposal from the pending render stops the repeat bridge; a reentrant repeat joins', async () => {
+  for (const change of ['gate', 'switch', 'dispose', 'reentry', 'no check', 'stale id']) {
+    let open = true;
+    let armed = true;
+    const f = await interruptedBinding((state) => {
+      if (!armed || !state.pending) return;
+      armed = false;
+      if (change === 'gate') open = false;
+      else if (change === 'switch') f.binding.sync('e2', 'bingo_declared', clearGuards);
+      else if (change === 'dispose') f.binding.dispose();
+      else if (change === 'reentry') void f.binding.repeat?.('i1', () => false);
+    });
+    const ready = change === 'no check' ? undefined : () => open;
+    await (f.binding.repeat?.(change === 'stale id' ? 'i0' : 'i1', ready as any) ?? Promise.resolve());
+    assert.deepEqual(f.sent, change === 'reentry' ? ['i1'] : [], change);
+    if (change === 'gate' || change === 'no check') {
+      const last = f.renders.at(-1);
+      assert.deepEqual([last.mode, last.award.presentation.id, last.error], ['declared', 'i1',
+        'The Bingo presentation cannot be started now.'], change);
+    }
+  }
+});
