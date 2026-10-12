@@ -108,3 +108,90 @@ test('legacy recovery copy names the action, keeps numbers and prizes, and never
   assert.doesNotMatch(Object.values(text).join(' '), /línea declarada|Línea declarada|ganador/);
   for (const key of ['available', 'recovered', 'refreshFailed']) assert.ok(text[key], key);
 });
+
+// Bingo copy (BG-05H1): distinct from the Line copy, never unlocks drawing and keeps a tied lot visibly pending.
+const bingoSources = ['src/bingo-ipc.ts', 'src/bingo-controller.mjs'];
+
+test('every English Bingo message from main and the controller has a distinct Spanish translation', () => {
+  const english = new Set<string>(['Another award setup is already open. Close it first.']);
+  for (const file of bingoSources) for (const [, text] of source(file).matchAll(/'([A-Z][^']*[.)])'/g)) english.add(text);
+  assert.ok(english.size >= 20, `found ${english.size} messages`);
+  for (const text of english) {
+    assert.notEqual(copy.operatorMessage(text), UNKNOWN_ERROR_ES, text);
+    assert.notEqual(copy.operatorMessage(text), text);
+    assert.equal(copy.bingoMessage(text), copy.bingoMessage(copy.bingoMessage(text)), `${text} stays translated`);
+    assert.doesNotMatch(copy.bingoMessage(text), /línea/i, `${text} does not send the operator to the line`);
+  }
+  assert.match(copy.bingoMessage('Could not confirm the Bingo declaration. Keep this setup open and check the state later.'),
+    /No lo declares de nuevo/);
+  assert.match(copy.bingoMessage('Could not confirm legacy Bingo recovery. Check the state later.'), /«Releer comprobación de bingo»/);
+});
+
+test('bingoMessage keeps the shared table, overrides only line-specific wording and falls back like operatorMessage', () => {
+  assert.equal(copy.bingoMessage('Wait for Tongo to finish, then try again.'), operatorMessage('Wait for Tongo to finish, then try again.'));
+  assert.match(operatorMessage('Could not read the clock. Try again.') as string, /Comprobar línea/, 'Line copy unchanged');
+  assert.match(copy.bingoMessage('Could not read the clock. Try again.'), /reloj[\s\S]*bingo/);
+  assert.equal(copy.bingoMessage('Write failed: ENOENT'), UNKNOWN_ERROR_ES);
+  assert.equal(copy.bingoMessage(null), null);
+  assert.equal(copy.bingoMessage(''), '');
+});
+
+test('the Bingo prize summary is distinct from the line one and covers money, lot, both and neither', () => {
+  assert.equal(copy.bingoPrizeSummary({ amount: 50, lot: 'Jamón' }), 'Premio de bingo configurado: 50 € + lote «Jamón».');
+  assert.equal(copy.bingoPrizeSummary({ amount: 1500, lot: '' }), 'Premio de bingo configurado: 1.500 €.');
+  assert.equal(copy.bingoPrizeSummary({ amount: 0, lot: 'Cesta' }), 'Premio de bingo configurado: lote «Cesta».');
+  assert.equal(copy.bingoPrizeSummary({ amount: 0, lot: '' }), 'Premio de bingo configurado: sin premio.');
+  assert.equal(copy.linePrizeSummary({ amount: 50, lot: 'Jamón' }), 'Premio de línea configurado: 50 € + lote «Jamón».');
+});
+
+const bingoAward = { winnerCount: 3, totalCents: 1000, shareCents: 333, remainderCents: 1, lot: 'Jamón', lotResolution: 'pending' };
+const bingoFor = (status: unknown, award: Record<string, unknown> = bingoAward) =>
+  copy.bingoAwardSummary({ award, presentation: { id: 'p', status } });
+
+test('each Bingo presentation status is truthful, keeps money and lot, and never unlocks drawing or finishes', () => {
+  for (const status of ['pending', 'started', 'failed', 'interrupted', 'completed']) {
+    const text = bingoFor(status);
+    assert.match(text, /^Bingo cantado con 3 ganadores\./, status);
+    assert.match(text, /Premio: 10,00 €, 3,33 € cada uno\. Sobra 1 céntimo sin asignar\./, status);
+    assert.match(text, /Lote «Jamón»: pendiente de resolver entre los ganadores\./, status);
+    assert.match(text, /no se cantan más números/, status);
+    assert.doesNotMatch(text, /seguir cantando|ya puedes|desbloque|partida terminada|termina sola|línea/i, status);
+  }
+  assert.match(bingoFor('pending'), /todavía no muestra la celebración del bingo/);
+  assert.match(bingoFor('started'), /en marcha/);
+  assert.match(bingoFor('failed'), /no pudo mostrarse[\s\S]*«Reintentar celebración»/);
+  assert.match(bingoFor('interrupted'), /interrumpida[\s\S]*«Repetir celebración completa»/);
+  assert.match(bingoFor('completed'), /celebración pública del bingo terminó[\s\S]*El lote sigue pendiente de resolver\./);
+  for (const status of ['pending', 'started', 'failed', 'interrupted', 'mystery', undefined]) {
+    assert.doesNotMatch(bingoFor(status), /terminó/, `${String(status)} never claims completion`);
+  }
+  assert.equal(bingoFor('mystery'), bingoFor('pending'), 'unknown status falls back to not shown yet');
+});
+
+test('Bingo award money and lot variants: one winner, no remainder, plural remainder, resolved, no prize', () => {
+  const one = bingoFor('completed', { winnerCount: 1, totalCents: 5000, shareCents: 5000, remainderCents: 0, lot: '', lotResolution: 'not_required' });
+  assert.match(one, /^Bingo cantado con 1 ganador\. Premio: 50,00 €\. La celebración/);
+  assert.doesNotMatch(one, /cada uno|Sobra|Lote|pendiente/);
+  const two = bingoFor('started', { winnerCount: 4, totalCents: 1002, shareCents: 250, remainderCents: 2, lot: 'Cesta', lotResolution: 'resolved' });
+  assert.match(two, /Premio: 10,02 €, 2,50 € cada uno\. Sobran 2 céntimos sin asignar\. Lote «Cesta»\./);
+  assert.doesNotMatch(bingoFor('completed', { ...bingoAward, lotResolution: 'resolved' }), /pendiente/);
+  const none = bingoFor('completed', { winnerCount: 2, totalCents: 0, shareCents: 0, remainderCents: 0, lot: '', lotResolution: 'not_required' });
+  assert.doesNotMatch(none, /Premio|€|Lote/);
+  assert.match(copy.BINGO_REFRESH_FAILED_ES, /no se pudo releer el evento[\s\S]*«Recargar evento»/);
+  assert.doesNotMatch(copy.BINGO_REFRESH_FAILED_ES, /seguir cantando/);
+});
+
+test('legacy Bingo recovery copy names its actions, returns to Línea cantada and never claims a Bingo or drawing', () => {
+  const text = copy.BINGO_LEGACY_ES;
+  assert.equal(text.action, 'Cancelar comprobación de bingo');
+  assert.equal(text.reread, 'Releer comprobación de bingo');
+  assert.equal(text.retryRefresh, 'Reintentar lectura del evento');
+  assert.equal(text.back, 'Volver');
+  assert.match(text.confirm, /«Línea cantada»/);
+  assert.match(text.dialog, /línea declarada[\s\S]*números cantados[\s\S]*premios[\s\S]*no se declarará ningún bingo/);
+  for (const key of ['available', 'uncertain', 'recovered', 'refreshPending', 'refreshFailed']) assert.ok(text[key], key);
+  assert.match(text.uncertain, /«Releer comprobación de bingo»/);
+  assert.match(text.refreshFailed, /«Reintentar lectura del evento»/);
+  assert.doesNotMatch(Object.values(text).join(' '), /Bingo cantado|bingo declarado|ganador|cantar números|seguir cantando/i);
+  assert.notDeepEqual(Object.values(text), Object.values(copy.LEGACY_CHECK_ES));
+});

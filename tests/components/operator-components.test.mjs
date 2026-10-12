@@ -368,6 +368,46 @@ it('isolated dialog supports label, Escape/cancel/confirm and focus restoration'
   expect(document.activeElement).to.equal(opener);
 });
 
+it('a disabled dialog action neither closes nor signals; cancel, Escape and focus restoration still work', async () => {
+  const opener = await fixture(html`<button>Open dialog</button>`);
+  const dialog = await fixture(html`<bingo-dialog label="Declarar el bingo"></bingo-dialog>`);
+  const signals = [];
+  dialog.addEventListener('confirm', () => signals.push('confirm'));
+  dialog.addEventListener('dismiss', () => signals.push('dismiss'));
+  const actions = (disabled) => [{ action: 'cancel', label: 'Volver', signal: 'dismiss' },
+    { action: 'confirm', label: 'Declarar bingo', signal: 'confirm', disabled }];
+  dialog.actions = actions(true);
+  opener.focus();
+  await dialog.show();
+  const native = dialog.shadowRoot.querySelector('dialog');
+  const confirm = dialog.shadowRoot.querySelector('[data-action="confirm"]');
+  await confirm.updateComplete;
+  // Programmatic host click, native inner click and a forced composed click from the inner button.
+  confirm.click();
+  confirm.button.click();
+  confirm.button.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+  expect([native.open, signals]).to.deep.equal([true, []]);
+  expect([confirm.disabled, confirm.button.disabled]).to.deep.equal([true, true]);
+  confirm.button.focus();
+  expect(confirm.shadowRoot.activeElement).to.equal(null, 'a disabled action cannot take keyboard focus');
+  await expect(dialog).to.be.accessible();
+  // The explicit cancel action still works from the keyboard and restores the opener's focus.
+  dialog.shadowRoot.querySelector('[data-action="cancel"]').button.focus();
+  await sendKeys({ press: 'Space' });
+  expect([native.open, signals, document.activeElement === opener]).to.deep.equal([false, ['dismiss'], true]);
+  await dialog.show();
+  await sendKeys({ press: 'Escape' });
+  expect([native.open, signals, document.activeElement === opener]).to.deep.equal([false, ['dismiss', 'dismiss'], true]);
+  // Re-enabled, the same action confirms from the keyboard.
+  dialog.actions = actions(false);
+  await dialog.show();
+  await confirm.updateComplete;
+  expect(confirm.disabled).to.equal(false);
+  confirm.button.focus();
+  await sendKeys({ press: 'Enter' });
+  expect([native.open, signals, document.activeElement === opener]).to.deep.equal([false, ['dismiss', 'dismiss', 'confirm'], true]);
+});
+
 it('dialog restores exact nested shadow button focus after cancel and confirm', async () => {
   const controls = await fixture(html`<bingo-draw-controls></bingo-draw-controls>`);
   controls.manualDisabled = false;

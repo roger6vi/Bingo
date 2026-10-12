@@ -83,6 +83,37 @@ export const MESSAGES_ES = Object.freeze({
     'No se pudo conectar con la comprobación de línea. Pulsa «Releer comprobación de línea» para leer el estado; no se repite sola.',
   'Invalid line check update. Read it again before trying.':
     'Respuesta de la comprobación de línea no válida. Pulsa «Releer comprobación de línea» para leer el estado.',
+  // Reciprocal Line guard while a Bingo setup is open (src/line-ipc.ts)
+  'Another award setup is already open. Close it first.': 'Hay otra declaración de premio abierta. Ciérrala primero.',
+  // Bingo IPC (src/bingo-ipc.ts)
+  'Invalid Bingo request.': 'Solicitud de bingo no válida. Vuelve a leer el estado del bingo.',
+  'This Bingo setup is no longer current. Reopen it.':
+    'Esta declaración de bingo ya no está vigente. Vuelve a leer el estado del bingo antes de seguir.',
+  'Could not read the Bingo state. Try again.': 'No se pudo leer el estado del bingo. Inténtalo de nuevo.',
+  'Could not confirm legacy Bingo recovery. Check the state later.':
+    'No se pudo confirmar el estado de la comprobación de bingo. Pulsa «Releer comprobación de bingo» para leerlo; no se repite sola.',
+  'Could not confirm the Bingo declaration. Keep this setup open and check the state later.':
+    'No se pudo confirmar el bingo. No lo declares de nuevo: deja la declaración abierta y vuelve a leer el estado del bingo.',
+  'A Bingo operation is already in progress.': 'Ya hay una operación de bingo en curso. Espera y vuelve a leer el estado del bingo.',
+  'Wait for the celebration to finish first.': 'Espera a que termine la celebración.',
+  'A Bingo setup is already open. Reopen it to continue.': 'Ya hay una declaración de bingo abierta. Ábrela de nuevo para continuar.',
+  'A Bingo setup is already open. Close it first.': 'Ya hay una declaración de bingo abierta. Ciérrala primero.',
+  'Another setup is open. Close it first.': 'Hay otra declaración abierta. Ciérrala primero.',
+  'The Bingo cannot be declared now.': 'Ahora no se puede declarar el bingo. Comprueba el estado del evento.',
+  'There is no legacy Bingo check to recover.': 'No hay ninguna comprobación de bingo que cancelar.',
+  'The Bingo presentation cannot be started now.': 'No se puede iniciar la celebración del bingo ahora.',
+  'Could not start the Bingo presentation. Try again.':
+    'No se pudo confirmar el inicio de la celebración del bingo. Vuelve a leer el estado del bingo; no se repite sola.',
+  // Bingo controller (src/bingo-controller.mjs)
+  'Could not reach the Bingo state. Check it again.':
+    'No se pudo conectar con el bingo. Vuelve a leer el estado del bingo; no lo declares de nuevo.',
+  'Invalid Bingo update. Check the state again.':
+    'Respuesta del bingo no válida. Vuelve a leer el estado del bingo; no lo declares de nuevo.',
+  'Bingo is unavailable in this window. Reload the operator.':
+    'El bingo no está disponible en esta ventana. Recarga la ventana del operador.',
+  'No active event. Choose an event before checking Bingo.': 'No hay ningún evento activo. Elige un evento antes de comprobar el bingo.',
+  'Choose how many players share the Bingo (a whole number of at least 1).':
+    'Escribe cuántos jugadores comparten el bingo: un número entero, 1 o más.',
   // Renderer controllers
   'Could not connect to the event. Reload and try again.': 'No se pudo conectar con el evento. Recarga e inténtalo de nuevo.',
   'Invalid event update. Reload and try again.': 'Actualización del evento no válida. Recarga e inténtalo de nuevo.',
@@ -98,12 +129,14 @@ export const MESSAGES_ES = Object.freeze({
 const euroCents = (cents) => `${formatEuros(Math.trunc(cents / 100)).slice(0, -2)},${String(cents % 100).padStart(2, '0')} €`;
 
 // The frozen prize a declaration will use: money, an indivisible lot, both or neither.
-export function linePrizeSummary({ amount, lot }) {
+const prizeText = ({ amount, lot }) => {
   const parts = [];
   if (amount > 0) parts.push(formatEuros(amount));
   if (lot !== '') parts.push(`lote «${lot}»`);
-  return `Premio de línea configurado: ${parts.length === 0 ? 'sin premio' : parts.join(' + ')}.`;
-}
+  return parts.length === 0 ? 'sin premio' : parts.join(' + ');
+};
+export const linePrizeSummary = (prize) => `Premio de línea configurado: ${prizeText(prize)}.`;
+export const bingoPrizeSummary = (prize) => `Premio de bingo configurado: ${prizeText(prize)}.`;
 
 export const isLineInterrupted = (value) => value?.presentation?.status === 'interrupted';
 
@@ -120,19 +153,47 @@ const PRESENTATION_ES = Object.freeze({
 export const LINE_REFRESH_FAILED_ES = 'La celebración terminó, pero no se pudo releer el evento. Pulsa «Recargar evento» antes de seguir cantando.';
 
 // What the committed award says plus what the public celebration did; the lot stays separate from the screen.
-export function lineAwardSummary({ award, presentation }) {
-  const { winnerCount, totalCents, shareCents, remainderCents, lot, lotResolution } = award;
-  const parts = [`Línea declarada con ${winnerCount} ganador${winnerCount === 1 ? '' : 'es'}.`];
+// The winners, money split and lot of a committed award, shared by the Line and Bingo summaries.
+const awardParts = (heading, { winnerCount, totalCents, shareCents, remainderCents, lot, lotResolution }) => {
+  const parts = [`${heading} con ${winnerCount} ganador${winnerCount === 1 ? '' : 'es'}.`];
   if (totalCents > 0) {
     parts.push(winnerCount === 1 ? `Premio: ${euroCents(totalCents)}.` : `Premio: ${euroCents(totalCents)}, ${euroCents(shareCents)} cada uno.`);
     if (remainderCents > 0) parts.push(remainderCents === 1 ? 'Sobra 1 céntimo sin asignar.' : `Sobran ${remainderCents} céntimos sin asignar.`);
   }
   if (lot !== '') parts.push(lotResolution === 'pending' ? `Lote «${lot}»: pendiente de resolver entre los ganadores.` : `Lote «${lot}».`);
+  return parts;
+};
+
+// Unknown statuses read as not shown yet; a completed run never resolves a pending lot.
+const awardSummary = (heading, statuses, { award, presentation }) => {
+  const parts = awardParts(heading, award);
   const status = presentation?.status;
-  parts.push(PRESENTATION_ES[Object.hasOwn(PRESENTATION_ES, status) ? status : 'pending']);
-  if (status === 'completed' && lotResolution === 'pending' && lot !== '') parts.push('El lote sigue pendiente de resolver.');
+  parts.push(statuses[Object.hasOwn(statuses, status) ? status : 'pending']);
+  if (status === 'completed' && award.lotResolution === 'pending' && award.lot !== '') parts.push('El lote sigue pendiente de resolver.');
+  return parts;
+};
+
+export function lineAwardSummary(value) {
+  return awardSummary('Línea declarada', PRESENTATION_ES, value).join(' ');
+}
+
+// The Bingo celebration closes play: no status, completed included, unlocks drawing or finishes the game.
+const BINGO_PRESENTATION_ES = Object.freeze({
+  pending: 'La pantalla pública todavía no muestra la celebración del bingo.',
+  started: 'La celebración pública del bingo está en marcha (unos 4 segundos).',
+  failed: 'La celebración pública del bingo no pudo mostrarse y no se ha completado. Pulsa «Reintentar celebración» para intentarlo de nuevo.',
+  interrupted: 'La celebración pública del bingo quedó interrumpida al reiniciar la aplicación: no se ha completado ni se repite sola. Pulsa «Repetir celebración completa» para mostrarla de nuevo manualmente.',
+  completed: 'La celebración pública del bingo terminó.',
+});
+
+export function bingoAwardSummary(value) {
+  const parts = awardSummary('Bingo cantado', BINGO_PRESENTATION_ES, value);
+  parts.push('La partida sigue en «Bingo cantado»: no se cantan más números.');
   return parts.join(' ');
 }
+
+// Shown when a declared Bingo could not be read again; the declaration itself is not repeated.
+export const BINGO_REFRESH_FAILED_ES = 'El bingo está cantado, pero no se pudo releer el evento. Pulsa «Recargar evento» para ver el estado.';
 
 // Recovery of a legacy checking_line: cancelling returns to drawing without declaring any line or award.
 export const LEGACY_CHECK_ES = Object.freeze({
@@ -147,6 +208,21 @@ export const LEGACY_CHECK_ES = Object.freeze({
   refreshFailed: 'Comprobación de línea cancelada, pero no se pudo releer el evento. Pulsa «Recargar evento» antes de seguir cantando.',
 });
 
+// Recovery of a legacy checking_bingo: cancelling returns to «Línea cantada» without declaring any Bingo.
+export const BINGO_LEGACY_ES = Object.freeze({
+  action: 'Cancelar comprobación de bingo',
+  reread: 'Releer comprobación de bingo',
+  retryRefresh: 'Reintentar lectura del evento',
+  back: 'Volver',
+  confirm: 'Volver a «Línea cantada»',
+  dialog: 'Se conservarán la línea declarada, los números cantados, su orden y los premios. La partida volverá a «Línea cantada» y no se declarará ningún bingo.',
+  available: 'La partida quedó en una comprobación de bingo antigua. Puedes cancelarla para volver a «Línea cantada».',
+  uncertain: 'No se pudo confirmar el estado de la comprobación de bingo. Pulsa «Releer comprobación de bingo»; no se repite sola.',
+  recovered: 'Comprobación de bingo cancelada. La partida vuelve a «Línea cantada».',
+  refreshPending: 'Comprobación de bingo cancelada. Leyendo de nuevo el evento…',
+  refreshFailed: 'Comprobación de bingo cancelada, pero no se pudo releer el evento. Pulsa «Reintentar lectura del evento».',
+});
+
 export const UNKNOWN_ERROR_ES = 'Se produjo un error. Recarga e inténtalo de nuevo.';
 
 // Messages that are already Spanish pass through unchanged.
@@ -156,6 +232,17 @@ export function operatorMessage(message) {
   if (message === null || message === undefined || message === '') return message ?? null;
   if (Object.hasOwn(MESSAGES_ES, message)) return MESSAGES_ES[message];
   return SPANISH.has(message) ? message : UNKNOWN_ERROR_ES;
+}
+
+// Bingo answers share some English with the Line; only those whose Spanish names a Line action differ here.
+const BINGO_MESSAGES_ES = Object.freeze({
+  'Could not read the clock. Try again.': 'No se pudo leer el reloj del equipo. Vuelve a leer el estado del bingo antes de reintentar.',
+});
+const BINGO_SPANISH = new Set(Object.values(BINGO_MESSAGES_ES));
+
+export function bingoMessage(message) {
+  if (typeof message === 'string' && Object.hasOwn(BINGO_MESSAGES_ES, message)) return BINGO_MESSAGES_ES[message];
+  return BINGO_SPANISH.has(message) ? message : operatorMessage(message);
 }
 
 export const PHASE_LABELS_ES = Object.freeze({
