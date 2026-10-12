@@ -22,7 +22,7 @@ import { createOperatorController, createLineController } from './operator-contr
 import { createManualDrawHandler } from './manual-draw.mjs';
 import { createEventsController, today } from './events-controller.mjs';
 import { applyTheme, createThemeController, DEFAULT_THEME, revealAfter } from './theme-controller.mjs';
-import { operatorMessage, lineAwardSummary, linePrizeSummary, LEGACY_CHECK_ES, LINE_REFRESH_FAILED_ES, PHASE_LABELS_ES, THEME_NAMES_ES,
+import { operatorMessage, lineAwardSummary, linePrizeSummary, LEGACY_CHECK_ES, LINE_REFRESH_FAILED_ES, BINGO_LEGACY_ES, PHASE_LABELS_ES, THEME_NAMES_ES,
   bingoAwardSummary, bingoMessage, bingoPrizeSummary, BINGO_REFRESH_FAILED_ES } from './operator-copy.mjs';
 import { bindSettings } from './settings-ui.mjs';
 import { bindCueControls } from './cue-ui.mjs';
@@ -179,8 +179,15 @@ function lineClaimDisabled() {
 const claimBingo = required('claim-bingo', BingoButton);
 const bingoRetry = required('bingo-retry', BingoButton);
 const bingoRepeat = required('bingo-repeat', BingoButton);
+const bingoRecover = required('bingo-recover', BingoButton);
+const bingoRefresh = required('bingo-refresh', BingoButton);
 const bingoStatus = required('bingo-status', HTMLElement);
 const bingoDialog = required('bingo-dialog', HTMLElement);
+const bingoLegacyDialog = required('bingo-legacy-dialog', HTMLElement);
+bingoLegacyDialog.actions = [{ action: 'cancel', label: BINGO_LEGACY_ES.back, signal: 'dismiss' },
+  { action: 'confirm', label: BINGO_LEGACY_ES.confirm, signal: 'confirm' }];
+bingoLegacyDialog.textContent = BINGO_LEGACY_ES.dialog;
+let bingoLegacyDialogShown = false;
 const bingoWinners = required('bingo-winners', BingoTextField);
 const bingoPrize = required('bingo-prize', HTMLElement);
 const BINGO_LABELS = { setup: 'Reanudar bingo', uncertain: 'Comprobar bingo', declared: 'Bingo cantado' };
@@ -203,6 +210,12 @@ const bingoClear = () => pageClear(bingoPage());
 // A retry needs all of that for exactly the failed award shown under `expected`, and no Bingo request of its own yet;
 // the repeat (H4b) reuses the same admission for the interrupted award.
 const bingoRetryReady = (expected) => manualAdmitted(bingoPage(), bingoState, expected);
+// Dispatch-time gate for the Bingo cancellation: every lock the page knows, for exactly the check held for the active
+// event, mirroring the Line's legacyActionable. The controller revalidates the identity again when it dispatches.
+const bingoLegacyActionable = () => bingoState.legacy?.status === 'available' &&
+  bingoState.legacy.check.eventId === activeEventId && activeEventId !== null && legacyPhase() === 'checking_bingo' &&
+  !lineMismatch() && !(selecting || activating || tongoBusy || eventsPending || bingoState.pending || gameState.pending ||
+  bingoState.mode !== 'idle' || lineBlocked());
 const shownFailure = () => ({ eventId: activeEventId, id: bingoState.award?.presentation?.id, status: 'failed' });
 const shownRepeat = () => ({ eventId: activeEventId, id: bingoState.award?.presentation?.id, status: 'interrupted' });
 // An uncertain answer of the active event is only read again, in any phase, with no selection, list read or Tongo.
@@ -241,16 +254,37 @@ function paintBingo() {
     button.hidden = !(mine && presentation === status);
     button.disabled = button.hidden || state.pending || !bingoRetryReady(expected());
     // Like the status, a newly offered control must not stay clipped at the bottom of the rail.
-    if (!button.hidden && !offered[index]) void button.updateComplete.then(() => button.scrollIntoView({ block: 'nearest' }));
+    if (!button.hidden && !offered[index]) void button.updateComplete.then(() => { if (!pageHid) button.scrollIntoView({ block: 'nearest' }); });
   });
   const before = bingoStatus.hidden ? '' : bingoStatus.message;
-  bingoStatus.message = !mine ? '' : state.pending ? 'Comprobando el bingo' : bingoMessage(state.error) ?? (state.mode === 'declared' && state.award
+  // The Bingo legacy recovery mirrors the Line's: an available check is confirmed, an uncertain one re-read, and the
+  // recovery's own event refresh is retried only while it is failed.
+  const legacy = state.mode === 'idle' ? state.legacy?.status : 'none';
+  bingoRecover.hidden = !(mine && (legacy === 'available' || legacy === 'uncertain'));
+  bingoRecover.textContent = legacy === 'uncertain' ? BINGO_LEGACY_ES.reread : BINGO_LEGACY_ES.action;
+  bingoRecover.disabled = bingoRecover.hidden || (legacy === 'available' ? !bingoLegacyActionable()
+    : Boolean(selecting || activating || tongoBusy || eventsPending || state.pending));
+  bingoRefresh.hidden = !(mine && state.mode === 'idle' && state.refresh === 'failed');
+  bingoRefresh.disabled = bingoRefresh.hidden || Boolean(state.pending);
+  // A confirmation that stopped being valid closes without writing anything.
+  if (bingoLegacyDialogShown && !bingoLegacyActionable()) {
+    bingoLegacyDialogShown = false;
+    bingoLegacyDialog.shadowRoot?.querySelector('dialog')?.close();
+  }
+  bingoStatus.message = !mine ? '' : state.pending ? 'Comprobando el bingo' : bingoMessage(state.error) ??
+    (legacy === 'available' ? BINGO_LEGACY_ES.available
+      : legacy === 'uncertain' ? BINGO_LEGACY_ES.uncertain
+        : state.mode === 'idle' && state.refresh === 'failed' ? BINGO_LEGACY_ES.refreshFailed
+          : legacy === 'recovered' && state.refresh === 'pending' ? BINGO_LEGACY_ES.refreshPending
+            : legacy === 'recovered' ? BINGO_LEGACY_ES.recovered
+              : state.mode === 'declared' && state.award
     ? `${bingoAwardSummary(state.award)}${owed === 'failed' ? ` ${BINGO_REFRESH_FAILED_ES}` : ''}`
     : state.mode === 'setup' && bingoModal === null ? 'Hay una declaración de bingo abierta. Pulsa «Reanudar bingo» para continuar o cancelarla.' : '');
-  bingoStatus.tone = state.error ? 'error' : owed === 'failed' || presentation === 'failed' || presentation === 'interrupted' ? 'warning' : 'info';
+  bingoStatus.tone = state.error || legacy === 'uncertain' ? 'error' : legacy === 'available' || legacy === 'recovered' ||
+    owed === 'failed' || presentation === 'failed' || presentation === 'interrupted' ? 'warning' : 'info';
   bingoStatus.hidden = bingoStatus.message === '';
   // Like the Line's, a new Bingo message must not stay clipped at the bottom of the rail.
-  if (!bingoStatus.hidden && bingoStatus.message !== before) void bingoStatus.updateComplete.then(() => bingoStatus.scrollIntoView({ block: 'nearest' }));
+  if (!bingoStatus.hidden && bingoStatus.message !== before) void bingoStatus.updateComplete.then(() => { if (!pageHid) bingoStatus.scrollIntoView({ block: 'nearest' }); });
   const disabled = parseWinners(bingoWinners.value) === null || !bingoConfirmable(bingoModal);
   if (bingoDialog.actions[1].disabled !== disabled) bingoDialog.actions = bingoActions(disabled);
 }
@@ -342,10 +376,11 @@ const controller = createOperatorController(desktop, {
     const reload = () => {
       reloadEvent();
       void rereadLine();
-      void bingo.reread();
+      const bingoRead = bingo.reread();
       line.retryRefresh();
       bingo.retryRefresh();
       void lotController.resync();
+      void checkBingoLegacy(bingoRead);
     };
     // The board only requests a call; it shows the number called once the acknowledged snapshot arrives.
     board.addEventListener('number-select', (event) => {
@@ -398,6 +433,13 @@ void controller.start();
 const refreshFacts = createFactRefresh({ owner: currentOwner, settled: () => listing, busy: () => drawLocks.pending,
   read: () => controller.start(),
   accepted: () => gameState !== null && !gameState.stale && gameState.error === null && gameState.snapshot !== null });
+// The Bingo legacy check is read explicitly, mirroring the Line's recovery: the event re-read this recovery path runs
+// settles fresh in checking_bingo for the shown event and then reads the held check once; any other phase or event
+// keeps or drops what was held. A read in flight is joined, never duplicated.
+const checkBingoLegacy = async (bingoRead) => {
+  try { await Promise.all([controller.start(), bingoRead]); } catch { /* The reads report their own errors. */ }
+  if (legacyPhase() === 'checking_bingo' && activeEventId !== null && !lineMismatch()) void bingo.checkLegacy();
+};
 const lineStatus = required('line-status', HTMLElement);
 const lineDialog = required('line-dialog', HTMLElement);
 const lineWinners = required('line-winners', BingoTextField);
@@ -493,6 +535,21 @@ legacyDialog.addEventListener('confirm', () => {
   legacyDialogShown = false;
   if (legacyActionable()) void line.cancelLegacy();
 });
+// The Bingo recovery needs the same two explicit steps as the Line's: the button opens the confirmation or re-reads;
+// only the dialog's confirmation writes, and the controller revalidates the exact held check when it dispatches.
+bingoRecover.addEventListener('click', () => {
+  if (bingoRecover.disabled) return;
+  if (bingoState.legacy?.status === 'uncertain') { void bingo.checkLegacy(); return; }
+  if (!bingoLegacyActionable()) return;
+  bingoLegacyDialogShown = true;
+  void bingoLegacyDialog.show();
+});
+bingoLegacyDialog.addEventListener('dismiss', () => { bingoLegacyDialogShown = false; });
+bingoLegacyDialog.addEventListener('confirm', () => {
+  bingoLegacyDialogShown = false;
+  if (bingoLegacyActionable()) void bingo.cancelLegacy();
+});
+bingoRefresh.addEventListener('click', () => { if (!bingoRefresh.disabled) bingo.retryRecovery(); });
 lotPanel.addEventListener('line-lot-draw', () => { if (!lotPanel.hidden) void lotController.draw(); });
 lotPanel.addEventListener('line-lot-resync', () => { if (!lotPanel.hidden) void lotController.resync(); });
 // The page's disposal is permanent: no queued scroll continuation or later tab change may paint after the pagehide.

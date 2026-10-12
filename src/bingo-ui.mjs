@@ -150,6 +150,11 @@ export function createBingoBinding(api, { render, refresh }) {
     },
     // The explicit read of an uncertain answer: never a begin, confirm or playback.
     read: () => controller.start(),
+    // The explicit legacy check surface (H5): one read establishes or refreshes the held check, the cancel sends the
+    // exact held identity once, and only a failed recovery refresh may be retried; never a begin or a playback.
+    checkLegacy: () => controller.checkLegacy(),
+    cancelLegacy: () => controller.cancelLegacy(),
+    retryRecovery: () => controller.retryRefresh(),
     // The committed refresh of the given event: pending, failed or none.
     refreshState: (eventId) => (owed !== null && owed.eventId === eventId ? owed.state : 'none'),
     retryRefresh() {
