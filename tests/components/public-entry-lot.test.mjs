@@ -29,8 +29,7 @@ function channel(...initial) {
 }
 
 const BRIDGES = ['publicEvent', 'publicTheme', 'publicEventMeta', 'publicEventPrizes', 'publicLineAward',
-  'publicPresentation', 'publicLineReceipt', 'publicLineLot', 'publicBingoAward', 'publicBingoReceipt',
-  'publicBingoLot'];
+  'publicPresentation', 'publicLineReceipt', 'publicLineLot', 'publicBingoAward', 'publicBingoReceipt', 'publicBingoLot'];
 // Injected before every entry import and restored on teardown: the page's media query and, when `timed`, its 4000 ms timers.
 const GLOBALS = ['Audio', 'matchMedia', 'setTimeout', 'clearTimeout'];
 const realSetTimeout = window.setTimeout;
@@ -46,8 +45,8 @@ async function mount({ award: hydrated, event = frame(), reduced = false, timed 
   const audio = { count: 0 };
   const receipts = [];
   const ch = { event: channel(event), theme: channel('light'), meta: channel(), prizes: channel(),
-    lineAward: hydrated === undefined ? channel() : channel(hydrated), presentation: channel(), lot: channel(), bingoAward: channel(),
-    bingoLot: channel() };
+    lineAward: hydrated === undefined ? channel() : channel(hydrated), presentation: channel(), lot: channel(),
+    bingoAward: channel(), bingoLot: channel() };
   const mq = { matches: reduced, adds: 0, removes: 0, saved: [],
     addEventListener: (type, callback) => { mq.adds++; mq.saved.push(callback); },
     removeEventListener: () => { mq.removes++; },
@@ -242,10 +241,10 @@ it('keeps ordinary declaration, draw, history and explicit celebration behaviour
 it('unsubscribes every bridge once on pagehide and ignores later deliveries', async () => {
   const m = await mount({ award: withResult(numbered(3)) });
   const counts = () => Object.values(m.ch).map((ch) => [ch.subs, ch.unsubs, ch.listeners.size]);
-  expect(counts()).to.deep.equal([[1, 0, 1], [1, 0, 1], [1, 0, 1], [1, 0, 1], [1, 0, 1], [2, 0, 2], [1, 0, 1], [1, 0, 1], [0, 0, 0]]);
+  expect(counts()).to.deep.equal([[1, 0, 1], [1, 0, 1], [1, 0, 1], [1, 0, 1], [1, 0, 1], [2, 0, 2], [1, 0, 1], [1, 0, 1], [1, 0, 1]]);
   m.dispose();
   m.dispose();
-  expect(counts()).to.deep.equal([[1, 1, 0], [1, 1, 0], [1, 1, 0], [1, 1, 0], [1, 1, 0], [2, 2, 0], [1, 1, 0], [1, 1, 0], [0, 0, 0]]);
+  expect(counts()).to.deep.equal([[1, 1, 0], [1, 1, 0], [1, 1, 0], [1, 1, 0], [1, 1, 0], [2, 2, 0], [1, 1, 0], [1, 1, 0], [1, 1, 0]]);
   const before = lineAward().textContent;
   m.ch.lineAward.emit(null);
   expect(lineAward().textContent).to.equal(before);
@@ -375,10 +374,10 @@ it('cleans up once on pagehide: one unsubscribe, one media removal, no timer, an
   const m = await mount({ award: stored, timed: true });
   const [lateSignal] = m.ch.lot.listeners;
   m.ch.lot.emit(lotSignal('running'));
-  expect([m.ch.lot.subs, m.ch.lot.unsubs, m.ch.lot.listeners.size, m.mq.adds, m.mq.removes, m.clock.timers.size]).to.deep.equal([1, 0, 1, 1, 0, 1]);
+  expect([m.ch.lot.subs, m.ch.lot.unsubs, m.ch.lot.listeners.size, m.mq.adds, m.mq.removes, m.clock.timers.size]).to.deep.equal([1, 0, 1, 2, 0, 1]);
   m.dispose();
   m.dispose();
-  expect([m.ch.lot.subs, m.ch.lot.unsubs, m.ch.lot.listeners.size, m.mq.adds, m.mq.removes, m.clock.timers.size]).to.deep.equal([1, 1, 0, 1, 1, 0]);
+  expect([m.ch.lot.subs, m.ch.lot.unsubs, m.ch.lot.listeners.size, m.mq.adds, m.mq.removes, m.clock.timers.size]).to.deep.equal([1, 1, 0, 2, 2, 0]);
   expectLot(null);
   lateSignal(lotSignal('late'));
   m.mq.change(false);
@@ -408,6 +407,7 @@ it('renders the Bingo award after the line award and its lot line, statically an
   const lot = document.getElementById('line-lot-playback');
   expect(lineAward().nextElementSibling).to.equal(lot);
   expect(lot.nextElementSibling).to.equal(bingoAward());
+  expect(bingoAward().nextElementSibling).to.equal(document.getElementById('bingo-lot-playback'));
   expect(lineAward().textContent).to.include('Línea declarada').and.include('nº 7 · Rojo');
   expect(lineAward().textContent).to.not.include('Bingo');
   expectNoCelebration(m);
@@ -415,7 +415,9 @@ it('renders the Bingo award after the line award and its lot line, statically an
 });
 
 it('hides only the Bingo award for an invalid payload while the line facts stay', async () => {
-  const bad = [null, bingo({ lotResult: { origin: 'none', resolution: 'pending' } }), bingo({ shareCents: 334 }),
+  const bad = [null, bingo({ lotResult: { origin: 'other', resolution: 'resolved' } }),
+    bingo({ winnerCount: 7, totalCents: 1000, shareCents: 142, remainderCents: 6, lot: 'Jamón', lotResolution: 'resolved',
+      lotResult: numbered(9) }), bingo({ shareCents: 334 }),
     bingo({ remainderCents: 0 }), bingo({ winnerCount: 0 }), bingo({ lotResolution: 'not_required' }),
     bingo({ lotResolution: 'other' }), bingo({ lot: ' Jamón ' }), { ...bingo(), eventId: '' }];
   for (const payload of bad) {
@@ -450,4 +452,104 @@ it('clears the Bingo award on an event switch without a fresh one, and keeps a f
   m.ch.event.emit({ ok: false, code: 'storage_failure', message: 'x' });
   expect([bingoAward().hidden, bingoAward().textContent]).to.deep.equal([true, '']);
   expectNoCelebration(m);
+});
+
+// BG-06C1b: the Bingo lot playback mirrors the line one — a hidden Spanish line beside the static Bingo award,
+// started only by a live public:bingo-lot signal, with the ¡Bingo! celebration showing the hydrated facts.
+const bingoLotEl = () => document.getElementById('bingo-lot-playback');
+const BINGO_WINNER = 'Ganador del lote: nº 7 · Rojo';
+const expectBingoLot = (text) => {
+  expect(bingoLotEl().hidden).to.equal(text === null);
+  expect(bingoLotEl().textContent).to.equal(text ?? '');
+};
+const bingoLotSignal = (id, n = 7) => ({ id, participantNumber: n, colorId: IDS[colorIndex(n)] });
+const bingoWinner = bingo({ winnerCount: 7, totalCents: 1000, shareCents: 142, remainderCents: 6,
+  lot: 'Jamón', lotResolution: 'resolved', lotResult: numbered(7) });
+const badBingoWinner = { ...bingoWinner, lotResult: numbered(7, { paletteVersion: 2 }) };
+
+it('never animates the bingo lot for a stored winner at startup, reconnect, recovery or an award and frame alone', async () => {
+  const first = await mount({ award: award(), timed: true });
+  first.ch.bingoAward.emit(bingoWinner);
+  first.ch.event.emit(frame());
+  first.ch.event.emit(unavailable);
+  first.ch.event.emit(frame());
+  expectBingoLot(null);
+  expect(first.clock.timers.size).to.equal(0);
+  first.destroy();
+  const second = await mount({ award: award(), timed: true });
+  second.ch.bingoAward.emit(bingoWinner);
+  second.ch.event.emit(frame());
+  expectBingoLot(null);
+  expect([second.clock.timers.size, second.audio.count, second.receipts, celebration().active]).to.deep.equal([0, 0, [], false]);
+});
+
+it('plays the bingo winner for exactly four seconds on a live signal, with no audio, receipt or celebration', async () => {
+  const m = await mount({ award: award(), timed: true });
+  m.ch.bingoAward.emit(bingoWinner);
+  m.ch.event.emit(frame());
+  m.ch.bingoLot.emit(bingoLotSignal('bingo-live'));
+  expectBingoLot(BINGO_WINNER);
+  expect(bingoLotEl().lang).to.equal('es');
+  m.clock.tick(3999);
+  expectBingoLot(BINGO_WINNER);
+  m.clock.tick(1);
+  expectBingoLot(null);
+  expect([m.audio.count, m.receipts, celebration().active]).to.deep.equal([0, [], false]);
+  expect(document.getElementById('called-count').value).to.equal('0');
+});
+
+it('ignores early, mismatched and malformed bingo lot signals', async () => {
+  const m = await mount({ award: award(), timed: true });
+  m.ch.bingoLot.emit(bingoLotSignal('no-award'));
+  m.ch.bingoAward.emit(bingoWinner);
+  m.ch.bingoLot.emit(bingoLotSignal('before-frame'));
+  m.ch.event.emit(frame());
+  const bad = [bingoLotSignal('other-number', 3), { ...bingoLotSignal('extra'), extra: 1 },
+    bingoLotSignal(''), bingoLotSignal('zero', 0), { id: 'partial' }, null, 'signal'];
+  bad.forEach((value) => m.ch.bingoLot.emit(value));
+  expectBingoLot(null);
+  expect(m.clock.timers.size).to.equal(0);
+  m.ch.bingoLot.emit(bingoLotSignal('valid'));
+  expectBingoLot(BINGO_WINNER);
+});
+
+const bingoCancels = {
+  'an invalid bingo award': (m) => m.ch.bingoAward.emit(badBingoWinner),
+  'a null award': (m) => m.ch.bingoAward.emit(null),
+  'an error frame': (m) => m.ch.event.emit(unavailable),
+  'an event change without a fresh award': (m) => m.ch.event.emit(frame(true)),
+};
+for (const [name, change] of Object.entries(bingoCancels)) {
+  it(`cancels a running bingo lot and never replays it on ${name}`, async () => {
+    const m = await mount({ award: award(), timed: true });
+    m.ch.bingoAward.emit(bingoWinner);
+    m.ch.event.emit(frame());
+    m.ch.bingoLot.emit(bingoLotSignal('running'));
+    expectBingoLot(BINGO_WINNER);
+    change(m);
+    expectBingoLot(null);
+    expect(m.clock.timers.size).to.equal(0);
+    m.ch.bingoLot.emit(bingoLotSignal('running'));
+    expectBingoLot(null);
+  });
+}
+
+it('shows the hydrated bingo facts in the ¡Bingo! celebration and cleans the bingo lot up once on pagehide', async () => {
+  const m = await mount({ award: award(), timed: true });
+  m.ch.bingoAward.emit(bingoWinner);
+  m.ch.event.emit(frame());
+  m.ch.presentation.emit({ kind: 'bingo', id: 'b1', durationMs: 4000 });
+  await celebration().updateComplete;
+  await settle();
+  expect(celebration().active).to.equal(true);
+  expect(celebration().facts).to.include('Bingo declarado').and.include(BINGO_WINNER);
+  expect(celebration().shadowRoot.querySelector('.word').textContent).to.equal('¡Bingo!');
+  expect([m.ch.bingoLot.subs, m.ch.bingoLot.unsubs, m.ch.bingoLot.listeners.size]).to.deep.equal([1, 0, 1]);
+  const [lateSignal] = m.ch.bingoLot.listeners;
+  m.dispose();
+  m.dispose();
+  expect([m.ch.bingoLot.subs, m.ch.bingoLot.unsubs, m.ch.bingoLot.listeners.size]).to.deep.equal([1, 1, 0]);
+  lateSignal(bingoLotSignal('late'));
+  m.clock.tick(5000);
+  expectBingoLot(null);
 });

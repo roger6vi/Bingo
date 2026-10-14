@@ -160,11 +160,12 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
     lotListeners++;
     return () => { if (active) { active = false; lotListeners--; unsubscribed++; } };
   } });
-  // Receive-only live lot channel for the Bingo award, as with the real preload.
+  // Receive-only live Bingo lot channel (BG-06C1b): the same frozen receive-only shape as the line.
+  let bingoLotListeners = 0;
   window.publicBingoLot = Object.freeze({ subscribe: () => {
     let active = true;
-    lotListeners++;
-    return () => { if (active) { active = false; lotListeners--; unsubscribed++; } };
+    bingoLotListeners++;
+    return () => { if (active) { active = false; bingoLotListeners--; unsubscribed++; } };
   } });
   try {
     const entry = new URL('../../src/public-ui.mjs', import.meta.url);
@@ -300,9 +301,11 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
     await new Promise((resolve) => setTimeout(resolve, 4100));
     expect(celebration.active).to.equal(false);
     expect(lotListeners).to.equal(1);
+    expect(bingoLotListeners).to.equal(1);
     window.dispatchEvent(new Event('pagehide'));
-    expect(unsubscribed).to.equal(9);
+    expect(unsubscribed).to.equal(10);
     expect(lotListeners).to.equal(0);
+    expect(bingoLotListeners).to.equal(0);
   } finally {
     shell.remove();
     delete window.publicEvent;

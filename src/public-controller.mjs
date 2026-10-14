@@ -69,10 +69,10 @@ export function validLineAward(award) {
   return validAwardFacts(award) && (award.lotResult === undefined || validLotResult(award.lotResult, award));
 }
 
-// Committed Bingo award: the same frozen arithmetic and lot rules, but static facts only. Lot-result provenance is
-// not part of this contract yet, so any payload carrying one is rejected rather than shown.
+// Committed Bingo award: the same frozen arithmetic and lot rules plus the same optional strict stored winner
+// fact as the line. Malformed or unknown lotResult shapes are rejected, never repaired or shown.
 export function validBingoAward(award) {
-  return validAwardFacts(award) && !Object.hasOwn(award, 'lotResult');
+  return validAwardFacts(award) && (award.lotResult === undefined || validLotResult(award.lotResult, award));
 }
 
 const centsText = (cents) => {
@@ -99,9 +99,16 @@ export function describeLineAward(award) {
   return parts.join(' · ');
 }
 
-// Plain committed Bingo facts; silent about any celebration, claimant or lot winner.
+// Plain committed Bingo facts plus the lot winner, with Line-parity copy (owner decision: "Igual que Línea,
+// rotulado Bingo"). Still deliberately silent about any celebration, claimant or ¡Bingo! overlay wording.
 export function describeBingoAward(award) {
-  return describeAward('Bingo declarado', award).join(' · ');
+  const parts = describeAward('Bingo declarado', award);
+  const { lotResult } = award;
+  if (lotResult?.origin === 'legacy_v8') parts.push('Ganador del lote desconocido (registro anterior)');
+  if (lotResult?.origin === 'numbered_v1') {
+    parts.push(`Ganador del lote: nº ${lotResult.participantNumber} · ${paletteV1.find(([id]) => id === lotResult.colorId)[1]}`);
+  }
+  return parts.join(' · ');
 }
 
 export function createPublicController(api, view) {

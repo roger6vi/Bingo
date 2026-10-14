@@ -39,7 +39,7 @@ function fixture() {
 const publicUrl = 'file:///app/public.html';
 const lineAward = { eventId: 'e1', presentation: { id: 'p1' },
   award: { winnerCount: 5, totalCents: 500, shareCents: 100, remainderCents: 0, lot: 'Hamper', lotResolution: 'resolved' } };
-const bingoAward = { eventId: 'e1',
+const bingoAward = { eventId: 'e1', presentation: { id: 'p1' },
   award: { winnerCount: 2, totalCents: 5000, shareCents: 2500, remainderCents: 0, lot: 'Cesta', lotResolution: 'resolved' } };
 const publicBingo = { eventId: 'e1', winnerCount: 2, totalCents: 5000, shareCents: 2500, remainderCents: 0,
   lot: 'Cesta', lotResolution: 'resolved' };
@@ -53,11 +53,11 @@ function lotTarget() {
 const lotMessages = (t: any) => t.messages.filter((m: any) => m.channel === PUBLIC_BINGO_LOT_CHANNEL);
 const signal = { id: 'c1', participantNumber: 2, colorId: 'blue' };
 
-function bingoDelivery(hooks: { bingo?: () => void; load?: () => void } = {}) {
+function bingoDelivery(hooks: { bingo?: () => void; load?: () => void } = {}, lot?: () => unknown) {
   return createPublicEventDelivery(
     { load: () => { hooks.load?.(); return { calledNumbers: [1], phase: 'drawing' as const, lastTransitionAt: null }; } },
     undefined, undefined, undefined, () => lineAward as any, undefined,
-    () => { hooks.bingo?.(); return bingoAward as any; });
+    () => { hooks.bingo?.(); return bingoAward as any; }, lot);
 }
 
 test('delivery sends the bingo award, then history, then the whitelisted signal, and never replays it', () => {
@@ -123,6 +123,23 @@ test('real bingo presentation delivers a directly drawn lot to the same public t
   assert.deepEqual([lotMessages(t).length, Object.keys(lotMessages(t)[0].result).sort()], [1, ['colorId', 'id', 'participantNumber']]);
   assert.equal(f.send(r.snapshot).code, 'ineligible');
   assert.equal(lotMessages(t).length, 1);
+});
+
+test('publishBingoLot sends the hydrated bingo award before history and the signal, and refresh carries the fact', () => {
+  // BG-06C1b: the award payload is now hydrated with the strict lot fact; the C1a fence order is unchanged.
+  const snap = { eventId: 'e1', winnerCount: 2, lot: 'Cesta', presentation: { id: 'p1' }, fact: won().fact };
+  const delivery = bingoDelivery({}, () => snap);
+  const t = lotTarget();
+  delivery.attachAfterLoad(t);
+  t.messages.length = 0;
+  assert.equal(delivery.publishBingoLot(signal, publicUrl), true);
+  const at = (channel: string) => t.messages.findIndex((m: any) => m.channel === channel);
+  assert.ok(at(PUBLIC_BINGO_AWARD_CHANNEL) < at(PUBLIC_EVENT_CHANNEL) && at(PUBLIC_EVENT_CHANNEL) < at(PUBLIC_BINGO_LOT_CHANNEL));
+  assert.deepEqual(t.messages[at(PUBLIC_BINGO_AWARD_CHANNEL)].result, { ...publicBingo, lotResult: won().fact });
+  t.messages.length = 0;
+  assert.equal(delivery.refreshBingoAward('e1'), true);
+  assert.deepEqual(t.messages[0].result, { ...publicBingo, lotResult: won().fact });
+  assert.doesNotMatch(JSON.stringify(t.messages), /auditSequence/);
 });
 
 test('refreshBingoAward resends only the static bingo award for the bound event and never a lot channel', () => {
