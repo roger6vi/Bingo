@@ -23,7 +23,7 @@ export class BingoButton extends LitElement {
     button {
       font: inherit; color: var(--bingo-color-text); background: var(--bingo-color-surface);
       border: var(--bingo-border-width-default) solid var(--bingo-color-border-strong); border-radius: var(--bingo-radius-control);
-      cursor: pointer; white-space: nowrap;
+      cursor: pointer; overflow-wrap: anywhere;
       padding: var(--bingo-space-inset-compact) var(--bingo-space-inset-inline);
       box-shadow: var(--bingo-border-width-strong) var(--bingo-border-width-strong) 0 var(--bingo-color-shadow);
       transition: background-color var(--bingo-motion-normal) var(--bingo-motion-easing);

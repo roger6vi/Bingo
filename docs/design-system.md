@@ -164,7 +164,12 @@ committed persistence snapshots (presentation never acknowledges its own intent)
   **States:** normal, hover, active, focus, disabled, pending (owner sets `disabled` while a request
   is outstanding). Success keeps its colors on hover, active and disabled; the disabled surface,
   opacity and cursor still carry the disabled affordance.
-- **Accessibility:** native button semantics and keyboard activation; visible focus ring.
+- **Accessibility:** native button semantics and keyboard activation; visible focus ring. Long labels
+  wrap inside the button's allocated width (`overflow-wrap: anywhere`) instead of overflowing it;
+  `tests/components/claim-button-layout.test.mjs` proves this under all three themes for the claims
+  row and for a long inactive event name's real activation button. Owners still keep labels short,
+  and `bingo-draw-controls` re-pins single-line nowrap for its fixed short actions. A broader
+  component text-fit inventory is prepared separately and is not part of this change.
 - **Tokens:** `border-width.default`, `border-width.focus`, `border-width.strong`, `color.accent`,
   `color.accent-active`, `color.accent-hover`, `color.border`, `color.border-strong`,
   `color.disabled`, `color.disabled-surface`, `color.focus`, `color.on-accent`, `color.shadow`,
