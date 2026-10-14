@@ -45,25 +45,25 @@ export const MESSAGES_ES = Object.freeze({
   // First-line IPC (src/line-ipc.ts, event-ipc.ts and catalog guards)
   'Invalid line request.': 'Solicitud de línea no válida. Comprueba el estado de la línea.',
   'This setup is no longer current. Reopen it.':
-    'Esta declaración ya no está vigente. Pulsa «Comprobar línea» para ver el estado.',
+    'Esta declaración ya no está vigente. Pulsa «Línea» para comprobar el estado.',
   'A first-line setup is already open. Reopen it to continue.':
-    'Ya hay una declaración de línea abierta. Pulsa «Reanudar línea» para continuar.',
+    'Ya hay una declaración de línea abierta. Pulsa «Línea» para reanudarla y continuar.',
   'The first line cannot be declared now.': 'Ahora no se puede declarar la línea. Comprueba el estado del evento.',
   'A confirmation is in progress. Try again.': 'Hay una confirmación en curso. Comprueba el estado de la línea en unos segundos.',
-  'Could not read the first-line state. Try again.': 'No se pudo leer el estado de la línea. Pulsa «Comprobar línea».',
+  'Could not read the first-line state. Try again.': 'No se pudo leer el estado de la línea. Pulsa «Línea» para comprobarlo.',
   'Could not declare the line. Reopen the setup and check the state before trying again.':
-    'No se pudo confirmar la línea. No la declares de nuevo: pulsa «Comprobar línea» para leer el estado.',
+    'No se pudo confirmar la línea. No la declares de nuevo: pulsa «Línea» para comprobar el estado.',
   'Finish or cancel the first-line setup, then draw again.': 'Termina o cancela la declaración de la línea y vuelve a cantar.',
   'Finish or cancel the first-line setup first.': 'Termina o cancela la declaración de la línea primero.',
   'Could not connect to the first-line setup. Check the state and try again.':
-    'No se pudo conectar con la declaración de la línea. Pulsa «Comprobar línea» para leer el estado; no la declares de nuevo.',
+    'No se pudo conectar con la declaración de la línea. Pulsa «Línea» para comprobar el estado; no la declares de nuevo.',
   'Invalid first-line update. Check the state and try again.':
-    'Respuesta de la línea no válida. Pulsa «Comprobar línea» para leer el estado; no la declares de nuevo.',
+    'Respuesta de la línea no válida. Pulsa «Línea» para comprobar el estado; no la declares de nuevo.',
   'Could not read the clock. Try again.':
-    'No se pudo leer el reloj del equipo. Pulsa «Comprobar línea» para leer el estado y reintentar.',
+    'No se pudo leer el reloj del equipo. Pulsa «Línea» para comprobar el estado y reintentar.',
   'Enter a whole number of winners, 1 or more.': 'Escribe un número entero de ganadores, 1 o más.',
   'Could not confirm the line celebration. Check the line and try again.':
-    'No se pudo confirmar el estado de la celebración de la línea. Pulsa «Comprobar línea» para leerlo; no se repite sola.',
+    'No se pudo confirmar el estado de la celebración de la línea. Pulsa «Línea» para comprobarlo; no se repite sola.',
   // Line lot controller (src/line-lot-controller.mjs)
   'Lot unavailable.': 'El lote no está disponible ahora. Pulsa «Releer estado» para intentarlo de nuevo.',
   'Lot state needs a fresh read.': 'El estado del lote no es fiable. Pulsa «Releer estado» para leerlo de nuevo.',

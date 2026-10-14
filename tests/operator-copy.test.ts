@@ -78,7 +78,8 @@ test('each presentation status gets truthful Spanish copy while keeping the mone
 test('the controller messages for a lost celebration action are translated', () => {
   const message = 'Could not confirm the line celebration. Check the line and try again.';
   assert.ok(source('src/operator-controller.mjs').includes(message));
-  assert.match(operatorMessage(message), /Comprobar línea/);
+  assert.match(operatorMessage(message), /«Línea»/);
+  assert.match(operatorMessage(message), /no se repite sola/, 'the no-replay safeguard stays');
 });
 
 import * as copy from '../src/operator-copy.mjs';
@@ -129,7 +130,7 @@ test('every English Bingo message from main and the controller has a distinct Sp
 
 test('bingoMessage keeps the shared table, overrides only line-specific wording and falls back like operatorMessage', () => {
   assert.equal(copy.bingoMessage('Wait for Tongo to finish, then try again.'), operatorMessage('Wait for Tongo to finish, then try again.'));
-  assert.match(operatorMessage('Could not read the clock. Try again.') as string, /Comprobar línea/, 'Line copy unchanged');
+  assert.match(operatorMessage('Could not read the clock. Try again.') as string, /Pulsa «Línea» para comprobar el estado y reintentar/, 'Line copy names the visible button');
   assert.match(copy.bingoMessage('Could not read the clock. Try again.'), /reloj[\s\S]*bingo/);
   assert.equal(copy.bingoMessage('Write failed: ENOENT'), UNKNOWN_ERROR_ES);
   assert.equal(copy.bingoMessage(null), null);
