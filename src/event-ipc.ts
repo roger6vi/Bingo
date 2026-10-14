@@ -92,6 +92,10 @@ export function registerEventIpc(
       if (error instanceof Error && /until the line presentation is completed/.test(error.message)) {
         return { ok: false, code: 'presentation_pending', message: 'The line celebration is not finished.' };
       }
+      // The store refuses draws once Bingo is committed (phase bingo_declared or finished) before any transition runs.
+      if (error instanceof Error && error.message === 'Draw not allowed after bingo is declared') {
+        return { ok: false, code: 'invalid_draw', message: 'Could not draw a number. Reload and try again.' };
+      }
       return { ok: false, code: 'storage_failure', message: 'Could not save the draw. Reload and try again.' };
     }
   }
