@@ -9,6 +9,7 @@ const PUBLIC_LINE_AWARD_CHANNEL = 'public:line-award';
 const PUBLIC_BINGO_AWARD_CHANNEL = 'public:bingo-award';
 const PUBLIC_PRESENTATION_CHANNEL = 'public:presentation';
 const PUBLIC_LINE_LOT_CHANNEL = 'public:line-lot';
+const PUBLIC_BINGO_LOT_CHANNEL = 'public:bingo-lot';
 const PUBLIC_LINE_RECEIPT_CHANNEL = 'public:line-presentation-started';
 const PUBLIC_BINGO_RECEIPT_CHANNEL = 'public:bingo-presentation-started';
 
@@ -75,6 +76,15 @@ contextBridge.exposeInMainWorld('publicLineLot', Object.freeze({
     const listener = (_event: Electron.IpcRendererEvent, signal: unknown) => callback(signal);
     ipcRenderer.on(PUBLIC_LINE_LOT_CHANNEL, listener);
     return () => ipcRenderer.removeListener(PUBLIC_LINE_LOT_CHANNEL, listener);
+  },
+}));
+
+// Receive-only live Bingo lot signals ({ id, participantNumber, colorId }); the page decides whether one matches its award.
+contextBridge.exposeInMainWorld('publicBingoLot', Object.freeze({
+  subscribe: (callback: (signal: unknown) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, signal: unknown) => callback(signal);
+    ipcRenderer.on(PUBLIC_BINGO_LOT_CHANNEL, listener);
+    return () => ipcRenderer.removeListener(PUBLIC_BINGO_LOT_CHANNEL, listener);
   },
 }));
 

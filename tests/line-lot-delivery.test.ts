@@ -157,10 +157,14 @@ test('main wires the presentation registrar, lifecycle invalidation and delivery
   assert.doesNotMatch(main, /registerLineLotIpc\(/);
   assert.match(main, /const lotPresentation = registerLineLotPresentation\(ipcMain, store, \{ authorize: operatorOnly,/);
   assert.match(main, /publish: \(signal\) => publicDelivery\.publishLineLot\(signal, publicUrl\)/);
-  assert.match(main, /operator\.webContents\.on\('did-start-navigation', \(details\) => \{\s+if \(details\.isMainFrame && !details\.isSameDocument\) lotPresentation\.invalidate\(\);/);
-  assert.match(main, /operator\.on\('close', \(\) => lotPresentation\.invalidate\(\)\)/);
-  assert.match(main, /operator\.webContents\.once\('destroyed', \(\) => lotPresentation\.invalidate\(\)\)/);
-  assert.match(main, /\(\) => \{ lotPresentation\.invalidate\(\); publicDelivery\.publishActive\(theme\.reload\(\)\); \}/);
+  assert.match(main, /operator\.webContents\.on\('did-start-navigation', \(details\) => \{\s+if \(details\.isMainFrame && !details\.isSameDocument\) \{ lotPresentation\.invalidate\(\); bingoLotPresentation\.invalidate\(\); \}/);
+  assert.match(main, /operator\.on\('close', \(\) => \{ lotPresentation\.invalidate\(\); bingoLotPresentation\.invalidate\(\); \}\)/);
+  assert.match(main, /operator\.webContents\.once\('destroyed', \(\) => \{ lotPresentation\.invalidate\(\); bingoLotPresentation\.invalidate\(\); \}\)/);
+  assert.match(main, /\(\) => \{ lotPresentation\.invalidate\(\); bingoLotPresentation\.invalidate\(\); publicDelivery\.publishActive\(theme\.reload\(\)\); \}/);
+  assert.match(main, /const bingoLotPresentation = registerBingoLotPresentation\(ipcMain, store, \{ authorize: operatorOnly,/);
+  assert.match(main, /publish: \(signal\) => publicDelivery\.publishBingoLot\(signal, publicUrl\)/);
+  assert.match(main, /refresh: \(lot\) => \{ publicDelivery\.refreshBingoAward\(lot\.eventId\); \}/);
   const at = (text: string) => main.indexOf(text);
-  assert.ok(at('const publicUrl') < at('const lotPresentation') && at('const lotPresentation') < at('lotPresentation.invalidate'));
+  assert.ok(at('const publicUrl') < at('const lotPresentation') && at('const lotPresentation') < at('const bingoLotPresentation') &&
+    at('const bingoLotPresentation') < at('lotPresentation.invalidate'));
 });

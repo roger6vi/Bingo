@@ -13,6 +13,7 @@ import { registerLineIpc } from './line-ipc';
 import { recoverBingoPresentations, registerBingoMainWiring, sharedSetupActive } from './bingo-main-wiring';
 import type { StoredBingoAward } from './event-store';
 import { registerLineLotPresentation } from './line-lot-presentation';
+import { registerBingoLotPresentation } from './bingo-lot-presentation';
 import { createPresentationWiring } from './presentation-wiring';
 import { createPublicEventDelivery, PUBLIC_BINGO_RECEIPT_CHANNEL, PUBLIC_LINE_RECEIPT_CHANNEL } from './public-event-delivery';
 import { createWindowLifecycle } from './window-lifecycle';
@@ -118,12 +119,15 @@ if (!app.requestSingleInstanceLock()) {
   const lotPresentation = registerLineLotPresentation(ipcMain, store, { authorize: operatorOnly, busy: presentations.busy,
     tongoPlaying: tongo.playing, publish: (signal) => publicDelivery.publishLineLot(signal, publicUrl),
     refresh: (lot) => { publicDelivery.refreshLineAward(lot.eventId); } });
+  const bingoLotPresentation = registerBingoLotPresentation(ipcMain, store, { authorize: operatorOnly,
+    busy: presentations.busy, tongoPlaying: tongo.playing, publish: (signal) => publicDelivery.publishBingoLot(signal, publicUrl),
+    refresh: (lot) => { publicDelivery.refreshBingoAward(lot.eventId); } });
   operator.webContents.on('did-start-navigation', (details) => {
-    if (details.isMainFrame && !details.isSameDocument) lotPresentation.invalidate();
+    if (details.isMainFrame && !details.isSameDocument) { lotPresentation.invalidate(); bingoLotPresentation.invalidate(); }
   });
-  operator.on('close', () => lotPresentation.invalidate());
-  operator.webContents.once('destroyed', () => lotPresentation.invalidate());
-  registerEventCatalogIpc(ipcMain, store, operatorOnly, () => { lotPresentation.invalidate(); publicDelivery.publishActive(theme.reload()); },
+  operator.on('close', () => { lotPresentation.invalidate(); bingoLotPresentation.invalidate(); });
+  operator.webContents.once('destroyed', () => { lotPresentation.invalidate(); bingoLotPresentation.invalidate(); });
+  registerEventCatalogIpc(ipcMain, store, operatorOnly, () => { lotPresentation.invalidate(); bingoLotPresentation.invalidate(); publicDelivery.publishActive(theme.reload()); },
     publicDelivery.publishMeta, setupActive, presentations.busy);
   registerPrizeIpc(ipcMain, store, operatorOnly, publicDelivery.publishPrizes, setupActive);
   registerEventIpc(ipcMain, store, { drawManual, drawDigital }, Math.random,

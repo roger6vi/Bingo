@@ -21,19 +21,20 @@ function frameBridges(win) {
   // The simulator can neither celebrate nor report a start.
   // Nor can it play a lot: the simulator never forges a live winner signal.
   const lineLot = inert;
+  const bingoLot = inert;
   const receipt = Object.freeze({ started: () => {} });
   return { event: channel('event'), theme: channel('theme'), meta: channel('meta'), prizes: channel('prizes'),
     lineAward: channel('lineAward'), bingoAward: channel('bingoAward'), presentation: inert, lineReceipt: receipt,
-    bingoReceipt: receipt, lineLot };
+    bingoReceipt: receipt, lineLot, bingoLot };
 }
 
 export function publicBridges(win = window) {
   if (win.publicEvent && win.publicTheme && win.publicEventMeta && win.publicEventPrizes &&
       win.publicLineAward && win.publicBingoAward && win.publicPresentation && win.publicLineReceipt && win.publicLineLot &&
-      win.publicBingoReceipt) {
+      win.publicBingoReceipt && win.publicBingoLot) {
     return { event: win.publicEvent, theme: win.publicTheme, meta: win.publicEventMeta, prizes: win.publicEventPrizes,
       lineAward: win.publicLineAward, bingoAward: win.publicBingoAward, presentation: win.publicPresentation, lineReceipt: win.publicLineReceipt,
-      lineLot: win.publicLineLot, bingoReceipt: win.publicBingoReceipt };
+      lineLot: win.publicLineLot, bingoReceipt: win.publicBingoReceipt, bingoLot: win.publicBingoLot };
   }
   if (win.parent !== win) return frameBridges(win);
   throw new Error('Missing public display bridge');

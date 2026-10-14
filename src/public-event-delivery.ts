@@ -8,6 +8,7 @@ import type { ThemeId } from './theme';
 import type { TongoPresentation } from './tongo-ipc';
 import type { BingoPresentationSignal, LinePresentationSignal } from './line-presentation';
 import type { LineLotSignal } from './line-lot-presentation.ts';
+import type { BingoLotSignal } from './bingo-lot-presentation.ts';
 
 type PhaseSnapshot = EventSnapshot & { readonly phase: GamePhase; readonly lastTransitionAt: string | null };
 
@@ -18,6 +19,7 @@ export const PUBLIC_PRESENTATION_CHANNEL = 'public:presentation';
 export const PUBLIC_PRIZES_CHANNEL = 'public:event-prizes';
 export const PUBLIC_LINE_AWARD_CHANNEL = 'public:line-award';
 export const PUBLIC_LINE_LOT_CHANNEL = 'public:line-lot';
+export const PUBLIC_BINGO_LOT_CHANNEL = 'public:bingo-lot';
 export const PUBLIC_BINGO_AWARD_CHANNEL = 'public:bingo-award';
 // Renderer -> main, the only send of the public window: the line overlay has actually started rendering.
 export const PUBLIC_LINE_RECEIPT_CHANNEL = 'public:line-presentation-started';
@@ -51,7 +53,7 @@ type CommittedLineAward = Pick<StoredLineAward, 'eventId' | 'award' | 'presentat
 type CommittedBingoAward = Pick<StoredBingoAward, 'eventId' | 'award'> | null;
 type CommittedLineLot = Pick<LineLotSnapshot, 'eventId' | 'winnerCount' | 'lot' | 'presentation' | 'fact'> | null;
 type Payload = PublicEventResult | ThemeId | PublicEventMeta | PublicEventPrizes | PublicLineAward | PublicBingoAward
-  | TongoPresentation | LinePresentationSignal | BingoPresentationSignal | LineLotSignal;
+  | TongoPresentation | LinePresentationSignal | BingoPresentationSignal | LineLotSignal | BingoLotSignal;
 
 export type PublicEventResult =
   | { ok: true; snapshot: PhaseSnapshot; eventChanged?: true }
@@ -203,15 +205,19 @@ export function createPublicEventDelivery(
     return current === target;
   }
 
-  // Both static awards, line first, each guarded like the line. A missing Bingo or a failure of the Bingo read
-  // alone clears only Bingo; real storage corruption fails the whole event read (both awards and history) instead.
-  function sendAwards(target: Target): boolean {
-    if (!sendLineAward(target)) return false;
-    if (committedBingoAward === undefined) return true;
+  // The Bingo award alone, guarded like the line.
+  function sendBingoAward(target: Target): boolean {
+    if (committedBingoAward === undefined) return current === target;
     const award = loadBingoAward();
     if (current !== target) return false;
     send(target, award, PUBLIC_BINGO_AWARD_CHANNEL);
     return current === target;
+  }
+
+  // Both static awards, line first, each guarded like the line. A missing Bingo or a failure of the Bingo read
+  // alone clears only Bingo; real storage corruption fails the whole event read (both awards and history) instead.
+  function sendAwards(target: Target): boolean {
+    return sendLineAward(target) && sendBingoAward(target);
   }
 
   return {
@@ -267,6 +273,17 @@ export function createPublicEventDelivery(
       send(target, award, PUBLIC_LINE_AWARD_CHANNEL);
       return current === target;
     },
+    // Static only: resends the strict Bingo award for the one authorized event after its lot was drawn. It sends
+    // nothing when the window or event does not line up, and it never touches the line channels, presentation
+    // channels, receipt bindings, or history.
+    refreshBingoAward(eventId: string): boolean {
+      const target = current;
+      if (target === null || committedBingoAward === undefined) return false;
+      const award = loadBingoAward();
+      if (award === null || award.eventId !== eventId) return false;
+      send(target, award, PUBLIC_BINGO_AWARD_CHANNEL);
+      return current === target;
+    },
     // Transient and never resent on attach, so a reloaded or reopened window cannot replay it.
     // Reports whether the current window accepted it.
     publishPresentation(presentation: TongoPresentation | LinePresentationSignal | BingoPresentationSignal): boolean {
@@ -309,6 +326,30 @@ export function createPublicEventDelivery(
       send(target, result);
       if (!live()) return false;
       send(target, { id: signal.id, participantNumber: signal.participantNumber, colorId: signal.colorId }, PUBLIC_LINE_LOT_CHANNEL);
+      return current === target;
+    },
+    // The Bingo manual lot: the same transient one-shot handoff as the line lot, on its own channel. It sends the
+    // current static Bingo award and history first and the whitelisted signal last; the award itself is never
+    // hydrated with a lot result here. Never resent on attach or publishActive.
+    publishBingoLot(signal: BingoLotSignal, expectedPublicUrl: string): boolean {
+      const target = current;
+      const epoch = generation;
+      const active = activeEpoch;
+      if (target === null) return false;
+      let frame: { readonly url: string } | null | undefined;
+      const live = (): boolean => {
+        try {
+          return current === target && generation === epoch && activeEpoch === active && !target.isDestroyed() &&
+            target.mainFrame === frame && frame != null && frame.url === expectedPublicUrl;
+        } catch { return false; }
+      };
+      try { frame = target.mainFrame; } catch { return false; }
+      if (!live() || !sendBingoAward(target) || !live()) return false;
+      const result = loadResult();
+      if (!live()) return false;
+      send(target, result);
+      if (!live()) return false;
+      send(target, { id: signal.id, participantNumber: signal.participantNumber, colorId: signal.colorId }, PUBLIC_BINGO_LOT_CHANNEL);
       return current === target;
     },
     acceptLineReceipt: (event: { sender: unknown; senderFrame?: unknown }, id: unknown, expectedUrl: string): boolean =>
