@@ -250,14 +250,14 @@ test('public lot paragraphs are narrow, square, unclipped and animate only while
   const lot = rules.filter(({ selector }) => /#line-(?:award|lot-playback)/.test(selector));
   assert.ok(lot.length >= 3, 'lot rules exist');
   for (const { selector, body } of lot) {
-    for (const part of selector.split(',')) assert.match(part.trim(), /^\.public-side #line-(?:award|lot-playback)/, part);
+    for (const part of selector.split(',')) assert.match(part.trim(), /^\.public-side (?:#line-(?:award|lot-playback)|#bingo-lot-playback)/, part);
     assert.doesNotMatch(body, /\b(?:height|text-overflow|position|opacity|visibility|clip(?:-path)?|content)\s*:|overflow:\s*(?:hidden|clip)|random/);
   }
   assert.ok(lot.some(({ body }) => /border-radius:\s*0\s*;/.test(body)), 'square corners');
   assert.ok(lot.some(({ selector, body }) => /#line-lot-playback\[hidden\]/.test(selector) && /display:\s*none/.test(body)), 'explicit hidden');
   const animated = lot.filter(({ body }) => /animation:\s*(?!none)\S/.test(body));
   assert.equal(animated.length, 1);
-  assert.match(animated[0].selector, /#line-lot-playback:not\(\[hidden\]\)$/);
+  assert.match(animated[0].selector, /#(?:line|bingo)-lot-playback:not\(\[hidden\]\)$/);
   assert.match(animated[0].body, /animation:\s*[\w-]+ var\(--bingo-motion-slow\) var\(--bingo-motion-easing\) [1-4] both/);
   assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{[^@]*#line-lot-playback[^}]*animation:\s*none/);
 });
