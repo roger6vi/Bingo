@@ -91,6 +91,33 @@ export function createFactRefresh({ owner, settled = () => undefined, busy, read
   };
 }
 
+// The dedicated Bingo lot panel (BG-06C2a) is shown only for a declared Bingo of the active event whose lot still
+// needs settling or has been settled: pending or resolved. Anything else — another event, a setup, an uncertain or
+// idle read, no award at all — stays hidden, fail closed.
+export function bingoLotVisible(state, activeEventId) {
+  const award = state?.mode === 'declared' && activeEventId !== null && state.eventId === activeEventId ? state.award : null;
+  const resolution = award?.award?.lotResolution;
+  return resolution === 'pending' || resolution === 'resolved';
+}
+
+// The Bingo lot panel's own busy gates. This is deliberately NOT a drawingBlocked() copy: once the Bingo is declared
+// bingoLocks().draw is permanently true, so a verbatim copy would disable the Bingo lot draw forever, while the
+// settled lot is exactly what a declared Bingo leaves behind. Everything else ordinary drawing needs still applies:
+// the page's locks, a live Bingo (a read, a setup or the pending/running celebration, per bingoLocks().live) and a
+// stale, pending or failed event state. Only the declared draw lock itself is excluded.
+export function bingoLotBusy(page, state, eventId) {
+  return Boolean(page.selecting || page.activating || page.tongoBusy || page.eventsPending || page.eventsStale ||
+    bingoLocks(state, eventId).live || page.eventPending || page.eventStale || page.eventError);
+}
+
+// The read-once key of the shown Bingo lot, mirroring the Line's lotKey: exactly the event, the celebration id and
+// whether that celebration completed. A pending or started celebration starts nothing; the key only turns readable
+// (operator-ui gates the read on the completed flag) once, and an unchanged key never reads again.
+export function bingoLotKey(state) {
+  const award = state?.mode === 'declared' ? state.award : null;
+  return award ? `${award.eventId}|${award.presentation?.id}|${award.presentation?.status === 'completed'}` : null;
+}
+
 // Subscribes at once (inside the controller), before any read. `refresh` serves both the committed and the recovered
 // fact refresh. The committed one runs once, after a valid explicit confirm has released its flight; its outcome is
 // kept for the event it ran under (pending, failed or none) and only an explicit retry runs it again.

@@ -431,3 +431,76 @@ test('a disposed binding or unclear guards never read or cancel the legacy check
   assert.deepEqual(guarded.calls.filter((call: string) => call.startsWith('legacy:')), ['legacy:read'],
     'unclear guards refuse the cancel before any write');
 });
+
+// The dedicated Bingo lot panel (BG-06C2a): its visibility, its own busy gates and its read-once key, mirroring the
+// pageBlocked/lineResolved conventions above against real controller states.
+import { bingoLocks, bingoLotBusy, bingoLotKey, bingoLotVisible } from '../src/bingo-ui.mjs';
+
+const bingoTied = (lotResolution: string) => ({ eventId: 'e1',
+  award: { winnerCount: 2, totalCents: 5000, shareCents: 2500, remainderCents: 0,
+    lot: lotResolution === 'not_required' ? '' : 'Jamón', lotResolution },
+  presentation: { id: 'b1', status: 'completed', startedAt: 1000, deadlineAt: 5000 } });
+// The declared Bingo state the page renders after reading `award` under event e1, through the real binding.
+async function declaredBingo(award: unknown) {
+  const f = bindingFixture(() => {}, { readBingoSetup: async () => ({ ok: true, state: 'declared', award }) });
+  f.binding.sync('e1', 'line_declared', {});
+  await f.binding.reread();
+  const state = f.renders.at(-1);
+  assert.equal(state.mode, 'declared');
+  return state;
+}
+
+const lotClearPage = { selecting: false, activating: false, tongoBusy: false, eventsPending: false, eventsStale: false,
+  eventPending: false, eventStale: false, eventError: false };
+
+test('bingoLotVisible shows only a declared award of the active event with its lot pending or resolved', async () => {
+  assert.equal(bingoLotVisible(await declaredBingo(bingoTied('pending')), 'e1'), true, 'a pending lot');
+  assert.equal(bingoLotVisible(await declaredBingo(bingoTied('resolved')), 'e1'), true, 'a resolved lot');
+  assert.equal(bingoLotVisible(await declaredBingo(bingoTied('not_required')), 'e1'), false, 'no lot to settle');
+  assert.equal(bingoLotVisible({ ...(await declaredBingo(bingoTied('pending'))), eventId: 'e2' }, 'e1'), false, 'another event');
+  assert.equal(bingoLotVisible({ mode: 'declared', eventId: 'e1', pending: false, award: null }, 'e1'), false, 'declared without an award');
+  assert.equal(bingoLotVisible({ mode: 'setup', eventId: 'e1', pending: false, award: null }, 'e1'), false, 'setup mode');
+  assert.equal(bingoLotVisible({ mode: 'uncertain', eventId: 'e1', pending: false, award: null }, 'e1'), false, 'uncertain');
+  assert.equal(bingoLotVisible({ mode: 'idle', eventId: 'e1', pending: false, award: null }, 'e1'), false, 'idle');
+  assert.equal(bingoLotVisible({ mode: 'unknown', eventId: null, pending: false, award: null }, 'e1'), false, 'unknown');
+  assert.equal(bingoLotVisible(await declaredBingo(bingoTied('pending')), null), false, 'no active event');
+  assert.equal(bingoLotVisible(null, 'e1'), false, 'no state yet');
+});
+
+test('bingoLotBusy is clear for a declared, idle page and set by each of its own busy sources alone', async () => {
+  const settled = await declaredBingo(bingoTied('pending'));
+  assert.equal(bingoLotBusy(lotClearPage, settled, 'e1'), false, 'a healthy page with a settled celebration');
+  for (const flag of ['selecting', 'activating', 'tongoBusy', 'eventsPending', 'eventsStale', 'eventPending', 'eventStale']) {
+    assert.equal(bingoLotBusy({ ...lotClearPage, [flag]: true }, settled, 'e1'), true, flag);
+  }
+  assert.equal(bingoLotBusy({ ...lotClearPage, eventError: true }, settled, 'e1'), true, 'a failed event read');
+  const reading = { mode: 'idle', pending: true, eventId: 'e1', session: null, award: null, legacy: { status: 'none' }, refresh: 'none' };
+  assert.equal(bingoLotBusy(lotClearPage, reading, 'e1'), true, 'a Bingo read in flight');
+});
+
+test('the bingo lot stays busy while the bingo presentation is pending or running', async () => {
+  const live = (status: string) => ({ ...bingoTied('pending'),
+    presentation: { id: 'b1', status, ...(status === 'pending' ? { startedAt: null, deadlineAt: null } : { startedAt: 1000, deadlineAt: 5000 }) } });
+  assert.equal(bingoLotBusy(lotClearPage, await declaredBingo(live('pending')), 'e1'), true, 'a pending presentation');
+  assert.equal(bingoLotBusy(lotClearPage, await declaredBingo(live('started')), 'e1'), true, 'a running presentation');
+});
+
+test('a declared bingo keeps its draw lock without making the bingo lot busy (dedicated predicate)', () => {
+  const declared = { mode: 'declared', pending: false, eventId: 'e1', session: null, legacy: { status: 'none' },
+    refresh: 'none', award: bingoTied('pending') };
+  assert.equal(bingoLocks(declared, 'e1').draw, true, 'the ordinary draw stays locked once the bingo is declared');
+  assert.equal(bingoLotBusy(lotClearPage, declared, 'e1'), false, 'a verbatim drawingBlocked copy would never allow the lot draw');
+  assert.equal(bingoLotBusy({ ...lotClearPage, eventsStale: true }, declared, 'e1'), true, 'every other lock still applies');
+});
+
+test('bingoLotKey starts the read only once the celebration completed and repeats nothing for the same key', async () => {
+  const at = (status: string) => ({ ...bingoTied('pending'),
+    presentation: { id: 'b1', status, ...(status === 'pending' ? { startedAt: null, deadlineAt: null } : { startedAt: 1000, deadlineAt: 5000 }) } });
+  assert.equal(bingoLotKey(await declaredBingo(at('pending'))), 'e1|b1|false', 'a pending celebration starts nothing');
+  assert.equal(bingoLotKey(await declaredBingo(at('started'))), 'e1|b1|false', 'a running celebration starts nothing');
+  const completed = await declaredBingo(at('completed'));
+  assert.equal(bingoLotKey(completed), 'e1|b1|true', 'only a completed celebration reads');
+  assert.equal(bingoLotKey(await declaredBingo(at('completed'))), bingoLotKey(completed), 'the same key never reads again');
+  assert.equal(bingoLotKey({ mode: 'idle', eventId: 'e1', pending: false, award: null }), null, 'no key without a declared award');
+  assert.equal(bingoLotKey(null), null, 'no key without a state');
+});

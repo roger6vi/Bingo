@@ -50,6 +50,10 @@ async function loadOperator(options = {}) {
   // Line-lot boundary: unavailable and refusing draws unless a test scripts it; logged apart from the other requests.
   const lot = { reads: 0, draws: [], presents: [], status: null, read: async () => ({ ok: false, code: 'not_available' }),
     draw: async () => ({ ok: false, code: 'not_available' }), present: async () => ({ ok: true }), ...options.lot };
+  // Bingo-lot boundary (BG-06C2a): read-only for the dedicated panel; the draw is recorded so C2b dispatches are
+  // observable, and C2a must leave it empty.
+  const bingoLot = { reads: 0, draws: [], presents: [], read: async () => ({ ok: false, code: 'not_available' }),
+    draw: async () => ({ ok: false, code: 'not_available' }), present: async () => ({ ok: true }), ...options.bingoLot };
   // First-line boundary: the default is an idle main; a test replaces a reply to script another state.
   const lineSession = { sessionId: 's1', eventId: 'a', calledNumbers: [4, 9], linePrize: { amount: 10, lot: 'Jam\u00f3n' } };
   const lineAward = (winnerCount) => ({ eventId: 'a', award: { winnerCount, totalCents: 1000, shareCents: Math.floor(1000 / winnerCount),
@@ -109,6 +113,9 @@ async function loadOperator(options = {}) {
     drawLineLot: async (expected) => { lot.draws.push(expected); return lot.draw(expected); },
     // Private presentation request, recorded apart from draws; `omitPresent` scripts a desktop without the method.
     ...(lot.omitPresent ? {} : { presentLineLot: (snapshot) => { lot.presents.push(snapshot); return lot.present(snapshot); } }),
+    readBingoLot: async () => { bingoLot.reads++; return bingoLot.read(); },
+    drawBingoLot: async (expected) => { bingoLot.draws.push(expected); return bingoLot.draw(expected); },
+    presentBingoLot: (snapshot) => { bingoLot.presents.push(snapshot); return bingoLot.present(snapshot); },
     onPublicStatus: (callback) => { lot.status = callback; }, openPublic: () => {}, movePublicToSecondary: () => {},
     getTheme: async () => ({ ok: true, theme }),
     setTheme: async (next) => {
@@ -172,7 +179,7 @@ async function loadOperator(options = {}) {
     delete window.desktop;
     delete document.documentElement.dataset.theme;
   };
-  return { main, requests, replies, reads, line, legacy, lot, bingo, simulator, cleanup };
+  return { main, requests, replies, reads, line, legacy, lot, bingoLot, bingo, simulator, cleanup };
 }
 
 function type(input, value) {
@@ -2116,6 +2123,110 @@ it('forced intents on a hidden panel write nothing and a disposed page ignores l
     await settle();
     expect([lotText(op).includes('Ganador:'), op.lot.draws.length]).to.deep.equal([false, 1]);
   } finally { op.cleanup(); }
+});
+
+// Bingo lot through the real operator page (BG-06C2a): the dedicated panel mirrors the Line's, rendering the same
+// controller state for the declared Bingo's lot. C2a wires rendering, visibility and the read-once sync only: the
+// panel already dispatches its draw and resync intents, but nothing consumes them yet (C2b), so `drawBingoLot` stays
+// empty and every forced intent is inert while the Line panel keeps working.
+const bingoTiedAward = { eventId: 'a', award: { winnerCount: 2, totalCents: 1000, shareCents: 500, remainderCents: 0,
+  lot: 'Jamón', lotResolution: 'pending' }, presentation: presentationAt('completed', 'b1') };
+const bingoDeclaredAs = (status) => async () => ({ ok: true, state: 'declared',
+  award: { ...bingoTiedAward, presentation: presentationAt(status, 'b1') } });
+const bingoLotSnap = (fact = { origin: 'none', resolution: 'pending' }, extra = {}) => ({ eventId: 'a', auditSequence: 7,
+  winnerCount: 2, lot: 'Jamón', presentation: { id: 'b1', status: 'completed' }, fact, ...extra });
+const bingoNumbered = (participantNumber, colorId, extra = {}) =>
+  bingoLotSnap({ origin: 'numbered_v1', resolution: 'resolved', paletteVersion: 1, participantNumber, colorId }, extra);
+const bingoLotReply = (snapshot, kind = 'current') => ({ ok: true, kind, snapshot });
+const bingoTiedOp = (lot, status = 'completed') => loadOperator({ bingo: { read: bingoDeclaredAs(status) }, bingoLot: lot });
+const bingoPanel = (op) => {
+  const element = op.main.querySelector('#bingo-lot');
+  expect(element !== null, 'the bingo lot panel exists').to.equal(true);
+  return element;
+};
+const bingoLotButton = (op, intent) => bingoPanel(op).shadowRoot.querySelector(`button[data-intent="${intent}"]`);
+const bingoLotText = (op) => bingoPanel(op).shadowRoot.textContent.replace(/\s+/g, ' ');
+
+it('the bingo lot panel shows only a declared bingo of the active event with a lot to settle, labelled apart from the line panel', async () => {
+  const op = await bingoTiedOp({ read: async () => bingoLotReply(bingoLotSnap()) });
+  try {
+    expect([bingoPanel(op).hidden, bingoPanel(op).getAttribute('label'), bingoLotButton(op, 'draw').disabled, op.bingoLot.reads])
+      .to.deep.equal([false, 'Lote del bingo', false, 1], 'visible, read once and drawable once the celebration completed');
+    expect(op.main.querySelector('#line-lot').getAttribute('label')).to.equal(null, 'the line panel keeps no label');
+  } finally { op.cleanup(); }
+  for (const read of [async () => ({ ok: true, state: 'none' }),
+    async () => ({ ok: true, state: 'declared', award: awardFor('completed', 'b1') })]) {
+    const other = await loadOperator({ bingo: { read } });
+    try {
+      expect([other.main.querySelector('#bingo-lot').hidden, other.bingoLot.reads]).to.deep.equal([true, 0],
+        'no lot, no panel and no read');
+    } finally { other.cleanup(); }
+  }
+});
+
+it('the bingo lot is read only once its celebration completed, and the same key never reads again', async () => {
+  for (const status of ['pending', 'started']) {
+    const waiting = await bingoTiedOp({ read: async () => bingoLotReply(bingoLotSnap()) }, status);
+    try {
+      expect([waiting.main.querySelector('#bingo-lot').hidden, waiting.bingoLot.reads]).to.deep.equal([false, 0]);
+    } finally { waiting.cleanup(); }
+  }
+  let read = async () => ({ ok: true, state: 'declared', award: { ...bingoTiedAward, presentation: presentationAt('pending', 'b1') } });
+  const op = await loadOperator({ bingo: { read: () => read() }, bingoLot: { read: async () => bingoLotReply(bingoLotSnap()) } });
+  try {
+    expect(op.bingoLot.reads).to.equal(0, 'a pending celebration starts nothing');
+    read = async () => ({ ok: true, state: 'declared', award: { ...bingoTiedAward, presentation: presentationAt('completed', 'b1') } });
+    op.main.querySelector('#draw-controls').reloadButton.click();
+    await settle();
+    await settle();
+    expect(op.bingoLot.reads).to.equal(1, 'the completed celebration reads once');
+    op.main.querySelector('#draw-controls').reloadButton.click();
+    await settle();
+    await settle();
+    expect(op.bingoLot.reads).to.equal(1, 'the same key never reads again');
+  } finally { op.cleanup(); }
+});
+
+it('the bingo lot panel shows the stored winner and Spanish copy, with no reroll or dispatch', async () => {
+  const resolved = await bingoTiedOp({ read: async () => bingoLotReply(bingoNumbered(5, 'purple', { winnerCount: 6 }), 'recovered') });
+  try {
+    expect(bingoLotText(resolved)).to.include('participante 5, color Morado');
+    expect([bingoLotButton(resolved, 'draw').disabled, resolved.bingoLot.reads, resolved.bingoLot.draws])
+      .to.deep.equal([true, 1, []], 'a resolved lot offers no draw and no reroll');
+  } finally { resolved.cleanup(); }
+  const failed = await bingoTiedOp({ read: async () => ({ ok: false, code: 'storage_failure' }) });
+  try {
+    expect(bingoLotText(failed)).to.include('El estado del lote no es fiable');
+    expect(bingoLotText(failed)).to.not.include('Lot state needs a fresh read');
+  } finally { failed.cleanup(); }
+});
+
+it('an actionable bingo lot enables its draw button but C2a dispatches nothing on any intent', async () => {
+  const op = await bingoTiedOp({ read: async () => bingoLotReply(bingoLotSnap()) });
+  try {
+    const draw = bingoLotButton(op, 'draw');
+    expect(draw.disabled).to.equal(false, 'the dedicated busy gates keep the settled draw available');
+    draw.click();
+    draw.click();
+    bingoLotButton(op, 'resync').click();
+    await settle();
+    expect([op.bingoLot.draws, op.bingoLot.reads]).to.deep.equal([[], 1],
+      'draw and resync intents have no listener yet; the read is never repeated');
+    op.main.querySelector('#line-lot').dispatchEvent(new CustomEvent('line-lot-draw', { bubbles: true, composed: true }));
+    await settle();
+    expect(op.lot.reads).to.equal(0, 'the line panel is untouched by bingo intents');
+  } finally { op.cleanup(); }
+});
+
+it('forced intents on a hidden bingo panel read nothing', async () => {
+  const idle = await loadOperator();
+  try {
+    const element = idle.main.querySelector('#bingo-lot');
+    for (const name of ['line-lot-draw', 'line-lot-resync']) element.dispatchEvent(new CustomEvent(name, { bubbles: true, composed: true }));
+    await settle();
+    expect([element.hidden, idle.bingoLot.reads, idle.bingoLot.draws, idle.lot.reads, idle.lot.draws])
+      .to.deep.equal([true, 0, [], 0, []]);
+  } finally { idle.cleanup(); }
 });
 
 it('a single-winner line shows no panel and a foreign, malformed or mismatched lot reply never shows a winner', async () => {

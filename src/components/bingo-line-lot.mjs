@@ -18,7 +18,9 @@ const COPY = Object.freeze({
 const RESYNC_STATES = ['actionable', 'pending', 'resolved', 'recovery', 'error'];
 
 export class BingoLineLot extends LitElement {
-  static properties = { state: { attribute: false } };
+  // `label` is optional: the two panel instances on the operator page distinguish themselves with it (the Bingo lot
+  // panel sets it in the markup), and without it the rendering stays exactly as before.
+  static properties = { state: { attribute: false }, label: { type: String } };
   static styles = css`
     :host { display: block; }
     [aria-busy] { display: grid; gap: var(--bingo-space-small); }
@@ -37,8 +39,9 @@ export class BingoLineLot extends LitElement {
     }
     button:focus-visible { outline: var(--bingo-border-width-focus) solid var(--bingo-color-focus); outline-offset: var(--bingo-space-small); }
     .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    .lot-heading { margin: 0; color: var(--bingo-color-text); font-weight: var(--bingo-font-emphasis); }
   `;
-  constructor() { super(); this.state = null; }
+  constructor() { super(); this.state = null; this.label = ''; }
 
   // Conservative view of the supplied state: anything absent or malformed behaves as unknown.
   get view() {
@@ -76,6 +79,7 @@ export class BingoLineLot extends LitElement {
     const v = this.view;
     const message = typeof v.message === 'string' && v.message !== '' ? v.message : null;
     return html`<div aria-busy=${v.busy ? 'true' : 'false'}>
+      ${this.label === '' ? '' : html`<h3 class="lot-heading">${this.label}</h3>`}
       <div role="status" aria-live="polite" aria-atomic="true">
         <p>${v.busy ? 'Sorteo en curso…' : COPY[v.status]}</p>
         ${this.outcome(v) === null ? '' : html`<p class="outcome">${this.outcome(v)}</p>`}
