@@ -20,6 +20,10 @@ class BingoNumber extends LitElement {
     span.drawn {
       min-width: 2.5ch;
       font: var(--bingo-font-emphasis) var(--bingo-font-display)/var(--bingo-font-tight) var(--bingo-font-body);
+      /* Roboto Mono Variable's real glyph extent (~1.32em) crosses the tight line box on large display
+         sizes: pad the block axis by the half-excess so painted glyphs stay inside the ball, while
+         small chips keep the compact inset unchanged. */
+      padding-block: max(var(--bingo-space-inset-compact), calc(0.071em - var(--bingo-border-width-strong)));
     }
     span.drawn.compact {
       font: var(--bingo-font-emphasis) var(--bingo-font-size)/var(--bingo-font-line) var(--bingo-font-body);

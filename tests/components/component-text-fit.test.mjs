@@ -50,6 +50,9 @@ const stylesheet = (href) => new Promise((resolve, reject) => {
 });
 
 // One theme's generated stylesheet plus screen.css (bundler imports stripped): the real paint path.
+// The project's actual mono face is loaded from the locally installed @fontsource-variable package
+// (served from node_modules, no CDN/network) — the stripped @import lines would otherwise leave the
+// Jules theme measuring its ui-monospace fallback instead of the declared Roboto Mono Variable.
 async function loadTheme(theme) {
   await setViewport({ width: 1280, height: 720 });
   document.documentElement.dataset.theme = theme;
@@ -58,9 +61,17 @@ async function loadTheme(theme) {
   screen.textContent = (await (await fetch(new URL('../../src/screen.css', import.meta.url))).text())
     .replace(/@import [^;]+;/g, '');
   document.head.append(screen);
+  const font = await stylesheet('/node_modules/@fontsource-variable/roboto-mono/wght.css');
   await document.fonts.ready;
+  // Loaded-face proof, not FontFaceSet.check: a missing face can silently fall back, so assert the
+  // registered faces exist and the requested emphasis weight really loads.
+  const faces = [...document.fonts].filter((face) => face.family.replace(/"/g, '') === 'Roboto Mono Variable');
+  expect(faces.length, 'the local Roboto Mono Variable face is registered').to.be.greaterThan(0);
+  expect((await document.fonts.load('700 1rem "Roboto Mono Variable"', 'Línea Bingo')).length,
+    'the local face loads for the used weight').to.be.greaterThan(0);
   return async () => {
     screen.remove();
+    font.remove();
     link.remove();
     delete document.documentElement.dataset.theme;
     await setViewport({ width: 800, height: 600 });
@@ -96,7 +107,12 @@ function fits(name, texts, container, { vertical = true } = {}) {
     expect(g.painted, `${name}: paints visible text (nothing hidden or clipped-only passes)`).to.equal(true);
     expect(g.width, `${name}: paints a non-empty label`).to.be.greaterThan(0);
     expect(g.rects.every((rect) => inside(rect, box, vertical)),
-      `${name}: glyphs stay inside the allocated container (${vertical ? 'width and height' : 'width; it scrolls vertically by design'})`).to.equal(true);
+      `${name}: glyphs stay inside the allocated container (${vertical ? 'width and height' : 'width; it scrolls vertically by design'})` +
+      (g.rects.every((rect) => inside(rect, box, vertical)) ? '' :
+        ` — overflowing glyph(s) ${(g.rects.filter((rect) => !inside(rect, box, vertical))
+          .map((rect) => `left=${(rect.left - box.left).toFixed(1)} right=${(rect.right - box.right).toFixed(1)}`
+            + (vertical ? ` top=${(rect.top - box.top).toFixed(1)} bottom=${(rect.bottom - box.bottom).toFixed(1)}` : ''))
+          .join(', '))} vs box ${box.width.toFixed(1)}x${box.height.toFixed(1)}`)).to.equal(true);
   }
 }
 

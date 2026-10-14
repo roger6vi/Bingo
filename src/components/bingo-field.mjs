@@ -23,7 +23,7 @@ const baseFieldStyles = css`
   .field { display: grid; gap: var(--bingo-space-small); }
   .label-row { display: flex; align-items: baseline; gap: var(--bingo-space-small); }
   label {
-    font: var(--bingo-font-emphasis) calc(var(--bingo-font-size) * 0.875)/var(--bingo-font-tight) var(--bingo-font-body);
+    font: var(--bingo-font-emphasis) calc(var(--bingo-font-size) * 0.875)/var(--bingo-font-line) var(--bingo-font-body);
     letter-spacing: var(--bingo-font-tracking); color: var(--bingo-color-text);
   }
   .required { color: var(--bingo-color-muted); font-weight: var(--bingo-font-emphasis); }
