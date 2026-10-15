@@ -228,7 +228,9 @@ test('operator cue sounds are emitted as local files, referenced by the operator
 test('Tongo keeps an operator-only trigger and a receive-only, never-replayed public signal', () => {
   const main = text('dist/main.js');
   assert.match(main, /registerTongoIpc\)\(electron_1\.ipcMain, store, \{ authorize: operatorOnly, publish: publicDelivery\.publishPresentation,\s*lineBusy: presentations\.busy \}\)/);
-  assert.match(main, /publicDelivery\.publishCommitted, tongo\.playing, line\.active,\s*presentations\.busy\)/);
+  // The manual line wiring keeps its shared-guard tail: committed publish, Tongo gate and the shared setup guard
+  // that now asks the Bingo wiring instead of the line controller.
+  assert.match(main, /publicDelivery\.publishCommitted, committed: presentation\.begin, retry: presentation\.retry,\s*repeat: presentation\.repeat, busy: presentations\.busy, tongoPlaying: tongo\.playing,\s*otherSetupActive: \(\) => bingo\.active\(\) \}\)/);
   assert.match(text('dist/preload.js'), /playTongo: \(\) => electron_1\.ipcRenderer\.invoke\('tongo:play'\)/);
   const publicPreload = text('dist/public-preload.js');
   assert.match(publicPreload, /exposeInMainWorld\('publicPresentation'/);
