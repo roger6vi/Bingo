@@ -94,9 +94,11 @@ function fixture(ports: Record<string, unknown> = {}) {
     update() { calls.push('WRITE'); throw new Error('no writes'); },
   };
   const playback: string[] = [];
+  const committedArgs: unknown[][] = [];
   const mutablePorts = { authorize: createOperatorGuard(sender, () => frame, url),
     retry: (id: string) => { playback.push(`retry:${id}`); },
-    repeat: (id: string) => { playback.push(`repeat:${id}`); }, committed: () => playback.push('committed'),
+    repeat: (id: string) => { playback.push(`repeat:${id}`); },
+    committed: (...args: unknown[]) => { committedArgs.push(args); playback.push('committed'); },
     recovered: () => playback.push('recovered'),
     now: () => new Date('2026-10-01T10:00:00.000Z'), ...ports };
   const bingo = registerBingoIpc({ handle: (channel: string, handler: Handler) => {
@@ -106,7 +108,7 @@ function fixture(ports: Record<string, unknown> = {}) {
   const invoke = (channel: string, args: unknown[] = [], fromFrame: object | null = frame, from: object = sender) =>
     handlers.get(channel)!({ sender: from, senderFrame: fromFrame }, ...args) as Record<string, unknown>;
   return { invoke, handlers, calls, attempts, confirmations, bingo, sender, state, legacy, playback, mutablePorts, store,
-    legacyWrites, legacyConfirmations, recovery,
+    legacyWrites, legacyConfirmations, recovery, committedArgs,
     get frame() { return frame; }, reload() { frame = { url }; return frame; },
     restoreFrame(original: Frame) { frame = original; } };
 }
@@ -304,8 +306,10 @@ test('confirm commits once with the complete frozen baseline and clones the retu
   assert.deepEqual(code(confirm(f, view)), [false, 'stale_session']);
   assert.equal(f.attempts.length, 1);
   assert.deepEqual(f.playback, ['committed']);
+  assert.deepEqual(f.committedArgs, [['confirm']]);
   assert.equal(f.invoke(BINGO_CHANNELS.read).state, 'declared');
   assert.deepEqual(f.playback, ['committed']);
+  assert.deepEqual(f.committedArgs, [['confirm']], 'ordinary declared reads never notify');
 });
 
 test('confirm validates exact arity and positive safe counts without touching storage', () => {
@@ -389,8 +393,8 @@ test('notification follows durable return, contains failures and blocks reentry 
   let view: View;
   const reentry: unknown[] = [];
   let notificationState: unknown;
-  f = fixture({ committed: () => {
-    notificationState = [f.calls.at(-1), f.state.award !== null, f.bingo.active()];
+  f = fixture({ committed: (...args: unknown[]) => {
+    notificationState = [args, f.calls.at(-1), f.state.award !== null, f.bingo.active()];
     for (const [channel, args] of [[BINGO_CHANNELS.begin, []], [BINGO_CHANNELS.read, []],
       [BINGO_CHANNELS.legacyRead, []], [BINGO_CHANNELS.legacyCancel, legacyArgs()],
       [BINGO_CHANNELS.cancel, [view.sessionId, view.eventId]], ['bingo:confirm', [view.sessionId, 1]],
@@ -401,7 +405,7 @@ test('notification follows durable return, contains failures and blocks reentry 
   } });
   view = begin(f);
   assert.equal(confirm(f, view).state, 'declared');
-  assert.deepEqual(notificationState, ['WRITE', true, true]);
+  assert.deepEqual(notificationState, [['confirm'], 'WRITE', true, true]);
   assert.deepEqual(reentry, Array.from({ length: 8 }, () => [false, 'setup_active']));
   assert.equal(f.attempts.length, 1);
   assert.equal(f.bingo.active(), false);
@@ -448,13 +452,16 @@ for (const outcome of ['declared', 'unchanged', 'stale', 'throw'] as const) {
     if (outcome === 'declared') {
       assert.equal(result.state, 'declared');
       assert.deepEqual(f.playback, ['committed']);
+      assert.deepEqual(f.committedArgs, [['confirm']]);
       (result.award as ReturnType<typeof storedAward>).award.lot = 'changed';
       assert.equal((f.state.award as ReturnType<typeof storedAward>).award.lot, 'Jamón');
       assert.equal(f.invoke(BINGO_CHANNELS.read).state, 'declared');
       assert.deepEqual(f.playback, ['committed']);
+      assert.deepEqual(f.committedArgs, [['confirm']], 'no duplicate after immediate confirmation');
     } else {
       assert.deepEqual(code(result), [false, outcome === 'stale' ? 'stale_session' : 'storage_failure']);
       assert.deepEqual(f.playback, []);
+      assert.deepEqual(f.committedArgs, []);
     }
     if (outcome === 'unchanged') {
       f.state.fail = null;
@@ -490,10 +497,12 @@ for (const outcome of ['declared', 'unchanged', 'stale', 'throw'] as const) {
     }
     if (outcome === 'declared') {
       assert.equal(result.state, 'declared');
+      assert.deepEqual(f.committedArgs, [['read']]);
       (result.award as ReturnType<typeof storedAward>).award.lot = 'changed';
       assert.equal((f.state.award as ReturnType<typeof storedAward>).award.lot, 'Jamón');
       assert.equal(f.invoke(BINGO_CHANNELS.read).state, 'declared');
       assert.deepEqual(f.playback, ['committed']);
+      assert.deepEqual(f.committedArgs, [['read']], 'repeated read never notifies again');
       assert.equal(f.confirmations.length, 2);
     } else if (outcome === 'unchanged') {
       assert.equal(result.state, 'setup');
@@ -520,7 +529,10 @@ for (const outcome of ['declared', 'unchanged', 'stale', 'throw'] as const) {
       assert.equal(f.invoke(BINGO_CHANNELS.read).state, 'setup');
       assert.equal(f.invoke(BINGO_CHANNELS.cancel, [view.sessionId, 'a']).state, 'cancelled');
     }
-    if (outcome !== 'declared') assert.deepEqual(f.playback, []);
+    if (outcome !== 'declared') {
+      assert.deepEqual(f.playback, []);
+      assert.deepEqual(f.committedArgs, []);
+    }
     assert.equal(f.attempts.length, 1);
     assert.equal(clocks, 1);
   });
@@ -558,7 +570,12 @@ test('bound read and its committed notification keep all handlers locked through
       observations.push(code(f.invoke(channel, [...args])));
     }
   };
-  f = fixture({ committed: () => { probe(); throw new Error('callback failure'); } });
+  const committedArgs: unknown[][] = [];
+  f = fixture({ committed: (...args: unknown[]) => {
+    committedArgs.push(args);
+    probe();
+    throw new Error('callback failure');
+  } });
   view = begin(f);
   f.state.fail = 'declare';
   confirm(f, view, 2);
@@ -567,11 +584,13 @@ test('bound read and its committed notification keep all handlers locked through
   assert.equal(f.invoke(BINGO_CHANNELS.read).state, 'declared');
   const locked = [true, ...Array.from({ length: 8 }, () => [false, 'setup_active'])];
   assert.deepEqual(observations, [...locked, ...locked]);
+  assert.deepEqual(committedArgs, [['read']]);
   assert.equal(f.bingo.active(), false);
   assert.equal(f.confirmations.length, 2);
   assert.equal(f.attempts.length, 1);
   assert.equal(f.invoke(BINGO_CHANNELS.read).state, 'declared');
   assert.deepEqual(observations, [...locked, ...locked], 'ordinary reads never notify again');
+  assert.deepEqual(committedArgs, [['read']]);
 });
 
 test('legacy read returns only a detached four-field check without any clock, write or playback', () => {

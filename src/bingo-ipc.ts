@@ -49,7 +49,7 @@ type Registrar = {
 type Ports = {
   authorize(event: BingoRequest): void;
   now?(): Date;
-  committed?(): void;
+  committed?(origin: 'confirm' | 'read'): void;
   recovered?(): void;
   retry?(presentationId: string): void | boolean;
   repeat?(presentationId: string): void | boolean;
@@ -119,11 +119,11 @@ export function registerBingoIpc(registrar: Registrar, store: BingoStore, ports:
   const uncertain = () => failure('storage_failure',
     'Could not confirm the Bingo declaration. Keep this setup open and check the state later.');
 
-  const finish = (award: StoredBingoAward): BingoResult => {
+  const finish = (award: StoredBingoAward, origin: 'confirm' | 'read'): BingoResult => {
     const result: BingoResult = { ok: true, state: 'declared', award: structuredClone(award) };
     session = null;
     attempt = null;
-    try { ports.committed?.(); }
+    try { ports.committed?.(origin); }
     catch { /* A notification failure cannot undo a durable declaration or authorize another write. */ }
     return result;
   };
@@ -136,7 +136,7 @@ export function registerBingoIpc(registrar: Registrar, store: BingoStore, ports:
     try {
       confirmed = store.confirmBingoDeclaration(original.baseline, original.count, original.at);
     } catch { return uncertain(); }
-    if (confirmed.state === 'declared') return finish(confirmed.award);
+    if (confirmed.state === 'declared') return finish(confirmed.award, reader !== undefined ? 'read' : 'confirm');
     attempt = null;
     if (confirmed.state === 'stale') {
       session = null;
@@ -293,7 +293,7 @@ export function registerBingoIpc(registrar: Registrar, store: BingoStore, ports:
     let award: StoredBingoAward;
     try { award = store.declareBingoDirectly(attempt.baseline, attempt.count, attempt.at); }
     catch { return resolveAttempt(); }
-    return finish(award);
+    return finish(award, 'confirm');
   });
 
   // The coordinator owns status validation, ID rotation, notification and fresh playback. IPC only dispatches
