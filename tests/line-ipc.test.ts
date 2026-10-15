@@ -15,7 +15,7 @@ const storedAward = (eventId = 'a') => ({ eventId, presentation: { id: 'p1', sta
   lotResolution: 'not_required' } });
 
 function fixture(options: { head?: string | null; now?: () => Date; ports?: Record<string, unknown>;
-  storeExtra?: Record<string, unknown> } = {}) {
+  storeExtra?: Record<string, unknown>; probe?: (point: string) => void } = {}) {
   const sender = {};
   const url = 'file:///app/operator.html';
   let frame: Frame = { url };
@@ -25,11 +25,13 @@ function fixture(options: { head?: string | null; now?: () => Date; ports?: Reco
   let failure: string | null = null;
   const store = {
     loadLineDeclarationBaseline() {
+      options.probe?.('baseline');
       calls.push('baseline');
       if (failure === 'baseline' || award !== null) throw new Error('secret ineligible');
       return Object.freeze({ ...baseline(options.head ?? null), calledNumbers: Object.freeze([7, 42]) });
     },
     declareLineDirectly(expected: unknown, count: unknown, at: unknown) {
+      options.probe?.('declare');
       calls.push(`declare:${JSON.stringify(expected)}:${String(count)}:${String(at)}`);
       if (failure === 'declare-uncommitted') throw new Error('secret write');
       if (failure === 'declare-uncertain' || failure === 'declare-unreadable') {
@@ -40,11 +42,13 @@ function fixture(options: { head?: string | null; now?: () => Date; ports?: Reco
       return award;
     },
     loadLineAward() {
+      options.probe?.('award');
       calls.push('award');
       if (failure === 'award' || failure === 'declare-unreadable') throw new Error('secret read');
       return award;
     },
     load() {
+      options.probe?.('load');
       calls.push('load');
       return { calledNumbers: [7, 42], phase: 'line_declared' as const, lastTransitionAt: 'x' };
     },
@@ -55,7 +59,10 @@ function fixture(options: { head?: string | null; now?: () => Date; ports?: Reco
     handlers.set(channel, handler);
   } }, store, {
     authorize: createOperatorGuard(sender, () => frame, url),
-    now: options.now ?? (() => new Date('2026-10-01T10:00:00.000Z')),
+    now: () => {
+      options.probe?.('clock');
+      return options.now?.() ?? new Date('2026-10-01T10:00:00.000Z');
+    },
     publish: (snapshot: unknown) => {
       calls.push(`publish:${JSON.stringify(snapshot)}`);
       if (failure === 'publish') throw new Error('display gone');
@@ -71,7 +78,7 @@ function fixture(options: { head?: string | null; now?: () => Date; ports?: Reco
 type Session = { sessionId: string; eventId: string; calledNumbers: number[]; linePrize: { amount: number; lot: string } };
 const begin = (f: ReturnType<typeof fixture>) => (f.invoke(LINE_CHANNELS.begin) as { ok: true; session: Session }).session;
 
-test('registers exactly six operator-only channels and rejects bad senders before any store access', () => {
+test('registers exactly eight operator-only channels and rejects bad senders before any store access', () => {
   const f = fixture();
   assert.deepEqual([...f.handlers.keys()], Object.values(LINE_CHANNELS));
   for (const channel of Object.values(LINE_CHANNELS)) {
@@ -339,13 +346,15 @@ test('manual retry and repeat are refused while Tongo plays, before any coordina
 // ---- legacy checking_line recovery (REC-01) ----
 const CHECK = { eventId: 'a', phase: 'checking_line' as const, lastTransitionAt: '2026-10-01T09:00:00.000Z', auditSequence: 3 };
 
-function legacy(options: { head?: string; ports?: Record<string, unknown>; mode?: string } = {}) {
+function legacy(options: { head?: string; ports?: Record<string, unknown>; mode?: string;
+  probe?: (point: string) => void } = {}) {
   const check = { ...CHECK, lastTransitionAt: options.head ?? CHECK.lastTransitionAt };
   let mode = options.mode ?? 'ok';
   let recovered: string | null = null;
   const calls: string[] = [];
   const extra = {
     loadLegacyLineCheck() {
+      options.probe?.('check');
       calls.push('check');
       if (mode === 'corrupt') throw new Error('secret corrupt row');
       if (mode === 'ineligible' || mode === 'stale' || recovered !== null) {
@@ -354,6 +363,7 @@ function legacy(options: { head?: string; ports?: Record<string, unknown>; mode?
       return Object.freeze({ ...check });
     },
     cancelLegacyLineCheck(expected: unknown, at: unknown) {
+      options.probe?.('legacy-write');
       calls.push(`cancel:${JSON.stringify(expected)}:${String(at)}`);
       if (mode === 'rejected' || mode === 'stale') throw new Error('secret write');
       recovered = String(at);
@@ -362,6 +372,7 @@ function legacy(options: { head?: string; ports?: Record<string, unknown>; mode?
     },
     // Bound readback: one snapshot that names the event, so another event's matching row is never ours.
     confirmLegacyLineCancel(expected: unknown, at: unknown) {
+      options.probe?.('legacy-readback');
       calls.push(`confirm:${JSON.stringify(expected)}:${String(at)}`);
       if (mode === 'unreadable') throw new Error('secret read');
       if (mode === 'otherEvent' || mode === 'stale') return 'stale';
@@ -384,7 +395,7 @@ function legacy(options: { head?: string; ports?: Record<string, unknown>; mode?
       return rows;
     },
   };
-  const f = fixture({ ports: options.ports, storeExtra: extra });
+  const f = fixture({ ports: options.ports, storeExtra: extra, probe: options.probe });
   const read = () => f.invoke(LINE_CHANNELS.readLegacyCheck) as Record<string, unknown>;
   const cancel = (args: unknown[] = [check.eventId, check.auditSequence, check.lastTransitionAt]) =>
     f.invoke(LINE_CHANNELS.cancelLegacyCheck, args) as Record<string, unknown>;
@@ -517,4 +528,172 @@ test('legacy read reports corrupt or unreadable storage as an operator storage f
   const eligible = legacy({ mode: 'ineligible' }).read();
   assert.deepEqual([eligible.ok, eligible.code], [false, 'not_available']);
   assert.notEqual(r.message, eligible.message);
+});
+
+const codeOf = (result: unknown) => (result as { code?: string }).code;
+const reentryArgs = (session?: Session): Record<string, unknown[]> => ({
+  [LINE_CHANNELS.begin]: [],
+  [LINE_CHANNELS.read]: [],
+  [LINE_CHANNELS.cancel]: [session?.sessionId ?? 'missing', 'a'],
+  [LINE_CHANNELS.confirm]: [session?.sessionId ?? 'missing', 'a', 3],
+  [LINE_CHANNELS.retryPresentation]: ['p1'],
+  [LINE_CHANNELS.repeatPresentation]: ['p1'],
+  [LINE_CHANNELS.readLegacyCheck]: [],
+  [LINE_CHANNELS.cancelLegacyCheck]: ['a', 3, CHECK.lastTransitionAt],
+});
+
+// Capture rather than assert inside best-effort callbacks, which intentionally contain throws.
+function reentryProbe(getFixture: () => ReturnType<typeof fixture>, getSession: () => Session | undefined = () => undefined) {
+  const samples: { point: string; active: boolean; results: unknown[]; unauthorized: boolean; unchanged: boolean }[] = [];
+  let probing = false;
+  return {
+    samples,
+    probe(point: string) {
+      if (probing) return;
+      probing = true;
+      try {
+        const f = getFixture();
+        const before = [...f.calls];
+        const results = Object.entries(reentryArgs(getSession())).map(([channel, args]) => f.invoke(channel, args));
+        let unauthorized = true;
+        for (const [channel, args] of Object.entries(reentryArgs(getSession()))) {
+          try { f.invoke(channel, args, {}); unauthorized = false; }
+          catch (error) { unauthorized &&= /Unauthorized/.test(String(error)); }
+        }
+        samples.push({ point, active: f.line.active(), results, unauthorized,
+          unchanged: JSON.stringify(before) === JSON.stringify(f.calls) });
+      } finally { probing = false; }
+    },
+    check() {
+      assert.ok(samples.length > 0);
+      for (const sample of samples) {
+        assert.equal(sample.active, true, sample.point);
+        assert.equal(sample.unauthorized, true, sample.point);
+        assert.equal(sample.unchanged, true, sample.point);
+        assert.deepEqual(sample.results.map(codeOf), Array(8).fill('stale_session'), sample.point);
+      }
+    },
+  };
+}
+
+test('other setup refuses begin, manual actions and legacy cancel before loads, clocks or dispatch', () => {
+  const effects: string[] = [];
+  const ports = { otherSetupActive: () => true, tongoPlaying: () => { effects.push('tongo'); return false; },
+    busy: () => { effects.push('busy'); return false; }, retry: () => effects.push('retry'),
+    repeat: () => effects.push('repeat'), publish: () => effects.push('publish'), committed: () => effects.push('committed') };
+  const l = legacy({ ports, probe: (point) => effects.push(point) });
+  const args = reentryArgs();
+  for (const channel of [LINE_CHANNELS.begin, LINE_CHANNELS.retryPresentation,
+    LINE_CHANNELS.repeatPresentation, LINE_CHANNELS.cancelLegacyCheck]) {
+    assert.throws(() => l.f.invoke(channel, args[channel], {}), /Unauthorized/);
+    assert.equal(codeOf(l.f.invoke(channel, [...args[channel], 'extra'])), 'invalid_request');
+    assert.equal(codeOf(l.f.invoke(channel, args[channel])), 'setup_active');
+  }
+  assert.deepEqual(effects, []);
+  assert.deepEqual(l.calls, []);
+  assert.deepEqual(l.f.calls, []);
+  assert.equal(l.f.line.active(), false);
+  assert.deepEqual(l.f.invoke(LINE_CHANNELS.read), { ok: true, state: 'none' });
+  assert.deepEqual(l.read(), { ok: true, state: 'legacy_check', check: CHECK });
+});
+
+test('owned confirm retains its setup behind the reciprocal gate; read and owned cancel can unwind', () => {
+  let other = false;
+  const effects: string[] = [];
+  const f = fixture({ probe: (point) => effects.push(point), ports: { otherSetupActive: () => other } });
+  const session = begin(f);
+  effects.length = 0;
+  f.calls.length = 0;
+  other = true;
+  assert.throws(() => f.invoke(LINE_CHANNELS.confirm, [session.sessionId, 'a', 3], {}), /Unauthorized/);
+  assert.equal(codeOf(f.invoke(LINE_CHANNELS.confirm, [session.sessionId, 'a', 0])), 'invalid_request');
+  assert.equal(codeOf(f.invoke(LINE_CHANNELS.confirm, ['wrong', 'a', 3])), 'stale_session');
+  assert.equal(codeOf(f.invoke(LINE_CHANNELS.confirm, [session.sessionId, 'a', 3])), 'setup_active');
+  assert.deepEqual(effects, []);
+  assert.deepEqual(f.calls, []);
+  assert.equal(f.line.active(), true);
+  assert.equal((f.invoke(LINE_CHANNELS.read) as { session: Session }).session.sessionId, session.sessionId);
+  other = false;
+  assert.equal((f.invoke(LINE_CHANNELS.confirm, [session.sessionId, 'a', 3]) as { ok: boolean }).ok, true);
+  assert.equal(f.line.active(), false);
+  const unwind = fixture({ ports: { otherSetupActive: () => other } });
+  const open = begin(unwind);
+  other = true;
+  assert.deepEqual(unwind.invoke(LINE_CHANNELS.cancel, [open.sessionId, 'a']), { ok: true });
+  assert.equal(unwind.line.active(), false);
+});
+
+test('all eight reentries are stale throughout declaration, durable publish and committed callbacks', () => {
+  let f: ReturnType<typeof fixture>;
+  let session: Session | undefined;
+  const probe = reentryProbe(() => f, () => session);
+  const actions: string[] = [];
+  f = fixture({ probe: probe.probe, ports: {
+    otherSetupActive: () => { probe.probe('other-gate'); return false; },
+    tongoPlaying: () => { probe.probe('tongo'); return false; },
+    retry: () => actions.push('retry'), repeat: () => actions.push('repeat'),
+    publish: () => { probe.probe('publish'); throw new Error('display gone'); },
+    committed: () => { probe.probe('committed'); throw new Error('celebration gone'); },
+  } });
+  session = begin(f);
+  assert.equal((f.invoke(LINE_CHANNELS.confirm, [session.sessionId, 'a', 3]) as { ok: boolean }).ok, true);
+  probe.check();
+  assert.deepEqual(probe.samples.map((sample) => sample.point),
+    ['other-gate', 'tongo', 'baseline', 'other-gate', 'tongo', 'clock', 'declare', 'load', 'publish', 'committed']);
+  assert.deepEqual(actions, []);
+  assert.equal(f.line.active(), false);
+  assert.deepEqual(f.invoke(LINE_CHANNELS.read), { ok: true, state: 'declared', award: storedAward() });
+});
+
+test('read and both manual actions reserve processing through dispatch and award readback', () => {
+  let f: ReturnType<typeof fixture>;
+  const probe = reentryProbe(() => f);
+  const actions: string[] = [];
+  f = fixture({ probe: probe.probe, ports: {
+    busy: () => { probe.probe('busy'); return false; },
+    retry: () => { actions.push('retry'); probe.probe('retry'); },
+    repeat: () => { actions.push('repeat'); probe.probe('repeat'); },
+  } });
+  assert.deepEqual(f.invoke(LINE_CHANNELS.read), { ok: true, state: 'none' });
+  confirm(f);
+  for (const channel of [LINE_CHANNELS.retryPresentation, LINE_CHANNELS.repeatPresentation]) {
+    assert.deepEqual(f.invoke(channel, ['p1']), { ok: true, award: storedAward() });
+    assert.equal(f.line.active(), false);
+  }
+  probe.check();
+  assert.deepEqual(actions, ['retry', 'repeat']);
+  assert.ok(probe.samples.some((sample) => sample.point === 'award'));
+});
+
+test('legacy read, uncertain recovery and recovered publication keep all eight reentries blocked', () => {
+  let l: ReturnType<typeof legacy>;
+  const probe = reentryProbe(() => l.f);
+  l = legacy({ mode: 'uncertain', probe: probe.probe, ports: {
+    publish: () => { probe.probe('legacy-publish'); throw new Error('display gone'); },
+  } });
+  assert.deepEqual(l.read(), { ok: true, state: 'legacy_check', check: CHECK });
+  assert.deepEqual(l.cancel(), { ok: true, state: 'recovered' });
+  probe.check();
+  assert.deepEqual(probe.samples.map((sample) => sample.point),
+    ['check', 'clock', 'legacy-write', 'legacy-readback', 'load', 'legacy-publish']);
+  assert.equal(writes(l.calls).length, 1);
+  assert.equal(l.f.line.active(), false);
+});
+
+test('throwing gates and failed dispatch release processing without losing an open session', () => {
+  let throws = false;
+  const f = fixture({ ports: { otherSetupActive: () => { if (throws) throw new Error('gate'); return false; },
+    retry: () => { throw new Error('dispatch'); }, repeat: () => { throw new Error('dispatch'); } } });
+  const session = begin(f);
+  throws = true;
+  assert.throws(() => f.invoke(LINE_CHANNELS.confirm, [session.sessionId, 'a', 3]), /gate/);
+  assert.equal(f.line.active(), true);
+  throws = false;
+  assert.equal((f.invoke(LINE_CHANNELS.read) as { state: string }).state, 'setup');
+  assert.deepEqual(f.invoke(LINE_CHANNELS.cancel, [session.sessionId, 'a']), { ok: true });
+  for (const channel of [LINE_CHANNELS.retryPresentation, LINE_CHANNELS.repeatPresentation]) {
+    assert.equal(codeOf(f.invoke(channel, ['p1'])), 'presentation_refused');
+    assert.equal(f.line.active(), false);
+    assert.deepEqual(f.invoke(LINE_CHANNELS.read), { ok: true, state: 'none' });
+  }
 });
