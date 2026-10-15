@@ -9,7 +9,7 @@ class BingoLatestDraw extends LitElement {
   constructor() { super(); this.latest = null; this.loaded = false; this.announcement = ''; }
   willUpdate(changed) {
     if (changed.has('latest') && this.latest !== null && this.latest !== changed.get('latest')) {
-      this.announcement = `Latest draw: ${this.latest}`;
+      this.announcement = `Última bola: ${this.latest}`;
     }
   }
   render() {

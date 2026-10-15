@@ -34,7 +34,7 @@ class BingoNumberBoard extends LitElement {
   render() {
     const called = new Set(this.calledNumbers);
     const latest = this.calledNumbers.at(-1);
-    return html`<p class="note">${!this.loaded ? 'Waiting for draw' : called.size === 0 ? 'No draws yet' : ''}</p>
+    return html`<p class="note">${!this.loaded ? 'Esperando el primer número' : called.size === 0 ? 'Sin números cantados' : ''}</p>
       <ol aria-label="Numbers 1 to 90">
         ${NUMBERS.map((number) => {
           const state = number === latest ? 'latest' : called.has(number) ? 'called' : 'uncalled';

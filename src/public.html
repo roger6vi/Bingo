@@ -1,29 +1,29 @@
 <!doctype html>
-<html lang="en">
+<html lang="es">
 <head>
   <meta charset="utf-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; media-src 'self'; img-src 'self' data:; font-src 'self'; object-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'">
-  <title>Public display</title>
+  <title>Pantalla pública</title>
 </head>
 <body>
   <bingo-shell>
   <main class="public-layout">
     <div class="public-event">
-      <h1 id="event-name">Current event</h1>
+      <h1 id="event-name">Evento actual</h1>
       <p id="event-details" class="event-details" hidden></p>
       <bingo-status id="phase-status"></bingo-status>
       <bingo-status id="event-status"></bingo-status>
       <bingo-status id="event-error" hidden></bingo-status>
-      <p>Called: <output id="called-count" aria-live="off">0</output> · Remaining: <output id="remaining-count" aria-live="off">90</output></p>
+      <p>Cantados: <output id="called-count" aria-live="off">0</output> · Restantes: <output id="remaining-count" aria-live="off">90</output></p>
     </div>
     <bingo-number-board id="called-numbers"></bingo-number-board>
     <div class="public-side">
-      <bingo-panel heading="Latest committed draw">
+      <bingo-panel heading="Último número cantado">
         <bingo-latest-draw id="latest-draw">
           <bingo-number id="latest-number" latest></bingo-number>
         </bingo-latest-draw>
       </bingo-panel>
-      <bingo-panel heading="Prizes">
+      <bingo-panel heading="Premios">
         <bingo-prize-display id="prizes" lang="es"></bingo-prize-display>
       </bingo-panel>
     </div>
