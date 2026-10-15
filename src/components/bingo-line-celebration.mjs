@@ -1,9 +1,10 @@
 import { LitElement, css, html } from 'lit';
 
-// Public first-line overlay. Same composition rules as the Tongo overlay: semantic tokens only, the board stays in
-// the DOM underneath, and `active` clearing restores it unchanged. `facts` is the committed award description.
+// Public first-line and Bingo overlay. Same composition rules as the Tongo overlay: semantic tokens only, the board
+// stays in the DOM underneath, and `active` clearing restores it unchanged. `kind` ('line' by default, or 'bingo')
+// picks the word; `facts` is the committed award description of that kind.
 class BingoLineCelebration extends LitElement {
-  static properties = { active: { type: Boolean, reflect: true }, facts: { type: String } };
+  static properties = { active: { type: Boolean, reflect: true }, kind: { type: String }, facts: { type: String } };
   static styles = css`
     :host {
       position: fixed; inset: 0; z-index: var(--bingo-layer-overlay);
@@ -39,14 +40,15 @@ class BingoLineCelebration extends LitElement {
     @keyframes bounce { from { transform: translateY(0); } to { transform: translateY(-0.25em); } }
     @media (prefers-reduced-motion: reduce) { .scrim, .card, .word { animation: none; } }
   `;
-  constructor() { super(); this.active = false; this.facts = ''; }
+  constructor() { super(); this.active = false; this.kind = 'line'; this.facts = ''; }
   render() {
+    const word = this.kind === 'bingo' ? '¡Bingo!' : '¡Línea!';
     // The live region always exists, so the overlay is announced once when it appears.
     const announcement = html`<span class="announcement" role="status" aria-live="polite" aria-atomic="true">${
-      this.active ? `¡Línea! ${this.facts}`.trim() : ''}</span>`;
+      this.active ? `${word} ${this.facts}`.trim() : ''}</span>`;
     if (!this.active) return announcement;
     return html`<div class="scrim"></div>
-      <div class="card" aria-hidden="true"><p class="word">¡Línea!</p>
+      <div class="card" aria-hidden="true"><p class="word">${word}</p>
         ${this.facts === '' ? '' : html`<p class="facts">${this.facts}</p>`}</div>${announcement}`;
   }
 }

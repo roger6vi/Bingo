@@ -13,7 +13,7 @@ import { applyTheme, revealAfter } from './theme-controller.mjs';
 import { publicBridges, validEventMeta } from './public-bridge.mjs';
 import { validPrizes } from './prize-format.mjs';
 import { createTongoPlayback } from './tongo.mjs';
-import { createLineCelebrationPlayback } from './line-celebration.mjs';
+import { createCelebrationPlayback } from './line-celebration.mjs';
 import { createLineLotAdapter } from './public-line-lot-playback.mjs';
 
 const bridges = publicBridges(window);
@@ -77,7 +77,8 @@ const unsubscribeLineAward = bridges.lineAward.subscribe((award) => {
   lotPlayback.observeAward(award);
 });
 // The committed Bingo award, static like the line one and independent of it: an invalid or cleared Bingo payload
-// removes only this text. It never plays anything and never reaches the line celebration overlay.
+// removes only this text. Receiving it never plays anything; only a Bingo signal shows these facts in the overlay.
+let bingoFacts = '';
 let bingoFresh = false;
 const bingoAward = document.createElement('p');
 bingoAward.id = 'bingo-award';
@@ -87,7 +88,8 @@ bingoAward.hidden = true;
 prizes.parentElement.append(bingoAward);
 function showBingo(award) {
   const valid = validBingoAward(award);
-  bingoAward.textContent = valid ? describeBingoAward(award) : '';
+  bingoFacts = valid ? describeBingoAward(award) : '';
+  bingoAward.textContent = bingoFacts;
   bingoAward.hidden = !valid;
 }
 const unsubscribeBingoAward = bridges.bingoAward.subscribe((award) => {
@@ -131,17 +133,19 @@ const tongoPlayback = createTongoPlayback(bridges.presentation, {
   show: () => { tongo.active = true; },
   hide: () => { tongo.active = false; },
 });
-// The first-line celebration overlays the same unchanged board. Page-local, like Tongo: it plays only for a signal
-// this page received, and its start receipt is sent after the overlay has actually rendered.
+// The first-line and Bingo celebrations share one overlay over the same unchanged board. Page-local, like Tongo: it
+// plays only for a signal this page received, and the start receipt goes through that kind's own sender after the
+// overlay has actually rendered. A competing signal is dropped by the playback before the kind or facts change.
 const lineCelebration = required('line-celebration', HTMLElement);
-const linePlayback = createLineCelebrationPlayback(bridges.presentation, {
-  show: () => {
-    lineCelebration.facts = awardFacts;
+const linePlayback = createCelebrationPlayback(bridges.presentation, {
+  show: (signal) => {
+    lineCelebration.kind = signal.kind;
+    lineCelebration.facts = signal.kind === 'bingo' ? bingoFacts : awardFacts;
     lineCelebration.active = true;
     return lineCelebration.updateComplete;
   },
   hide: () => { lineCelebration.active = false; },
-}, bridges.lineReceipt);
+}, { line: bridges.lineReceipt, bingo: bridges.bingoReceipt });
 window.addEventListener('pagehide', () => {
   controller.cleanup();
   tongoPlayback.cleanup();
