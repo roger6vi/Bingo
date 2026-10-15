@@ -93,11 +93,12 @@ async function smoke() {
       };
       let publicWindow;
       const celebrate = async (kind) => {
-        await operator.waitForFunction((expected) => {
+        // The celebration overlay lives in the public document (src/public.html), never in the operator page.
+        await publicWindow.waitForFunction((expected) => {
           const celebration = document.querySelector('#line-celebration');
           return celebration.active === true && celebration.kind === expected;
         }, kind, { timeout: 30_000 });
-        await operator.waitForFunction(() => document.querySelector('#line-celebration').active === false,
+        await publicWindow.waitForFunction(() => document.querySelector('#line-celebration').active === false,
           null, { timeout: 30_000 });
       };
 
@@ -107,6 +108,9 @@ async function smoke() {
       });
 
       await step('prizes are configured through the settings form and saved', async () => {
+        // The settings panel starts hidden behind the Eventos tab, so it must be activated before typing.
+        await operator.click('#tab-settings');
+        await operator.locator('#settings-line-amount input').waitFor({ state: 'visible' });
         await operator.fill('#settings-line-amount input', String(PRIZES.line.amount));
         await operator.fill('#settings-line-lot input', PRIZES.line.lot);
         await operator.fill('#settings-bingo-amount input', String(PRIZES.bingo.amount));

@@ -49,10 +49,10 @@ const watchApp = (app, note, source) => {
   app.on('window', watch);
 };
 
-// One launch leg on the seeded profile. `state` carries the seed (pre-launch rows), the award text seen by
-// the real public UI and, for the restart leg, the between-legs full-row snapshot driving the data-driven
-// retry/repeat expectation.
-export const awardLeg = (number, state, note, { exists = existsSync } = {}) => async ({ app, profile, check }) => {
+// One launch leg on the seeded profile. `state` carries the seed's pre-launch rows and the award text seen
+// by the real public UI. The retry/repeat expectation is read from the LIVE persisted statuses after
+// launch, because startup reconciliation may legitimately move a pending presentation to failed.
+export const awardLeg = (number, state, note, { exists = existsSync, readRows = readRawRows } = {}) => async ({ app, profile, check }) => {
   const step = makeStep(check);
   let operator;
   let publicWindow;
@@ -63,6 +63,9 @@ export const awardLeg = (number, state, note, { exists = existsSync } = {}) => a
     assert.ok(exists(path.join(profile, DB_FILE)), 'the database lives in the temporary profile');
   });
   await step(`leg ${number}: the public page hydrates the committed award without celebrating`, async () => {
+    // The public controls live in the Bingo panel, which starts hidden behind the Eventos tab.
+    await operator.click('#tab-bingo');
+    await operator.locator('#open-public button').waitFor({ state: 'visible' });
     [publicWindow] = await Promise.all([app.waitForEvent('window'), operator.locator('#open-public button').click()]);
     await publicWindow.waitForFunction((called) => document.querySelector('#called-count')?.value === String(called), CALLED.length);
     await publicWindow.waitForFunction(() => {
@@ -74,8 +77,9 @@ export const awardLeg = (number, state, note, { exists = existsSync } = {}) => a
       'static hydration never celebrates');
   });
   await step(`leg ${number}: only a failed/interrupted celebration offers retry or repeat`, async () => {
-    state.rows ??= state.seed.rows;
-    const statuses = state.rows.bingo_awards.map((row) => row.presentation_status);
+    // Startup reconciliation may legitimately move a pending presentation to failed, so the expectation
+    // must come from the live persisted statuses read after launch, never from the pre-launch seed.
+    const statuses = readRows(path.join(profile, DB_FILE)).bingo_awards.map((row) => row.presentation_status);
     assert.deepEqual(await operator.evaluate(() => ({
       retry: !document.querySelector('#bingo-retry').hidden,
       repeat: !document.querySelector('#bingo-repeat').hidden,
@@ -114,7 +118,6 @@ export async function awardScenario(note, {
     const snapshotA = readRows(path.join(restartProfile, DB_FILE));
     assert.deepEqual(durableAward(snapshotA.bingo_awards), durableAward(state.seed.rows.bingo_awards),
       'the first leg wrote no durable award/lot change');
-    state.rows = snapshotA;
     await run({
       ...ports('award', { seed: null, mkdtemp: () => restartProfile }),
       removeProfile: (profile) => {
@@ -159,6 +162,8 @@ async function heldScenario(note, observe = () => {}) {
     });
     if (offered) {
       await step('the offered legacy check is cancelled only through the real UI', async () => {
+        // The rail lives in the Bingo panel, so activate it before clicking the offered control.
+        await operator.click('#tab-bingo');
         await operator.locator('#bingo-recover button').click();
         await operator.locator('#bingo-legacy-dialog dialog').waitFor({ state: 'visible' });
         await operator.locator('#bingo-legacy-dialog [data-action="confirm"] button').click();

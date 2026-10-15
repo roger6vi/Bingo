@@ -15,7 +15,8 @@ function virtualApp() {
   let reads = 0;
   const operator = {
     waitForFunction: async () => {},
-    locator: () => ({ click: async () => {} }),
+    click: async () => {},
+    locator: () => ({ click: async () => {}, waitFor: async () => {} }),
     evaluate: async () => replies[reads++],
   };
   const publicPage = {
@@ -36,7 +37,10 @@ for (const number of [1, 2]) {
   test(`leg ${number} checks both draw refusals and unchanged calls`, async () => {
     const fixture = virtualApp();
     const state = { seed: { rows: { bingo_awards: [{ presentation_status: 'pending' }] } }, firstAwardText: 'committed award' };
-    await command.awardLeg(number, state, () => {}, { exists: () => true })({
+    await command.awardLeg(number, state, () => {}, {
+      exists: () => true,
+      readRows: () => ({ bingo_awards: [{ presentation_status: 'pending' }] }),
+    })({
       app: fixture.app, profile: '/virtual/profile', check: () => {},
     });
     assert.equal(fixture.reads(), 4, 'status, calls before, both refusal codes and calls after must all be read');
