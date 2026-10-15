@@ -23,15 +23,17 @@ function frameBridges(win) {
   const lineLot = inert;
   const receipt = Object.freeze({ started: () => {} });
   return { event: channel('event'), theme: channel('theme'), meta: channel('meta'), prizes: channel('prizes'),
-    lineAward: channel('lineAward'), bingoAward: channel('bingoAward'), presentation: inert, lineReceipt: receipt, lineLot };
+    lineAward: channel('lineAward'), bingoAward: channel('bingoAward'), presentation: inert, lineReceipt: receipt,
+    bingoReceipt: receipt, lineLot };
 }
 
 export function publicBridges(win = window) {
   if (win.publicEvent && win.publicTheme && win.publicEventMeta && win.publicEventPrizes &&
-      win.publicLineAward && win.publicBingoAward && win.publicPresentation && win.publicLineReceipt && win.publicLineLot) {
+      win.publicLineAward && win.publicBingoAward && win.publicPresentation && win.publicLineReceipt && win.publicLineLot &&
+      win.publicBingoReceipt) {
     return { event: win.publicEvent, theme: win.publicTheme, meta: win.publicEventMeta, prizes: win.publicEventPrizes,
       lineAward: win.publicLineAward, bingoAward: win.publicBingoAward, presentation: win.publicPresentation, lineReceipt: win.publicLineReceipt,
-      lineLot: win.publicLineLot };
+      lineLot: win.publicLineLot, bingoReceipt: win.publicBingoReceipt };
   }
   if (win.parent !== win) return frameBridges(win);
   throw new Error('Missing public display bridge');

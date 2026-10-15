@@ -10,6 +10,7 @@ const PUBLIC_BINGO_AWARD_CHANNEL = 'public:bingo-award';
 const PUBLIC_PRESENTATION_CHANNEL = 'public:presentation';
 const PUBLIC_LINE_LOT_CHANNEL = 'public:line-lot';
 const PUBLIC_LINE_RECEIPT_CHANNEL = 'public:line-presentation-started';
+const PUBLIC_BINGO_RECEIPT_CHANNEL = 'public:bingo-presentation-started';
 
 contextBridge.exposeInMainWorld('publicEvent', Object.freeze({
   subscribe: (callback: (result: unknown) => void) => {
@@ -82,5 +83,12 @@ contextBridge.exposeInMainWorld('publicLineLot', Object.freeze({
 contextBridge.exposeInMainWorld('publicLineReceipt', Object.freeze({
   started: (id: unknown) => {
     if (typeof id === 'string' && id.length > 0 && id.length <= 128) ipcRenderer.send(PUBLIC_LINE_RECEIPT_CHANNEL, id);
+  },
+}));
+
+// The Bingo overlay's own start receipt, accepted under the same main-frame rules and never as a line receipt.
+contextBridge.exposeInMainWorld('publicBingoReceipt', Object.freeze({
+  started: (id: unknown) => {
+    if (typeof id === 'string' && id.length > 0 && id.length <= 128) ipcRenderer.send(PUBLIC_BINGO_RECEIPT_CHANNEL, id);
   },
 }));

@@ -29,7 +29,7 @@ function channel(...initial) {
 }
 
 const BRIDGES = ['publicEvent', 'publicTheme', 'publicEventMeta', 'publicEventPrizes', 'publicLineAward',
-  'publicPresentation', 'publicLineReceipt', 'publicLineLot', 'publicBingoAward'];
+  'publicPresentation', 'publicLineReceipt', 'publicLineLot', 'publicBingoAward', 'publicBingoReceipt'];
 // Injected before every entry import and restored on teardown: the page's media query and, when `timed`, its 4000 ms timers.
 const GLOBALS = ['Audio', 'matchMedia', 'setTimeout', 'clearTimeout'];
 const realSetTimeout = window.setTimeout;
@@ -60,6 +60,7 @@ async function mount({ award: hydrated, event = frame(), reduced = false, timed 
   [['publicEvent', ch.event], ['publicTheme', ch.theme], ['publicEventMeta', ch.meta], ['publicEventPrizes', ch.prizes],
     ['publicLineAward', ch.lineAward], ['publicPresentation', ch.presentation],
     ['publicLineReceipt', { started: (id) => receipts.push(id) }], ['publicLineLot', ch.lot], ['publicBingoAward', ch.bingoAward],
+    ['publicBingoReceipt', { started: () => {} }],
     ['matchMedia', () => mq], ['Audio', function Audio() { audio.count++; }]].forEach(([name, value]) => define(name, value));
   if (timed) {
     define('setTimeout', (fn, delay, ...args) => {
