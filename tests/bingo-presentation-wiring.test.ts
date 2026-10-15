@@ -203,11 +203,17 @@ test('ownership is released after undelivered, refused, timed-out and completed 
   assert.deepEqual(h.calls.slice(5), ['line:retry:L3r', 'line:start:L3rr', 'line:complete:L3rr']);
 });
 
-test('main registers the Bingo receipt channel through the wiring and never begins Bingo itself', () => {
+test('main routes Bingo receipts and passes existing coordinator ports only to the confirmation helper', () => {
   // Structural supplement only: Electron main cannot load under node:test, so the factory tests above carry behavior.
   const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
   assert.match(main, /createPresentationWiring\(/);
   assert.match(main, /ipcMain\.on\(PUBLIC_BINGO_RECEIPT_CHANNEL,[^)]*\)\s*=>\s*\{?\s*presentations\.bingoReceipt\(/);
   assert.match(main, /acceptBingoReceipt\(event, id, publicUrl\)/);
   assert.doesNotMatch(main, /bingo\.begin\(|createBingoPresentationCoordinator/);
+  const registration = main.match(/registerBingoMainWiring\(ipcMain, store, \{[\s\S]*?\}\);/)?.[0];
+  assert.ok(registration);
+  for (const port of ['begin', 'retry', 'repeat']) {
+    assert.ok(registration.includes(`${port}: presentations.bingo.${port}`));
+    assert.equal(main.split(`presentations.bingo.${port}`).length - 1, 1);
+  }
 });
