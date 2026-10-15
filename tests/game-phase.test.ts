@@ -13,6 +13,7 @@ const legal: readonly [GamePhase, PhaseTransitionIntent, GamePhase][] = [
   ['checking_line', 'reject_line_claim', 'drawing'],
   ['line_declared', 'begin_bingo_check', 'checking_bingo'],
   ['line_declared', 'correct_line_declaration', 'drawing'],
+  ['line_declared', 'declare_bingo_directly', 'bingo_declared'],
   ['checking_bingo', 'declare_bingo', 'bingo_declared'],
   ['checking_bingo', 'reject_bingo_claim', 'line_declared'],
   ['bingo_declared', 'finish', 'finished'],
@@ -68,4 +69,24 @@ test('only drawing and line_declared permit draws without changing phase', () =>
     }
     assert.deepEqual(state, { phase });
   }
+});
+
+test('direct bingo only leaves line_declared; legacy checking_bingo graph is retained', () => {
+  for (const phase of phases) {
+    const state = Object.freeze({ phase });
+    if (phase === 'line_declared') continue;
+    assert.throws(() => transitionPhase(state, 'declare_bingo_directly'), /invalid phase transition/i);
+  }
+  const legacy = transitionPhase({ phase: 'line_declared' }, 'begin_bingo_check');
+  assert.deepEqual(transitionPhase(legacy, 'declare_bingo'), { phase: 'bingo_declared' });
+  assert.deepEqual(transitionPhase(legacy, 'reject_bingo_claim'), { phase: 'line_declared' });
+});
+
+test('direct bingo blocks every draw and never finishes automatically', () => {
+  const declared = transitionPhase({ phase: 'line_declared' }, 'declare_bingo_directly');
+  assert.equal(declared.phase, 'bingo_declared');
+  assert.throws(() => assertDrawAllowed(declared), /draw.*not allowed/i);
+  assert.throws(() => drawManual({ calledNumbers: [], phase: declared.phase }, 1), /not allowed|phase/i);
+  assert.equal(transitionPhase(declared, 'correct_bingo_declaration').phase, 'line_declared');
+  assert.equal(transitionPhase(declared, 'finish').phase, 'finished');
 });
