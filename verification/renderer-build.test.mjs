@@ -237,13 +237,17 @@ test('Tongo keeps an operator-only trigger and a receive-only, never-replayed pu
   assertReceiptSends(publicPreload);
 });
 
-test('committed line awards reach the public page through a main provider and one receive-only bridge', () => {
+test('committed line and bingo awards reach the public page through a main provider and receive-only bridges', () => {
   const main = text('dist/main.js');
   assert.match(main, /createPublicEventDelivery\)\(store, \(\) => theme\.current\(\), activeMeta, activePrizes,\s*\(\) => store\.loadLineAward\(\),\s*\(\) => store\.loadLineLotResult\(\),\s*\(\) => store\.loadBingoAward\(\)\)/);
-  assert.match(text('dist/public-event-delivery.js'), /PUBLIC_LINE_AWARD_CHANNEL = 'public:line-award'/);
+  const delivery = text('dist/public-event-delivery.js');
+  assert.match(delivery, /PUBLIC_LINE_AWARD_CHANNEL = 'public:line-award'/);
+  assert.match(delivery, /PUBLIC_BINGO_AWARD_CHANNEL = 'public:bingo-award'/);
   const publicPreload = text('dist/public-preload.js');
   assert.match(publicPreload, /exposeInMainWorld\('publicLineAward'/);
+  assert.match(publicPreload, /exposeInMainWorld\('publicBingoAward'/);
   assert.match(publicPreload, /'public:line-award'/);
+  assert.match(publicPreload, /'public:bingo-award'/);
   assertReceiptSends(publicPreload);
   // Static committed state only: no award channel on the presentation signal or an attach-time replay.
   assert.doesNotMatch(publicPreload, /public:presentation[^;]*line-award|line-award[^;]*public:presentation/);
