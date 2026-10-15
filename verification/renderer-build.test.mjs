@@ -241,7 +241,7 @@ test('Tongo keeps an operator-only trigger and a receive-only, never-replayed pu
 
 test('committed line and bingo awards reach the public page through a main provider and receive-only bridges', () => {
   const main = text('dist/main.js');
-  assert.match(main, /createPublicEventDelivery\)\(store, \(\) => theme\.current\(\), activeMeta, activePrizes,\s*\(\) => store\.loadLineAward\(\),\s*\(\) => store\.loadLineLotResult\(\),\s*\(\) => store\.loadBingoAward\(\)\)/);
+  assert.match(main, /createPublicEventDelivery\)\(store, \(\) => theme\.current\(\), activeMeta, activePrizes,\s*\(\) => store\.loadLineAward\(\),\s*\(\) => store\.loadLineLotResult\(\),\s*\(\) => store\.loadBingoAward\(\),\s*\(\) => store\.loadBingoLotResult\(\)\)/);
   const delivery = text('dist/public-event-delivery.js');
   assert.match(delivery, /PUBLIC_LINE_AWARD_CHANNEL = 'public:line-award'/);
   assert.match(delivery, /PUBLIC_BINGO_AWARD_CHANNEL = 'public:bingo-award'/);
