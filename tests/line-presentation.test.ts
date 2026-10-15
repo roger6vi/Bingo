@@ -400,23 +400,24 @@ function bingoHarness(initial = award('b1'), options: { publish?: boolean } = {}
   const timers = new Map<number, { at: number; fn: () => void }>();
   let handle = 0;
   const published: unknown[] = [];
+  const notified: Array<string | null> = [];
   const coordinator = createBingoPresentationCoordinator(store, {
     now: () => clock,
     schedule: (fn: () => void, ms: number) => { timers.set(++handle, { at: clock + ms, fn }); return handle; },
     cancel: (value: unknown) => { timers.delete(value as number); },
     publish: (signal: BingoPresentationSignal) => { published.push(signal); return options.publish ?? true; },
-    notify: () => {},
+    notify: (value: StoredLineAward | null) => { notified.push(value?.presentation.status ?? null); },
   });
   const advance = (ms: number) => {
     clock += ms;
     for (const [key, timer] of [...timers].filter(([, t]) => t.at <= clock)) { timers.delete(key); timer.fn(); }
   };
-  return { store, coordinator, published, advance, timers };
+  return { store, coordinator, published, notified, advance, timers };
 }
 
 test('a fresh Bingo declaration publishes one 4 s bingo signal and completes from the receipt via Bingo methods only', () => {
   const h = bingoHarness();
-  assert.deepEqual(Object.keys(h.coordinator).sort(), ['begin', 'busy', 'receiptStarted']);
+  assert.deepEqual(Object.keys(h.coordinator).sort(), ['begin', 'busy', 'receiptStarted', 'repeat', 'retry']);
   h.coordinator.begin(h.store.current);
   h.coordinator.begin(h.store.current);
   assert.deepEqual(h.published, [{ kind: 'bingo', id: 'b1', durationMs: 4000 }]);
@@ -453,6 +454,59 @@ test('an undelivered, unreceipted, refused or overlapping Bingo run fails throug
   busy.store.set(award('b2'));
   busy.coordinator.begin(busy.store.current);
   assert.deepEqual([busy.published.length, busy.store.current.presentation.status], [1, 'failed']);
+});
+
+// Bingo (BG05A): manual retry of a failed run and replay of an interrupted one, over the Bingo store methods only.
+test('Bingo manual store refusals throw before any publish or notification and leave nothing busy', () => {
+  const h = bingoHarness();
+  assert.throws(() => h.coordinator.retry('b1'), /transition/i, 'pending cannot retry');
+  assert.throws(() => h.coordinator.repeat('b1'), /transition/i, 'pending cannot replay');
+  h.store.set(award('b1', 'failed'));
+  assert.throws(() => h.coordinator.retry('stale'), /current/i);
+  assert.throws(() => h.coordinator.repeat('b1'), /transition/i, 'failed cannot replay');
+  assert.deepEqual([h.published, h.notified, h.coordinator.busy()], [[], [], false]);
+  assert.deepEqual(h.store.calls, ['retry:b1', 'replay:b1', 'retry:stale', 'replay:b1']);
+  assert.equal(h.store.current.presentation.id, 'b1', 'no write');
+});
+
+test('Bingo retry rotates a failed id into one fresh 4 s run; the old receipt never starts or completes it', () => {
+  const h = bingoHarness();
+  h.coordinator.begin(h.store.current);
+  h.advance(2000);
+  assert.deepEqual([h.store.current.presentation.status, h.notified], ['failed', ['failed']]);
+  h.coordinator.retry('b1');
+  assert.deepEqual(h.published, [{ kind: 'bingo', id: 'b1', durationMs: 4000 }, { kind: 'bingo', id: 'new-1', durationMs: 4000 }]);
+  assert.equal(h.coordinator.busy(), true);
+  assert.equal(h.coordinator.receiptStarted('b1'), false, 'old id');
+  assert.equal(h.coordinator.receiptStarted('new-1'), true);
+  assert.equal(h.coordinator.receiptStarted('new-1'), false, 'one receipt');
+  h.advance(4000);
+  h.advance(4000);
+  assert.deepEqual(h.store.calls, ['fail:b1', 'retry:b1', 'start:new-1', 'complete:new-1']);
+  assert.deepEqual(h.notified, ['failed', 'pending', 'started', 'completed']);
+  assert.equal(h.coordinator.busy(), false);
+});
+
+test('Bingo replay rotates an interrupted id; an unreceipted replay times out to failed exactly once', () => {
+  const h = bingoHarness(award('b1', 'interrupted', 1000));
+  h.coordinator.begin(h.store.current);
+  assert.equal(h.published.length, 0, 'interrupted never auto-replays');
+  h.coordinator.repeat('b1');
+  assert.deepEqual(h.published, [{ kind: 'bingo', id: 'new-1', durationMs: 4000 }]);
+  assert.equal(h.coordinator.receiptStarted('b1'), false);
+  h.advance(2000);
+  h.advance(4000);
+  assert.deepEqual(h.store.calls, ['replay:b1', 'fail:new-1']);
+  assert.deepEqual([h.notified, h.coordinator.busy()], [['pending', 'failed'], false]);
+  assert.equal(h.coordinator.receiptStarted('new-1'), false, 'late receipt ignored');
+});
+
+test('Bingo retry and repeat are refused while its own run is busy, before the store', () => {
+  const h = bingoHarness();
+  h.coordinator.begin(h.store.current);
+  assert.throws(() => h.coordinator.retry('b1'), /Bingo presentation is busy/);
+  assert.throws(() => h.coordinator.repeat('b1'), /Bingo presentation is busy/);
+  assert.deepEqual([h.store.calls, h.notified, h.published.length], [[], [], 1]);
 });
 
 test('a Bingo begin ignores non-pending awards', () => {

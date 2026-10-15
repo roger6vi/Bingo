@@ -4,8 +4,9 @@ import { createBingoPresentationCoordinator, createLinePresentationCoordinator, 
 
 // Main's line and Bingo celebration wiring, free of Electron so it can be exercised directly. Each coordinator still
 // owns its own active slot; this factory only makes the two kinds exclusive. A kind never publishes while the other
-// one is active (its award then fails like any undelivered signal), and the manual line paths refuse before touching
-// the store. Nothing here begins a Bingo: only an explicit fresh declaration may call `bingo.begin`.
+// one is active (its award then fails like any undelivered signal), and each kind's manual paths refuse while the
+// other is active, before touching the store. Nothing here begins a Bingo: only an explicit fresh declaration or an
+// operator's manual Bingo retry/replay may run one.
 export interface PresentationWiringPorts {
   now(): number;
   schedule(fn: () => void, ms: number): unknown;
@@ -25,14 +26,14 @@ export function createPresentationWiring(store: LinePresentationStore & BingoPre
     publish: (signal) => !bingo.busy() && ports.publish(signal) });
   const bingo = createBingoPresentationCoordinator(store, { ...timers, notify: ports.notifyBingo,
     publish: (signal) => !line.busy() && ports.publish(signal) });
-  // Same refusal as the line coordinator's own busy check: thrown before the store step, so nothing is mutated.
-  const manual = (step: (id: string) => void) => (id: string): void => {
-    if (bingo.busy()) throw new Error('Bingo presentation is busy');
+  // Same refusal as each coordinator's own busy check: thrown before the store step, so nothing is mutated.
+  const manual = (other: { busy(): boolean }, label: string, step: (id: string) => void) => (id: string): void => {
+    if (other.busy()) throw new Error(`${label} presentation is busy`);
     step(id);
   };
   return {
-    line: { ...line, retry: manual(line.retry), repeat: manual(line.repeat) },
-    bingo,
+    line: { ...line, retry: manual(bingo, 'Bingo', line.retry), repeat: manual(bingo, 'Bingo', line.repeat) },
+    bingo: { ...bingo, retry: manual(line, 'Line', bingo.retry), repeat: manual(line, 'Line', bingo.repeat) },
     // Any celebration on the public window: the shared guard for draws, Tongo, lot and event changes.
     busy: () => line.busy() || bingo.busy(),
     // Only a string id the delivery authorizes reaches the coordinator of that receipt's own kind.

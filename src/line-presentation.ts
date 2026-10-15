@@ -33,7 +33,8 @@ export interface PresentationPorts<Signal> {
 export type LinePresentationPorts = PresentationPorts<LinePresentationSignal>;
 
 // Bingo reuses the same run over its own store methods and signal kind. Only an explicit fresh declaration may call
-// begin: reads, hydration, restart, attach and event selection never do. No manual retry or replay is exposed here.
+// begin: reads, hydration, restart, attach and event selection never do. Manual retry (failed) and replay
+// (interrupted) follow the line's: the store validates and rotates the id, then the fresh id runs once.
 export interface BingoPresentationSignal {
   readonly kind: 'bingo';
   readonly id: string;
@@ -42,11 +43,16 @@ export interface BingoPresentationSignal {
 export interface BingoPresentationStore {
   startBingoPresentation(id: string, startedAt: number): StoredLineAward;
   failBingoPresentation(id: string): StoredLineAward;
+  retryBingoPresentation(id: string): StoredLineAward;
+  replayBingoPresentation(id: string): StoredLineAward;
   completeBingoPresentation(id: string, now: number): StoredLineAward;
 }
 export interface BingoPresentationCoordinator {
   begin(award: StoredLineAward): void;
   receiptStarted(id: string): boolean;
+  /** Manual paths: store refusals and a busy coordinator throw; nothing is published or notified on a throw. */
+  retry(id: string): void;
+  repeat(id: string): void;
   busy(): boolean;
 }
 type RunSteps = Pick<LinePresentationStore, 'startLinePresentation' | 'failLinePresentation' | 'completeLinePresentation'>;
@@ -63,28 +69,38 @@ export interface LinePresentationCoordinator {
 export function createBingoPresentationCoordinator(
   store: BingoPresentationStore, ports: PresentationPorts<BingoPresentationSignal>,
 ): BingoPresentationCoordinator {
-  const { begin, receiptStarted, busy } = createRun('bingo', {
+  const run = createRun('bingo', {
     startLinePresentation: (id, at) => store.startBingoPresentation(id, at),
     failLinePresentation: (id) => store.failBingoPresentation(id),
     completeLinePresentation: (id, now) => store.completeBingoPresentation(id, now),
   }, ports);
-  return { begin, receiptStarted, busy };
+  const manual = manualStep(run, 'Bingo');
+  return {
+    begin: run.begin, receiptStarted: run.receiptStarted, busy: run.busy,
+    retry: (id) => manual((value) => store.retryBingoPresentation(value), id),
+    repeat: (id) => manual((value) => store.replayBingoPresentation(value), id),
+  };
 }
 
 export function createLinePresentationCoordinator(
   store: LinePresentationStore, ports: LinePresentationPorts,
 ): LinePresentationCoordinator {
   const run = createRun('line', store, ports);
-  const manual = (step: (id: string) => StoredLineAward, id: string): void => {
-    if (run.busy()) throw new Error('Line presentation is busy');
-    const next = step(id);
-    run.notify(next);
-    run.begin(next);
-  };
+  const manual = manualStep(run, 'Line');
   return {
     begin: run.begin, receiptStarted: run.receiptStarted, busy: run.busy,
     retry: (id) => manual((value) => store.retryLinePresentation(value), id),
     repeat: (id) => manual((value) => store.replayLinePresentation(value), id),
+  };
+}
+
+// The shared manual mechanism: refuse while busy, let the store validate and rotate the id, report it, run it once.
+function manualStep(run: ReturnType<typeof createRun>, label: 'Line' | 'Bingo') {
+  return (step: (id: string) => StoredLineAward, id: string): void => {
+    if (run.busy()) throw new Error(`${label} presentation is busy`);
+    const next = step(id);
+    run.notify(next);
+    run.begin(next);
   };
 }
 
