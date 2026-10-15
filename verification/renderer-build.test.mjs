@@ -14,12 +14,18 @@ const text = (file) => readFileSync(path.join(root, file), 'utf8');
 
 // The sandboxed public preload may send exactly one thing: the line-presentation start receipt. No invoke, no
 // sendSync, no other channel, and no way to pass anything but a validated string id.
-function assertOnlyLineReceiptSend(preload) {
+// The sandboxed public preload may send exactly one receipt per kind: the line-presentation and the
+// bingo-presentation start receipts. No invoke, no sendSync, no other channel, and no way to pass anything but a
+// validated string id.
+function assertReceiptSends(preload) {
   const sends = [...preload.matchAll(/ipcRenderer\.(send|invoke|sendSync|postMessage|sendToHost)\b[^;]*;/g)].map(([call]) => call);
-  assert.equal(sends.length, 1, 'exactly one renderer-to-main call');
+  assert.equal(sends.length, 2, 'exactly two renderer-to-main calls, one per receipt kind');
   assert.match(sends[0], /^ipcRenderer\.send\(PUBLIC_LINE_RECEIPT_CHANNEL, id\);$/);
+  assert.match(sends[1], /^ipcRenderer\.send\(PUBLIC_BINGO_RECEIPT_CHANNEL, id\);$/);
   assert.match(preload, /PUBLIC_LINE_RECEIPT_CHANNEL = 'public:line-presentation-started'/);
+  assert.match(preload, /PUBLIC_BINGO_RECEIPT_CHANNEL = 'public:bingo-presentation-started'/);
   assert.match(preload, /exposeInMainWorld\('publicLineReceipt', Object\.freeze\(\{\s*started: \(id\) => \{\s*if \(typeof id === 'string'/);
+  assert.match(preload, /exposeInMainWorld\('publicBingoReceipt', Object\.freeze\(\{\s*started: \(id\) => \{\s*if \(typeof id === 'string'/);
 }
 
 for (const name of ['main', 'preload', 'public-preload']) {
@@ -177,7 +183,7 @@ test('theme selection keeps an operator-only setter, a receive-only sandboxed pu
   assert.match(publicPreload, /exposeInMainWorld\('publicTheme'/);
   assert.match(publicPreload, /exposeInMainWorld\('publicEventMeta'/);
   assert.match(publicPreload, /exposeInMainWorld\('publicEventPrizes'/);
-  assertOnlyLineReceiptSend(publicPreload);
+  assertReceiptSends(publicPreload);
   assert.match(text('dist/preload.js'), /invoke\('theme:set', theme\)/);
   assert.match(text('dist/preload.js'), /invoke\('events:update', id, meta\)/);
   assert.match(text('dist/preload.js'), /invoke\('prizes:update', id, prizes\)/);
@@ -228,17 +234,17 @@ test('Tongo keeps an operator-only trigger and a receive-only, never-replayed pu
   assert.match(publicPreload, /exposeInMainWorld\('publicPresentation'/);
   assert.match(publicPreload, /'public:presentation'/);
   assert.doesNotMatch(publicPreload, /tongo:play/);
-  assertOnlyLineReceiptSend(publicPreload);
+  assertReceiptSends(publicPreload);
 });
 
 test('committed line awards reach the public page through a main provider and one receive-only bridge', () => {
   const main = text('dist/main.js');
-  assert.match(main, /createPublicEventDelivery\)\(store, \(\) => theme\.current\(\), activeMeta, activePrizes,\s*\(\) => store\.loadLineAward\(\),\s*\(\) => store\.loadLineLotResult\(\)\)/);
+  assert.match(main, /createPublicEventDelivery\)\(store, \(\) => theme\.current\(\), activeMeta, activePrizes,\s*\(\) => store\.loadLineAward\(\),\s*\(\) => store\.loadLineLotResult\(\),\s*\(\) => store\.loadBingoAward\(\)\)/);
   assert.match(text('dist/public-event-delivery.js'), /PUBLIC_LINE_AWARD_CHANNEL = 'public:line-award'/);
   const publicPreload = text('dist/public-preload.js');
   assert.match(publicPreload, /exposeInMainWorld\('publicLineAward'/);
   assert.match(publicPreload, /'public:line-award'/);
-  assertOnlyLineReceiptSend(publicPreload);
+  assertReceiptSends(publicPreload);
   // Static committed state only: no award channel on the presentation signal or an attach-time replay.
   assert.doesNotMatch(publicPreload, /public:presentation[^;]*line-award|line-award[^;]*public:presentation/);
 });
