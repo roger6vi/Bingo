@@ -141,6 +141,7 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
     receiveLineAward = callback;
     return () => { unsubscribed++; };
   } };
+  window.publicBingoAward = { subscribe: () => () => { unsubscribed++; } };
   // Tongo and the line celebration both listen on the presentation channel, as with the real preload.
   const presentationListeners = [];
   const receivePresentation = (value) => presentationListeners.forEach((callback) => callback(value));
@@ -273,7 +274,7 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
     expect(receipts).to.deep.equal(['p1']);
     expect(lotListeners).to.equal(1);
     window.dispatchEvent(new Event('pagehide'));
-    expect(unsubscribed).to.equal(8);
+    expect(unsubscribed).to.equal(9);
     expect(lotListeners).to.equal(0);
   } finally {
     shell.remove();
@@ -282,6 +283,7 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
     delete window.publicEventMeta;
     delete window.publicEventPrizes;
     delete window.publicLineAward;
+    delete window.publicBingoAward;
     delete window.publicPresentation;
     delete window.publicLineReceipt;
     delete window.publicLineLot;

@@ -2,7 +2,7 @@
 // subscriptions. Framed as the operator's simulator (no preload), the same page instead receives
 // display-only messages from its parent frame; it never gains a way to send or write anything.
 export const SIMULATOR_MESSAGE = 'bingo-public-simulator';
-const CHANNELS = ['event', 'theme', 'meta', 'prizes', 'lineAward'];
+const CHANNELS = ['event', 'theme', 'meta', 'prizes', 'lineAward', 'bingoAward'];
 
 function frameBridges(win) {
   const listeners = Object.fromEntries(CHANNELS.map((channel) => [channel, new Set()]));
@@ -23,14 +23,14 @@ function frameBridges(win) {
   const lineLot = inert;
   const receipt = Object.freeze({ started: () => {} });
   return { event: channel('event'), theme: channel('theme'), meta: channel('meta'), prizes: channel('prizes'),
-    lineAward: channel('lineAward'), presentation: inert, lineReceipt: receipt, lineLot };
+    lineAward: channel('lineAward'), bingoAward: channel('bingoAward'), presentation: inert, lineReceipt: receipt, lineLot };
 }
 
 export function publicBridges(win = window) {
   if (win.publicEvent && win.publicTheme && win.publicEventMeta && win.publicEventPrizes &&
-      win.publicLineAward && win.publicPresentation && win.publicLineReceipt && win.publicLineLot) {
+      win.publicLineAward && win.publicBingoAward && win.publicPresentation && win.publicLineReceipt && win.publicLineLot) {
     return { event: win.publicEvent, theme: win.publicTheme, meta: win.publicEventMeta, prizes: win.publicEventPrizes,
-      lineAward: win.publicLineAward, presentation: win.publicPresentation, lineReceipt: win.publicLineReceipt,
+      lineAward: win.publicLineAward, bingoAward: win.publicBingoAward, presentation: win.publicPresentation, lineReceipt: win.publicLineReceipt,
       lineLot: win.publicLineLot };
   }
   if (win.parent !== win) return frameBridges(win);

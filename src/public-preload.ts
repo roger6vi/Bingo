@@ -6,6 +6,7 @@ const PUBLIC_THEME_CHANNEL = 'public:theme';
 const PUBLIC_META_CHANNEL = 'public:event-meta';
 const PUBLIC_PRIZES_CHANNEL = 'public:event-prizes';
 const PUBLIC_LINE_AWARD_CHANNEL = 'public:line-award';
+const PUBLIC_BINGO_AWARD_CHANNEL = 'public:bingo-award';
 const PUBLIC_PRESENTATION_CHANNEL = 'public:presentation';
 const PUBLIC_LINE_LOT_CHANNEL = 'public:line-lot';
 const PUBLIC_LINE_RECEIPT_CHANNEL = 'public:line-presentation-started';
@@ -47,6 +48,15 @@ contextBridge.exposeInMainWorld('publicLineAward', Object.freeze({
     const listener = (_event: Electron.IpcRendererEvent, award: unknown) => callback(award);
     ipcRenderer.on(PUBLIC_LINE_AWARD_CHANNEL, listener);
     return () => ipcRenderer.removeListener(PUBLIC_LINE_AWARD_CHANNEL, listener);
+  },
+}));
+
+// Static committed Bingo facts only; never a celebration signal.
+contextBridge.exposeInMainWorld('publicBingoAward', Object.freeze({
+  subscribe: (callback: (award: unknown) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, award: unknown) => callback(award);
+    ipcRenderer.on(PUBLIC_BINGO_AWARD_CHANNEL, listener);
+    return () => ipcRenderer.removeListener(PUBLIC_BINGO_AWARD_CHANNEL, listener);
   },
 }));
 
