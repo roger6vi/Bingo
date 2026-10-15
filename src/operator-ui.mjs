@@ -800,7 +800,11 @@ eventList.addEventListener('event-select', async (event) => {
 // Bingo's read needs the active event, so it follows the list read, as at startup.
 const listEvents = () => {
   listing = events.start();
-  void listing.then(() => bingo.reread());
+  // BG-07 H5: mirror Line's recovery, so a held checking_bingo is offered at startup and not only after
+  // pressing «Recargar evento». checkBingoLegacy starts (or joins) a fresh current-event read and reads the
+  // held check once; the cost is one extra read on every events-list load in any phase, while every other
+  // phase or event still neither reads a held check nor shows the offer.
+  void listing.then(() => { void checkBingoLegacy(bingo.reread()); });
 };
 reloadEvents.addEventListener('click', () => {
   listEvents(); void loadPrizes(); void rereadLine(); line.retryRefresh(); void lotController.resync();

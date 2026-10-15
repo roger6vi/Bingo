@@ -3383,6 +3383,19 @@ it('no legacy read or offer happens outside the fresh checking_bingo phase or wi
   } finally { declared.cleanup(); }
 });
 
+// BG-07 H5: the held-check offer must appear at startup without pressing «Recargar evento», mirroring Line.
+it('a held checking_bingo offers the legacy cancel at startup with no reload click', async () => {
+  const op = await loadOperator({
+    replies: { getCurrentEvent: () => bingoChecking },
+    bingo: { readLegacyBingoCheck: async () => bingoHeld },
+  });
+  try {
+    const button = op.main.querySelector('#bingo-recover');
+    expect(bingoLegacyReads(op)).to.have.length(1);
+    expect([button.hidden, button.disabled, button.textContent]).to.deep.equal([false, false, 'Cancelar comprobación de bingo']);
+  } finally { op.cleanup(); }
+});
+
 it('the Bingo confirmation is a Spanish modal that conserves the line, numbers and prizes; Volver and Escape write nothing', async () => {
   const { op, ui } = await loadBingoRecovery();
   try {
