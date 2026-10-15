@@ -46,6 +46,12 @@ describe('bingo-line-lot', () => {
     delete window.desktop;
   });
 
+  // The owner asked for simple wording while a celebration is still missing: the lot is drawn later.
+  it('an unknown lot state says the lot will be drawn once the celebration ends', async () => {
+    const m = await mount(st({}));
+    expect(m.text()).to.include('El lote se sorteará cuando termine la celebración.');
+  });
+
   it('emits one payloadless bubbling composed draw intent without touching the frozen state', async () => {
     const m = await mount(actionable);
     const docEvents = [];

@@ -7,7 +7,7 @@ const PRESENTATION = Object.freeze({
   pending: 'pendiente', started: 'en curso', completed: 'completada', failed: 'fallida', interrupted: 'interrumpida',
 });
 const COPY = Object.freeze({
-  unknown: 'Estado del lote desconocido.',
+  unknown: 'El lote se sorteará cuando termine la celebración.',
   loading: 'Leyendo el estado del lote…',
   pending: 'El lote aún no se puede sortear.',
   actionable: 'Lote listo para sortear.',
