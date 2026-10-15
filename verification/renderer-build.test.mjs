@@ -227,8 +227,8 @@ test('operator cue sounds are emitted as local files, referenced by the operator
 
 test('Tongo keeps an operator-only trigger and a receive-only, never-replayed public signal', () => {
   const main = text('dist/main.js');
-  assert.match(main, /registerTongoIpc\)\(electron_1\.ipcMain, store, \{ authorize: operatorOnly, publish: publicDelivery\.publishPresentation,\s*lineBusy: presentation\.busy \}\)/);
-  assert.match(main, /publicDelivery\.publishCommitted, tongo\.playing, line\.active,\s*presentation\.busy\)/);
+  assert.match(main, /registerTongoIpc\)\(electron_1\.ipcMain, store, \{ authorize: operatorOnly, publish: publicDelivery\.publishPresentation,\s*lineBusy: presentations\.busy \}\)/);
+  assert.match(main, /publicDelivery\.publishCommitted, tongo\.playing, line\.active,\s*presentations\.busy\)/);
   assert.match(text('dist/preload.js'), /playTongo: \(\) => electron_1\.ipcRenderer\.invoke\('tongo:play'\)/);
   const publicPreload = text('dist/public-preload.js');
   assert.match(publicPreload, /exposeInMainWorld\('publicPresentation'/);
@@ -274,12 +274,17 @@ test('main reconciles line presentations once at startup (interrupt, then fail p
 
 test('line presentation wiring: coordinator ports, commit-only start, receipt guard and operator-only manual channels', () => {
   const main = text('dist/main.js');
-  assert.match(main, /createLinePresentationCoordinator\)\(store, \{/);
+  // Main only supplies the clock, timers, the public signal, the operator notifications and the receipt
+  // authorization; both coordinators are constructed inside the emitted presentation wiring factory.
+  assert.match(main, /createPresentationWiring\)\(store, \{/);
   assert.match(main, /publish: publicDelivery\.publishPresentation/);
   assert.match(main, /operator\.webContents\.send\('line:presentation', award\)/);
-  assert.match(main, /committed: presentation\.begin, retry: presentation\.retry,\s*repeat: presentation\.repeat, busy: presentation\.busy, tongoPlaying: tongo\.playing/);
-  assert.match(main, /ipcMain\.on\(public_event_delivery_1\.PUBLIC_LINE_RECEIPT_CHANNEL/);
-  assert.match(main, /acceptLineReceipt\(event, id, publicUrl\)/);
+  assert.match(main, /committed: presentation\.begin, retry: presentation\.retry,\s*repeat: presentation\.repeat, busy: presentations\.busy, tongoPlaying: tongo\.playing/);
+  assert.match(main, /ipcMain\.on\(public_event_delivery_1\.PUBLIC_LINE_RECEIPT_CHANNEL, \(event, id\) => \{ presentations\.lineReceipt\(event, id\); \}\);/);
+  assert.match(main, /ipcMain\.on\(public_event_delivery_1\.PUBLIC_BINGO_RECEIPT_CHANNEL, \(event, id\) => \{ presentations\.bingoReceipt\(event, id\); \}\);/);
+  const wiring = text('dist/presentation-wiring.js');
+  assert.match(wiring, /createLinePresentationCoordinator\)\(store, \{/);
+  assert.match(wiring, /createBingoPresentationCoordinator\)\(store, \{/);
   // A main-frame (not subframe, not same-document) navigation voids pending receipt authority at its start; the
   // finished load only re-attaches static state.
   assert.match(main, /contents\.on\('did-start-navigation', \(details\) => \{\s*if \(details\.isMainFrame && !details\.isSameDocument\)\s*publicDelivery\.navigationStarted\(contents\);\s*\}\);/);

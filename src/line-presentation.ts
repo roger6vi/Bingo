@@ -94,6 +94,8 @@ function createRun<Kind extends 'line' | 'bingo'>(
   const ackTimeoutMs = ports.ackTimeoutMs ?? DEFAULT_ACK_TIMEOUT_MS;
   const attempted = new Set<string>();
   // At most one run owns the coordinator; every callback checks it still owns the state before touching it.
+  // The slot is reserved before any external call (publish, store, notify) and held until the run is terminal, so a
+  // re-entrant callback can never start another run, of this kind or, through the shared wiring, the other one.
   let active: { phase: 'awaiting' | 'running'; id: string; timer: unknown } | null = null;
 
   // Async paths must never throw: a failing store or port is contained and reported as `null`.
@@ -132,18 +134,24 @@ function createRun<Kind extends 'line' | 'bingo'>(
 
   function complete(id: string, deadlineAt: number): void {
     if (!owns('running', id)) return;
-    active = null;
+    // Still owned (no timer) while the clock and store run; released only once the run is over.
+    active = { phase: 'running', id, timer: null };
     let now: number;
-    try { now = ports.now(); } catch { safeNotify(null); return; }
+    try { now = ports.now(); } catch { active = null; safeNotify(null); return; }
     if (now < deadlineAt) { armCompletion(id, deadlineAt); return; }
+    let completed: StoredLineAward;
     try {
-      safeNotify(store.completeLinePresentation(id, now));
+      completed = store.completeLinePresentation(id, now);
     } catch (error) {
       // Matches the store's 'Line presentation deadline not reached' refusal: reschedule for the remainder.
       // Any other error stops the run after one notification.
       if (error instanceof Error && /deadline not reached/i.test(error.message)) { armCompletion(id, deadlineAt); return; }
+      active = null;
       safeNotify(null);
+      return;
     }
+    active = null;
+    safeNotify(completed);
   }
 
   function begin(award: StoredLineAward): void {
@@ -152,26 +160,32 @@ function createRun<Kind extends 'line' | 'bingo'>(
     attempted.add(id);
     // Another run owns the renderer: never overwrite it. The new award fails and the operator retries later.
     if (active !== null) { failStored(id); return; }
+    active = { phase: 'awaiting', id, timer: null };
     let delivered = false;
     try { delivered = ports.publish({ kind, id, durationMs: LINE_PRESENTATION_SIGNAL_MS }); } catch { /* undelivered */ }
-    if (!delivered) { failStored(id); return; }
-    try {
-      active = { phase: 'awaiting', id, timer: ports.schedule(() => onAckTimeout(id), ackTimeoutMs) };
-    } catch {
-      failStored(id);
+    if (delivered && owns('awaiting', id)) {
+      try {
+        const timer = ports.schedule(() => onAckTimeout(id), ackTimeoutMs);
+        if (owns('awaiting', id)) active = { phase: 'awaiting', id, timer };
+        return;
+      } catch { /* fails below */ }
     }
+    if (!owns('awaiting', id)) return;
+    active = null;
+    failStored(id);
   }
 
   function receiptStarted(id: string): boolean {
     if (!owns('awaiting', id)) return false;
     safeCancel(active?.timer);
-    active = null;
+    // Kept as a running run without a timer across the start, its notification and the rearm.
+    active = { phase: 'running', id, timer: null };
     // A refused start (bad clock, stale row) must not strand the pending row: fail it for the manual retry path.
     let started: StoredLineAward | null = null;
     try { started = store.startLinePresentation(id, ports.now()); } catch { /* handled below */ }
-    if (started === null) { failStored(id); return false; }
+    if (started === null) { active = null; failStored(id); return false; }
     safeNotify(started);
-    if (started.presentation.deadlineAt === null) return true;
+    if (started.presentation.deadlineAt === null) { active = null; return true; }
     armCompletion(id, started.presentation.deadlineAt);
     return true;
   }

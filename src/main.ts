@@ -11,8 +11,8 @@ import { registerTongoIpc } from './tongo-ipc';
 import { registerPrizeIpc } from './prize-ipc';
 import { registerLineIpc } from './line-ipc';
 import { registerLineLotPresentation } from './line-lot-presentation';
-import { createLinePresentationCoordinator } from './line-presentation';
-import { createPublicEventDelivery, PUBLIC_LINE_RECEIPT_CHANNEL } from './public-event-delivery';
+import { createPresentationWiring } from './presentation-wiring';
+import { createPublicEventDelivery, PUBLIC_BINGO_RECEIPT_CHANNEL, PUBLIC_LINE_RECEIPT_CHANNEL } from './public-event-delivery';
 import { createWindowLifecycle } from './window-lifecycle';
 import { planOperatorWindow, planPublicWindow } from './window-plan';
 import { createPublicWindowMover } from './window-placement';
@@ -83,22 +83,27 @@ if (!app.requestSingleInstanceLock()) {
   const operatorOnly = createOperatorGuard(operator.webContents, operatorFrame, operatorUrl);
   const theme = registerThemeIpc(ipcMain, { load: store.loadTheme, save: store.saveTheme },
     operatorOnly, publicDelivery.publishTheme);
-  // The coordinator owns every presentation state change; main only supplies the clock, timers, the public signal
-  // and the operator notification.
-  const presentation = createLinePresentationCoordinator(store, {
+  // The line and Bingo coordinators own every presentation state change and are mutually exclusive; main only supplies
+  // the clock, timers, the public signal, the receipt authorization and the operator notification. Nothing here
+  // begins a Bingo: the explicit fresh declaration path does (BG05), never a read, hydration, attach or startup.
+  const presentations = createPresentationWiring(store, {
     now: Date.now,
     schedule: (fn, ms) => setTimeout(fn, ms),
     cancel: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
     publish: publicDelivery.publishPresentation,
-    notify: (award) => { if (!operator.isDestroyed()) operator.webContents.send('line:presentation', award); },
+    notifyLine: (award) => { if (!operator.isDestroyed()) operator.webContents.send('line:presentation', award); },
+    notifyBingo: () => { /* The operator Bingo surface arrives with the declaration path (BG05). */ },
+    acceptLineReceipt: (event, id) => publicDelivery.acceptLineReceipt(event, id, publicUrl),
+    acceptBingoReceipt: (event, id) => publicDelivery.acceptBingoReceipt(event, id, publicUrl),
   });
+  const presentation = presentations.line;
   const tongo = registerTongoIpc(ipcMain, store, { authorize: operatorOnly, publish: publicDelivery.publishPresentation,
-    lineBusy: presentation.busy });
+    lineBusy: presentations.busy });
   const line = registerLineIpc(ipcMain, store, { authorize: operatorOnly, now: () => new Date(),
     publish: publicDelivery.publishCommitted, committed: presentation.begin, retry: presentation.retry,
-    repeat: presentation.repeat, busy: presentation.busy, tongoPlaying: tongo.playing });
+    repeat: presentation.repeat, busy: presentations.busy, tongoPlaying: tongo.playing });
   // The manual lot draw plus its one-shot public handoff; any operator document or active-event change voids a pending one.
-  const lotPresentation = registerLineLotPresentation(ipcMain, store, { authorize: operatorOnly, busy: presentation.busy,
+  const lotPresentation = registerLineLotPresentation(ipcMain, store, { authorize: operatorOnly, busy: presentations.busy,
     tongoPlaying: tongo.playing, publish: (signal) => publicDelivery.publishLineLot(signal, publicUrl),
     refresh: (lot) => { publicDelivery.refreshLineAward(lot.eventId); } });
   operator.webContents.on('did-start-navigation', (details) => {
@@ -107,16 +112,15 @@ if (!app.requestSingleInstanceLock()) {
   operator.on('close', () => lotPresentation.invalidate());
   operator.webContents.once('destroyed', () => lotPresentation.invalidate());
   registerEventCatalogIpc(ipcMain, store, operatorOnly, () => { lotPresentation.invalidate(); publicDelivery.publishActive(theme.reload()); },
-    publicDelivery.publishMeta, line.active, presentation.busy);
+    publicDelivery.publishMeta, line.active, presentations.busy);
   registerPrizeIpc(ipcMain, store, operatorOnly, publicDelivery.publishPrizes, line.active);
   registerEventIpc(ipcMain, store, { drawManual, drawDigital }, Math.random,
     operator.webContents, operatorFrame, operatorUrl, publicDelivery.publishCommitted, tongo.playing, line.active,
-    presentation.busy);
-  // The start receipt counts only from the exact public main frame the signal was sent to, still current at the page URL.
-  ipcMain.on(PUBLIC_LINE_RECEIPT_CHANNEL, (event, id: unknown) => {
-    if (typeof id !== 'string' || !publicDelivery.acceptLineReceipt(event, id, publicUrl)) return;
-    presentation.receiptStarted(id);
-  });
+    presentations.busy);
+  // A start receipt counts only from the exact public main frame its signal was sent to, still current at the page URL,
+  // and only on its own kind's channel.
+  ipcMain.on(PUBLIC_LINE_RECEIPT_CHANNEL, (event, id: unknown) => { presentations.lineReceipt(event, id); });
+  ipcMain.on(PUBLIC_BINGO_RECEIPT_CHANNEL, (event, id: unknown) => { presentations.bingoReceipt(event, id); });
   void operator.loadFile(operatorPath);
 
   const lifecycle = createWindowLifecycle<BrowserWindow>({
