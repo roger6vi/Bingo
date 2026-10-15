@@ -37,11 +37,12 @@ type Bingo = Store & {
   loadBingoDeclarationBaseline(): any;
   declareBingoDirectly(expected: unknown, winnerCount: unknown, at: unknown): any;
   loadBingoAward(): any;
+  confirmBingoDeclaration(expected: unknown, winnerCount: unknown, at: unknown): any;
 };
 const LINE_AT = '2025-01-01T00:00:01.000Z';
 const BINGO_AT = '2025-01-01T00:00:02.000Z';
 
-// A committed, fully resolved first line: completed presentation and a settled lot. `resolve` settles a tied lot.
+// A committed, fully resolved first line: completed presentation and a settled lot. `tied` leaves the lot pending.
 function resolvedLine(path: string, over: { calls?: number[]; lineWinners?: number; resolve?: boolean; complete?: boolean } = {}) {
   const store = open(path);
   const event = store.createEvent({ name: 'A', date: '2025-01-01', place: 'X' });
@@ -56,7 +57,7 @@ function resolvedLine(path: string, over: { calls?: number[]; lineWinners?: numb
   }
   return { store, event, line };
 }
-const state = (store: Bingo) => JSON.stringify({ e: store.load(), a: store.readAudit(), l: store.loadLineAward(), b: store.loadBingoAward() });
+const state = (store: Bingo) => JSON.stringify({ e: store.load(), a: store.readAudit(), l: store.loadLineAward(), b: store.loadBingoAward?.() ?? null });
 const bingoRow = (path: string) => withDb(path, (db) => db.prepare('SELECT * FROM bingo_awards').all());
 
 test('fresh database is the new schema and keeps it across repeated restarts', () => {
@@ -88,76 +89,6 @@ test('schema 9 migrates preserving audit, line award, calls, prizes and a legacy
     reopened.close();
   }
   withDb(path, (db) => assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, EVENT_SCHEMA_VERSION));
-});
-
-
-// READ-VALIDATION fixture, NOT atomic-writer evidence: the atomic declaration API arrives in a later slice, so the
-// consistent phase + direct audit row + Bingo award records are written with raw SQL in the owned temporary database.
-function rawDeclareBingo(path: string, eventId: string, over: Record<string, unknown> = {}) {
-  withDb(path, (db) => {
-    db.prepare(`INSERT INTO phase_audit (event_id, sequence, transitionAt, kind, from_phase, to_phase)
-      VALUES (?, 2, ?, 'declare_bingo_directly', 'line_declared', 'bingo_declared')`).run(eventId, BINGO_AT);
-    db.prepare("UPDATE events SET phase = 'bingo_declared', lastTransitionAt = ? WHERE id = ?").run(BINGO_AT, eventId);
-    const row = { event_id: eventId, audit_sequence: 2, winner_count: 3, total_cents: 1000, share_cents: 333,
-      remainder_cents: 1, lot: 'Jamón', lot_resolution: 'pending', presentation_id: 'b-1',
-      presentation_status: 'pending', ...over };
-    db.prepare(`INSERT INTO bingo_awards (${Object.keys(row).join(', ')})
-      VALUES (${Object.keys(row).map((k) => `:${k}`).join(', ')})`).run(row as never);
-  });
-}
-
-test('read validation: a raw consistent direct declaration reads back frozen, detached and identity-free', () => {
-  const path = fixture();
-  const { store, event } = resolvedLine(path);
-  assert.equal(store.loadBingoAward(), null);
-  rawDeclareBingo(path, event.id);
-  const award = store.loadBingoAward();
-  assert.ok(Object.isFrozen(award) && Object.isFrozen(award.award) && Object.isFrozen(award.presentation));
-  assert.deepEqual({ eventId: award.eventId, ...award.award, ...award.presentation }, { eventId: event.id, winnerCount: 3,
-    totalCents: 1000, shareCents: 333, remainderCents: 1, lot: 'Jamón', lotResolution: 'pending', id: 'b-1',
-    status: 'pending', startedAt: null, deadlineAt: null });
-  assert.notEqual(store.loadBingoAward(), award);
-  assert.deepEqual(store.load(), { calledNumbers: [7, 3], phase: 'bingo_declared', lastTransitionAt: BINGO_AT });
-  assert.equal(Object.keys(bingoRow(path)[0]).some((k) => /claimant|name|winner_id/.test(k)), false);
-  store.close();
-  assert.deepEqual(open(path).loadBingoAward(), award); // restart reads the same facts
-  assert.equal(open(path).loadLineAward()?.presentation.status, 'completed');
-});
-
-test('read validation: a stored pending lot later resolved is accepted and keeps the audit', () => {
-  const path = fixture();
-  const { store, event } = resolvedLine(path);
-  rawDeclareBingo(path, event.id);
-  const audit = JSON.stringify(store.readAudit());
-  withDb(path, (db) => db.exec("UPDATE bingo_awards SET lot_resolution = 'resolved'"));
-  assert.equal(store.loadBingoAward().award.lotResolution, 'resolved');
-  assert.equal(JSON.stringify(store.readAudit()), audit);
-});
-
-test('read validation: corrupt or missing award/audit linkage fails closed on reopen, in both directions', () => {
-  const corruptions: Array<[string, (db: DatabaseSync) => void]> = [
-    ['audit entry without its award', (db) => db.exec('DELETE FROM bingo_awards')],
-    ['wrong audit link', (db) => db.exec('UPDATE bingo_awards SET audit_sequence = 1')],
-    ['share mismatch', (db) => { db.exec('PRAGMA ignore_check_constraints = 1'); db.exec('UPDATE bingo_awards SET share_cents = 1'); }],
-    ['lot', (db) => { db.exec('PRAGMA ignore_check_constraints = 1'); db.exec("UPDATE bingo_awards SET lot_resolution = 'not_required'"); }],
-    ['presentation', (db) => { db.exec('PRAGMA ignore_check_constraints = 1'); db.exec("UPDATE bingo_awards SET presentation_status = 'started'"); }],
-  ];
-  for (const [label, corrupt] of corruptions) {
-    const path = fixture();
-    const { store, event } = resolvedLine(path);
-    rawDeclareBingo(path, event.id);
-    store.close();
-    withDb(path, corrupt);
-    assert.throws(() => createEventStore(path), undefined, label);
-  }
-  // An award without its direct audit row is equally invalid.
-  const path = fixture();
-  const { store } = resolvedLine(path);
-  store.close();
-  withDb(path, (db) => db.prepare(`INSERT INTO bingo_awards (event_id, audit_sequence, winner_count, total_cents,
-    share_cents, remainder_cents, lot, lot_resolution, presentation_id, presentation_status)
-    SELECT event_id, 1, 1, 1000, 1000, 0, 'Jamón', 'not_required', 'x', 'pending' FROM line_awards`).run());
-  assert.throws(() => createEventStore(path));
 });
 
 test('one winner commits phase, audit and award atomically from the persisted prize', () => {
@@ -314,6 +245,61 @@ test('a duplicate declaration is refused and never adds a second audit row or aw
   assert.equal(store.readAudit().filter((e) => e.kind === 'declare_bingo_directly').length, 1);
 });
 
+test('uncertain-result reread is bound to the same snapshot and never declares', () => {
+  const path = fixture();
+  const { store } = resolvedLine(path);
+  const baseline = store.loadBingoDeclarationBaseline();
+  const unchanged = store.confirmBingoDeclaration(baseline, 1, BINGO_AT);
+  assert.equal(unchanged.state, 'unchanged');
+  assert.equal(store.loadBingoAward(), null);
+  const award = store.declareBingoDirectly(baseline, 1, BINGO_AT);
+  const confirmed = store.confirmBingoDeclaration(baseline, 1, BINGO_AT);
+  assert.equal(confirmed.state, 'declared');
+  assert.deepEqual(confirmed.award, award);
+  // Different count, time or calls are not this declaration.
+  assert.equal(store.confirmBingoDeclaration(baseline, 2, BINGO_AT).state, 'stale');
+  assert.equal(store.confirmBingoDeclaration(baseline, 1, '2025-01-01T00:00:09.000Z').state, 'stale');
+  assert.equal(store.confirmBingoDeclaration({ ...baseline, calledNumbers: [7] }, 1, BINGO_AT).state, 'stale');
+  assert.equal(store.readAudit().filter((e) => e.kind === 'declare_bingo_directly').length, 1);
+});
+
+test('a foreign active event is never acknowledged as the declared one', () => {
+  const path = fixture();
+  const { store } = resolvedLine(path);
+  const baseline = store.loadBingoDeclarationBaseline();
+  store.declareBingoDirectly(baseline, 1, BINGO_AT);
+  const other = store.createEvent({ name: 'B', date: '2025-01-02', place: 'Y' });
+  store.selectEvent(other.id);
+  assert.equal(store.confirmBingoDeclaration(baseline, 1, BINGO_AT).state, 'stale');
+  assert.equal(store.loadBingoAward(), null);
+});
+
+test('corrupt or missing award/audit linkage fails closed on reopen', () => {
+  const corruptions: Array<[string, (db: DatabaseSync) => void]> = [
+    ['missing award', (db) => db.exec('DELETE FROM bingo_awards')],
+    ['wrong audit link', (db) => db.exec('UPDATE bingo_awards SET audit_sequence = 1')],
+    ['share mismatch', (db) => { db.exec('PRAGMA ignore_check_constraints = 1'); db.exec('UPDATE bingo_awards SET share_cents = 1'); }],
+    ['lot', (db) => { db.exec('PRAGMA ignore_check_constraints = 1'); db.exec("UPDATE bingo_awards SET lot_resolution = 'not_required'"); }],
+    ['presentation', (db) => { db.exec('PRAGMA ignore_check_constraints = 1'); db.exec("UPDATE bingo_awards SET presentation_status = 'started'"); }],
+  ];
+  for (const [label, corrupt] of corruptions) {
+    const path = fixture();
+    const { store } = resolvedLine(path);
+    store.declareBingoDirectly(store.loadBingoDeclarationBaseline(), 3, BINGO_AT);
+    store.close();
+    withDb(path, corrupt);
+    assert.throws(() => createEventStore(path), undefined, label);
+  }
+  // An award without its direct audit row is equally invalid.
+  const path = fixture();
+  const { store } = resolvedLine(path);
+  store.close();
+  withDb(path, (db) => db.prepare(`INSERT INTO bingo_awards (event_id, audit_sequence, winner_count, total_cents,
+    share_cents, remainder_cents, lot, lot_resolution, presentation_id, presentation_status)
+    SELECT event_id, 1, 1, 1000, 1000, 0, 'Jamón', 'not_required', 'x', 'pending' FROM line_awards`).run());
+  assert.throws(() => createEventStore(path));
+});
+
 test('both draw modes are rejected authoritatively once bingo is declared, finished, and after restart', () => {
   const path = fixture();
   const { store } = resolvedLine(path);
@@ -355,6 +341,110 @@ test('pure direct intent remains replayable while the generic store transition s
   assert.equal(state(store), snapshot);
 });
 
+// ---- confirmBingoDeclaration binds the WHOLE expected baseline, not just the event, calls and head ----
+type Mutation = [string, (baseline: any) => any];
+const altered: Mutation[] = [
+  ['bingo prize euros', (b) => ({ ...b, bingoPrize: { ...b.bingoPrize, amount: b.bingoPrize.amount + 1 } })],
+  ['bingo prize lot', (b) => ({ ...b, bingoPrize: { ...b.bingoPrize, lot: 'Otro' } })],
+  ['line audit identity', (b) => ({ ...b, line: { ...b.line, auditSequence: b.line.auditSequence + 1 } })],
+  ['line presentation identity', (b) => ({ ...b, line: { ...b.line, presentationId: 'other' } })],
+  ['line resolution', (b) => ({ ...b, line: { ...b.line, lotResolution: b.line.lotResolution === 'resolved' ? 'not_required' : 'resolved' } })],
+];
+for (const [label, change] of altered) {
+  // Altered EXPECTED values are a legitimate stale answer; storage is never written.
+  test(`confirm: ${label} altered in the expected baseline is stale before the declaration`, () => {
+    const path = fixture();
+    const { store } = resolvedLine(path);
+    const baseline = store.loadBingoDeclarationBaseline();
+    const before = state(store);
+    assert.equal(store.confirmBingoDeclaration(change(baseline), 3, BINGO_AT).state, 'stale');
+    assert.equal(store.confirmBingoDeclaration(baseline, 3, BINGO_AT).state, 'unchanged');
+    assert.equal(state(store), before);
+  });
+  test(`confirm: ${label} altered in the expected baseline is stale after the declaration`, () => {
+    const path = fixture();
+    const { store } = resolvedLine(path);
+    const baseline = store.loadBingoDeclarationBaseline();
+    store.declareBingoDirectly(baseline, 3, BINGO_AT);
+    const before = state(store);
+    assert.equal(store.confirmBingoDeclaration(change(baseline), 3, BINGO_AT).state, 'stale');
+    assert.equal(store.confirmBingoDeclaration(baseline, 3, BINGO_AT).state, 'declared');
+    assert.equal(state(store), before);
+  });
+}
+
+test('confirm: unchanged requires the full eligible baseline, so a changed stored prize is stale', () => {
+  const path = fixture();
+  const { store, event } = resolvedLine(path);
+  const baseline = store.loadBingoDeclarationBaseline();
+  store.updateEventPrizes(event.id, { line: { amount: 5, lot: 'Cesta' }, bingo: { amount: 11, lot: 'Jamón' } });
+  const before = state(store);
+  assert.equal(store.confirmBingoDeclaration(baseline, 1, BINGO_AT).state, 'stale');
+  assert.equal(state(store), before);
+});
+
+test('confirm: the frozen award stays acknowledged after the editable current prize changes', () => {
+  const path = fixture();
+  const { store, event } = resolvedLine(path);
+  const baseline = store.loadBingoDeclarationBaseline();
+  const award = store.declareBingoDirectly(baseline, 3, BINGO_AT);
+  store.updateEventPrizes(event.id, { line: { amount: 5, lot: 'Cesta' }, bingo: { amount: 99, lot: 'Otro' } });
+  const confirmed = store.confirmBingoDeclaration(baseline, 3, BINGO_AT);
+  assert.equal(confirmed.state, 'declared');
+  assert.deepEqual(confirmed.award, award);
+});
+
+// Tampering with owned SQLite rows after a real declaration. Corruption (an invalid row) throws; a valid but
+// different row is stale. Neither may acknowledge, and neither writes.
+test('confirm: a valid line row with another presentation identity after the write is stale', () => {
+  const path = fixture();
+  const { store } = resolvedLine(path);
+  const baseline = store.loadBingoDeclarationBaseline();
+  store.declareBingoDirectly(baseline, 3, BINGO_AT);
+  withDb(path, (db) => db.exec("UPDATE line_awards SET presentation_id = 'other'"));
+  assert.equal(store.confirmBingoDeclaration(baseline, 3, BINGO_AT).state, 'stale');
+});
+test('confirm: a valid stored award that differs from the expected prize arithmetic is stale', () => {
+  const path = fixture();
+  const { store } = resolvedLine(path);
+  const baseline = store.loadBingoDeclarationBaseline();
+  store.declareBingoDirectly(baseline, 3, BINGO_AT);
+  withDb(path, (db) => db.exec('UPDATE bingo_awards SET total_cents = 2000, share_cents = 666, remainder_cents = 2'));
+  assert.equal(store.loadBingoAward().award.totalCents, 2000); // a valid row: only the expected-prize comparison refuses it
+  assert.equal(store.confirmBingoDeclaration(baseline, 3, BINGO_AT).state, 'stale');
+});
+test('confirm: a valid stored award with another lot is stale', () => {
+  const path = fixture();
+  const { store } = resolvedLine(path);
+  const baseline = store.loadBingoDeclarationBaseline();
+  store.declareBingoDirectly(baseline, 3, BINGO_AT);
+  withDb(path, (db) => db.exec("UPDATE bingo_awards SET lot = 'Otro'"));
+  assert.equal(store.confirmBingoDeclaration(baseline, 3, BINGO_AT).state, 'stale');
+});
+test('confirm: a missing line award after the write is stale', () => {
+  const path = fixture();
+  const { store } = resolvedLine(path);
+  const baseline = store.loadBingoDeclarationBaseline();
+  store.declareBingoDirectly(baseline, 3, BINGO_AT);
+  withDb(path, (db) => { db.exec('PRAGMA foreign_keys = OFF'); db.exec('DELETE FROM line_awards'); });
+  assert.equal(store.confirmBingoDeclaration(baseline, 3, BINGO_AT).state, 'stale');
+});
+test('confirm: CORRUPT line storage throws instead of answering stale or declared', () => {
+  const path = fixture();
+  const { store } = resolvedLine(path);
+  const baseline = store.loadBingoDeclarationBaseline();
+  store.declareBingoDirectly(baseline, 3, BINGO_AT);
+  withDb(path, (db) => { db.exec('PRAGMA ignore_check_constraints = 1'); db.exec('UPDATE line_awards SET share_cents = 1'); });
+  assert.throws(() => store.confirmBingoDeclaration(baseline, 3, BINGO_AT), /Invalid stored line award/);
+});
+test('confirm: CORRUPT storage before the write throws as well', () => {
+  const path = fixture();
+  const { store } = resolvedLine(path);
+  const baseline = store.loadBingoDeclarationBaseline();
+  withDb(path, (db) => { db.exec('PRAGMA ignore_check_constraints = 1'); db.exec('UPDATE line_awards SET share_cents = 1'); });
+  assert.throws(() => store.confirmBingoDeclaration(baseline, 3, BINGO_AT), /Invalid stored line award/);
+});
+
 test('COMMIT-time contention: a reader holding a shared lock fails the commit and rolls back everything', () => {
   const path = fixture();
   const { store } = resolvedLine(path);
@@ -376,6 +466,21 @@ test('COMMIT-time contention: a reader holding a shared lock fails the commit an
 // ---- the expected baseline is canonical identity: a prize lot is never silently trimmed ----
 for (const lot of [' Jamón ', 'Jamón ', ' Jamón']) {
   const bad = (b: any) => ({ ...b, bingoPrize: { ...b.bingoPrize, lot } });
+  test(`confirm: untrimmed expected prize lot ${JSON.stringify(lot)} is rejected as malformed before the declaration`, () => {
+    const { store } = resolvedLine(fixture());
+    const baseline = store.loadBingoDeclarationBaseline();
+    const before = state(store);
+    assert.throws(() => store.confirmBingoDeclaration(bad(baseline), 3, BINGO_AT), /Invalid bingo declaration baseline/);
+    assert.equal(state(store), before);
+  });
+  test(`confirm: untrimmed expected prize lot ${JSON.stringify(lot)} is rejected as malformed after the declaration`, () => {
+    const { store } = resolvedLine(fixture());
+    const baseline = store.loadBingoDeclarationBaseline();
+    store.declareBingoDirectly(baseline, 3, BINGO_AT);
+    const before = state(store);
+    assert.throws(() => store.confirmBingoDeclaration(bad(baseline), 3, BINGO_AT), /Invalid bingo declaration baseline/);
+    assert.equal(state(store), before);
+  });
   test(`declare: untrimmed expected prize lot ${JSON.stringify(lot)} is rejected before any write`, () => {
     const { store } = resolvedLine(fixture());
     const baseline = store.loadBingoDeclarationBaseline();
@@ -384,3 +489,30 @@ for (const lot of [' Jamón ', 'Jamón ', ' Jamón']) {
     assert.equal(state(store), before);
   });
 }
+
+test('canonical and empty expected prize lots remain valid', () => {
+  const path = fixture();
+  const { store, event } = resolvedLine(path);
+  store.updateEventPrizes(event.id, { line: { amount: 5, lot: 'Cesta' }, bingo: { amount: 10, lot: '' } });
+  const baseline = store.loadBingoDeclarationBaseline();
+  assert.equal(baseline.bingoPrize.lot, '');
+  assert.equal(store.confirmBingoDeclaration(baseline, 3, BINGO_AT).state, 'unchanged');
+  assert.equal(store.declareBingoDirectly(baseline, 3, BINGO_AT).award.lotResolution, 'not_required');
+  assert.equal(store.confirmBingoDeclaration(baseline, 3, BINGO_AT).state, 'declared');
+});
+
+// Controlled owned fixture: no public API settles a Bingo lot yet (a later unit), so the allowed pending -> resolved
+// stored shape is written directly. The readback and the acknowledgment must accept it and keep the audit intact.
+test('a stored pending bingo lot later resolved reads back and is still acknowledged', () => {
+  const path = fixture();
+  const { store } = resolvedLine(path);
+  const baseline = store.loadBingoDeclarationBaseline();
+  store.declareBingoDirectly(baseline, 3, BINGO_AT);
+  const audit = JSON.stringify(store.readAudit());
+  withDb(path, (db) => db.exec("UPDATE bingo_awards SET lot_resolution = 'resolved'"));
+  assert.equal(store.loadBingoAward().award.lotResolution, 'resolved');
+  const confirmed = store.confirmBingoDeclaration(baseline, 3, BINGO_AT);
+  assert.equal(confirmed.state, 'declared');
+  assert.equal(confirmed.award.award.lotResolution, 'resolved');
+  assert.equal(JSON.stringify(store.readAudit()), audit);
+});
