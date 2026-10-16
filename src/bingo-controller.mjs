@@ -4,7 +4,7 @@
 // lost, refused or invalid, or the bridge is unavailable: only an explicit read may continue) and declared.
 // F3b stages pushes during a dispatched confirm and a read owning a setup; begin and cancel ignore them.
 // G1 adds explicit manual retry and repeat behind fresh guards; G2 an explicit read of the legacy check's identity;
-// G3a its guarded cancellation, whose uncertain outcome only an explicit legacy read settles.
+// G3 its guarded cancellation and a retriable recovery fact-refresh.
 // Deliberately incomplete: nothing is connected to the operator UI. Nothing here reads, writes or plays by itself;
 // the only writes are the explicit begin, cancel, confirm, retry, repeat and legacy cancel, sharing the read's flight.
 import { validLineAward } from './operator-controller.mjs';
@@ -96,8 +96,9 @@ function merge(known, next) {
   return reaches(a.status, b.status) ? next : null;
 }
 
-// `committed` only refreshes the page's facts after a valid explicit confirm; it never plays or writes anything.
-export function createBingoController(api, view, { committed = () => {} } = {}) {
+// `committed` only refreshes the page's facts after a valid explicit confirm, `recovered` after a legacy recovery;
+// neither plays or writes anything. A throw, rejection or explicit false from `recovered` leaves it failed.
+export function createBingoController(api, view, { committed = () => {}, recovered = () => {} } = {}) {
   let mode = 'unknown';
   let pending = false;
   let error = null;
@@ -128,12 +129,15 @@ export function createBingoController(api, view, { committed = () => {} } = {}) 
   // The event whose legacy cancel main may still hold as an attempt once it was sent, or null. Main alone keeps its
   // identity and clock: only an explicit legacy read settles it, in any phase and across event switches.
   let bound = null;
+  // The recovery refresh owed to the page, or null: queued until delivered, running until its own callback settles,
+  // then cleared or failed. Only this exact owner settles it; an event change or disposal drops it.
+  let recovery = null;
   const legacyView = () => (legacy.status === 'available' && legacy.check.eventId === context &&
     phase === 'checking_bingo' ? { status: 'available', check: { ...legacy.check } } : { status: legacy.status, check: null });
 
   const snapshot = () => ({ mode, pending, error, eventId: context, phase,
     session: session === null ? null : copySession(session), award: award === null ? null : copyAward(award),
-    legacy: legacyView() });
+    legacy: legacyView(), refresh: recovery === null ? 'none' : recovery.state === 'failed' ? 'failed' : 'pending' });
   function render() {
     if (!disposed) view.render(snapshot());
   }
@@ -260,6 +264,7 @@ export function createBingoController(api, view, { committed = () => {} } = {}) 
         render();
         // Every live release offers the owed refresh; a flight started from that render keeps holding it.
         if (refreshDue !== null) queueMicrotask(deliverRefresh);
+        if (recovery?.state === 'queued') queueMicrotask(deliverRecovery);
       }
     }
   }
@@ -403,6 +408,7 @@ export function createBingoController(api, view, { committed = () => {} } = {}) 
     if (id !== context) {
       context = id;
       generation += 1;
+      recovery = null;
       flight = null;
       pending = false;
       session = null;
@@ -422,6 +428,7 @@ export function createBingoController(api, view, { committed = () => {} } = {}) 
     flight = null;
     legacyEpoch += 1;
     legacy = { status: 'none', check: null };
+    recovery = null;
     const release = unsubscribe;
     unsubscribe = null;
     if (release !== null) {
@@ -508,6 +515,7 @@ export function createBingoController(api, view, { committed = () => {} } = {}) 
   const recover = () => {
     bound = null;
     legacy = { status: 'recovered', check: null };
+    recovery = { state: 'queued' };
   };
 
   // The explicit legacy check read: only for a known event in a fresh checking_bingo phase (or any phase while main
@@ -541,15 +549,15 @@ export function createBingoController(api, view, { committed = () => {} } = {}) 
   }
 
   // Cancels the identity last read, for the same event in a fresh checking_bingo phase, with no setup, no held award,
-  // clear guards and no attempt main may hold, all rechecked after render. Sent once with exactly that identity:
-  // sending consumes it, so only an explicit legacy read settles a lost answer.
+  // clear guards, no attempt main may hold and no recovery refresh owed, running or failed, all rechecked after render. Sent once
+  // with exactly that identity: sending consumes it, so only an explicit legacy read settles a lost answer.
   function cancelLegacy() {
     const check = legacy.status === 'available' ? legacy.check : null;
     const eventId = context;
     const epoch = legacyEpoch;
     const allowed = () => check !== null && legacy.check === check && check.eventId === eventId &&
       context === eventId && legacyEpoch === epoch && phase === 'checking_bingo' && session === null &&
-      anchor === null && bound === null && guardsClear();
+      anchor === null && bound === null && recovery === null && guardsClear();
     return legacyFlight('cancelLegacyBingoCheck', allowed, () => {
       bound = eventId;
       legacy = { status: 'uncertain', check: null };
@@ -569,6 +577,34 @@ export function createBingoController(api, view, { committed = () => {} } = {}) 
     });
   }
 
-  return { start, begin, cancel, confirm, retry, repeat, checkLegacy, cancelLegacy, setGuards, setEvent, dispose,
-    getState: snapshot };
+  // Like the committed refresh: once, for the same event and a live controller, after the flight is released and held
+  // behind any replacement flight. It runs, still pending, until its own callback settles: a throw, rejection or
+  // explicit false marks it failed, anything else clears it, and either is rendered. A settlement after it was dropped
+  // or replaced changes nothing.
+  function deliverRecovery() {
+    const own = recovery;
+    if (disposed || own === null || own.state !== 'queued' || flight !== null) return;
+    own.state = 'running';
+    const settle = (ok) => {
+      if (disposed || recovery !== own) return;
+      if (ok) recovery = null;
+      else own.state = 'failed';
+      render();
+    };
+    try {
+      Promise.resolve(recovered()).then((value) => settle(value !== false), () => settle(false));
+    } catch { settle(false); }
+  }
+
+  // Retries only a failed recovery refresh, never one still running: never a read, cancel, declaration or playback.
+  // It renders pending first; delivery then rechecks it, so a flight started from that render holds it until released
+  // and a disposal or event change from that render drops it.
+  function retryRefresh() {
+    if (disposed || recovery?.state !== 'failed') return;
+    recovery = { state: 'queued' };
+    render();
+    deliverRecovery();
+  }
+  return { start, begin, cancel, confirm, retry, repeat, checkLegacy, cancelLegacy, retryRefresh, setGuards, setEvent,
+    dispose, getState: snapshot };
 }

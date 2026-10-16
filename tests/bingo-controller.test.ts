@@ -7,7 +7,7 @@ import { createBingoController } from '../src/bingo-controller.mjs';
 // Pushes never settle begin or cancel; a dispatched confirm or a read stages them for its answer (F3b). Explicit manual
 // retry (failed) and repeat (interrupted) of the shown award behind fresh clear guards, and the rotation to the id
 // main returns (G1a, G1b). An explicit legacy check read, bound to its event and checking_bingo phase (G2). Guarded
-// legacy cancellation whose uncertain outcome only an explicit, main-bound legacy read settles (G3a).
+// legacy cancellation, main-bound uncertainty and a retriable recovery fact-refresh (G3).
 const session = { sessionId: 's1', eventId: 'e1', calledNumbers: [12, 5, 90], bingoPrize: { amount: 50, lot: 'Jamón' } };
 const award = { eventId: 'e1', award: { winnerCount: 2, totalCents: 5000, shareCents: 2500, remainderCents: 0, lot: '',
   lotResolution: 'not_required' }, presentation: { id: 'p1', status: 'started', startedAt: 1000, deadlineAt: 5000 } };
@@ -23,9 +23,9 @@ function deferred() {
 }
 
 type State = { mode: string; pending: boolean; error: string | null; eventId: string | null; phase: string | null;
-  session: any; award: any; legacy: any };
+  session: any; award: any; legacy: any; refresh: string };
 function bingoFixture(overrides: Record<string, unknown> = {}, onRender: (state: State) => void = () => {},
-  options?: { committed?: () => unknown }) {
+  options?: { committed?: () => unknown; recovered?: () => unknown }) {
   const calls: string[] = [];
   const renders: State[] = [];
   const replies: Array<() => unknown> = [];
@@ -63,8 +63,8 @@ function bingoFixture(overrides: Record<string, unknown> = {}, onRender: (state:
 test('bingo subscribes before any read and never reads, writes or plays by itself', async () => {
   const f = bingoFixture();
   assert.deepEqual(Object.keys(f.controller).sort(),
-    ['begin', 'cancel', 'cancelLegacy', 'checkLegacy', 'confirm', 'dispose', 'getState', 'repeat', 'retry', 'setEvent',
-      'setGuards', 'start']);
+    ['begin', 'cancel', 'cancelLegacy', 'checkLegacy', 'confirm', 'dispose', 'getState', 'repeat', 'retry',
+      'retryRefresh', 'setEvent', 'setGuards', 'start']);
   assert.deepEqual(f.calls, ['subscribe']);
   assert.equal(f.last().mode, 'unknown');
   f.controller.setEvent('e1', 'drawing');
@@ -1684,7 +1684,7 @@ const check = { eventId: 'e1', phase: 'checking_bingo', auditSequence: 7, lastTr
 const legacyCheck = (value: unknown = check) => ({ ok: true, state: 'legacy_check', check: value });
 const noLegacy = { status: 'none', check: null };
 function legacyFixture(answers: Array<() => unknown> = [], onRender?: (state: State) => void,
-  options?: { committed?: () => unknown }, extra: Record<string, unknown> = {}) {
+  options?: { committed?: () => unknown; recovered?: () => unknown }, extra: Record<string, unknown> = {}) {
   const cancels: Array<() => unknown> = [];
   const f = bingoFixture({ readLegacyBingoCheck: (...args: unknown[]) => {
     f.calls.push(`legacy:${args.length}`);
@@ -1882,7 +1882,7 @@ test('bingo legacy context changes drop late answers and the available identity 
   assert.deepEqual([f.renders.length, f.controller.getState().legacy, f.calls.length], [seen, noLegacy, 9]);
 });
 
-// G3a: cancellation of the identity read for e1 and main's bound attempt, settled only by an explicit legacy read.
+// G3: cancellation of the identity read for e1, main's bound attempt, and the recovery refresh owed afterwards.
 const recoveredReply = { ok: true, state: 'recovered' };
 const cancelSent = 'cancel-legacy:e1:7:2024-05-01T10:00:00.000Z';
 const cancels = (f: ReturnType<typeof legacyFixture>) => f.calls.filter((call) => call.startsWith('cancel-legacy'));
@@ -1891,9 +1891,10 @@ const availableAt = async (f: ReturnType<typeof legacyFixture>) => {
   f.controller.setGuards(clear);
 };
 
-test('bingo legacy cancel sends the captured identity once; only an exact recovered answer recovers', async () => {
+test('bingo legacy cancel sends the captured identity once; only an exact recovered answer recovers and owes one refresh', async () => {
+  let refreshed = 0;
   let committed = 0;
-  const f = legacyFixture([], undefined, { committed: () => { committed++; } });
+  const f = legacyFixture([], undefined, { recovered: () => { refreshed++; }, committed: () => { committed++; } });
   await availableAt(f);
   const d = deferred();
   f.cancels.push(() => d.promise);
@@ -1905,11 +1906,15 @@ test('bingo legacy cancel sends the captured identity once; only an exact recove
   await flight;
   assert.deepEqual([f.last().legacy, f.last().pending, f.last().error, f.last().mode],
     [{ status: 'recovered', check: null }, false, null, 'unknown']);
+  // The release renders the owed refresh pending; its successful settlement renders none.
+  assert.ok(f.renders.some((state) => state.legacy.status === 'recovered' && state.refresh === 'pending'));
+  await flush();
+  assert.deepEqual([refreshed, committed, f.last().refresh, f.controller.getState().refresh], [1, 0, 'none', 'none']);
   await f.controller.cancelLegacy();
   f.controller.setEvent('e1', 'line_declared');
   await f.controller.checkLegacy();
   await flush();
-  assert.deepEqual([f.calls, committed], [['subscribe', 'legacy:0', cancelSent], 0]);
+  assert.deepEqual([f.calls, refreshed], [['subscribe', 'legacy:0', cancelSent], 1]);
 });
 
 test('bingo legacy cancel needs the read identity, fresh checking_bingo, clear guards and no setup, award or bound attempt', async () => {
@@ -1960,24 +1965,27 @@ test('bingo lost or invalid legacy cancel answers stay bound and uncertain; only
     .map((value) => async () => value);
   lost.push(() => Promise.reject(new Error('lost')), () => { throw new Error('sync'); });
   for (const [index, answer] of lost.entries()) {
-    const f = legacyFixture();
+    let refreshed = 0;
+    const f = legacyFixture([], undefined, { recovered: () => { refreshed++; } });
     await availableAt(f);
     f.cancels.push(answer);
     await f.controller.cancelLegacy();
-    assert.deepEqual([f.last().legacy, f.last().pending, typeof f.last().error],
-      [{ status: 'uncertain', check: null }, false, 'string'], String(index));
+    assert.deepEqual([f.last().legacy, f.last().pending, typeof f.last().error, f.last().refresh],
+      [{ status: 'uncertain', check: null }, false, 'string', 'none'], String(index));
     for (const [id, phase] of [['e1', 'line_declared'], ['e2', 'checking_bingo'], ['e1', 'line_declared']] as const) {
       f.controller.setEvent(id, phase);
     }
     f.controller.setGuards(clear);
     await f.controller.cancelLegacy();
     await flush();
-    assert.deepEqual([cancels(f).length, f.last().legacy], [1, { status: 'uncertain', check: null }]);
+    assert.deepEqual([cancels(f).length, f.last().legacy, refreshed], [1, { status: 'uncertain', check: null }, 0]);
     f.answers.push(async () => recoveredReply);
     await f.controller.checkLegacy();
     assert.deepEqual(f.last().legacy, { status: 'recovered', check: null }, String(index));
+    assert.ok(f.renders.some((state) => state.legacy.status === 'recovered' && state.refresh === 'pending'), String(index));
     await flush();
-    assert.deepEqual([cancels(f).length, f.calls.filter((call) => call === 'legacy:0').length], [1, 2]);
+    assert.deepEqual([refreshed, f.last().refresh, cancels(f).length, f.calls.filter((call) => call === 'legacy:0').length],
+      [1, 'none', 1, 2]);
   }
   for (const [answer, status, bound, sent] of [[legacyCheck(), 'available', false, 2],
     [failure('stale_session', 'x'), 'uncertain', false, 1], [failure('storage_failure', 'x'), 'uncertain', true, 1],
@@ -2014,13 +2022,14 @@ test('bingo lost or invalid legacy cancel answers stay bound and uncertain; only
     await availableAt(f);
     f.cancels.push(async () => failure(code, 'Wait.'));
     await f.controller.cancelLegacy();
-    assert.deepEqual([f.last().legacy, f.last().error], [{ status: 'available', check }, 'Wait.'], code);
+    assert.deepEqual([f.last().legacy, f.last().error, f.last().refresh], [{ status: 'available', check }, 'Wait.', 'none'], code);
     await f.controller.cancelLegacy();
     assert.deepEqual([cancels(f), f.last().legacy.status], [[cancelSent, cancelSent], 'recovered'], code);
   }
 });
 
 test('bingo legacy cancel shares the actual flight, rechecks after render and keeps its answer across a phase push', async () => {
+  let refreshed = 0;
   let armed = false;
   const joined: unknown[] = [];
   const d = deferred();
@@ -2029,7 +2038,7 @@ test('bingo legacy cancel shares the actual flight, rechecks after render and ke
     if (!armed || !state.pending) return;
     armed = false;
     joined.push(f.controller.cancelLegacy(), f.controller.checkLegacy(), f.controller.start(), f.controller.begin());
-  });
+  }, { recovered: () => { refreshed++; } });
   await availableAt(f);
   f.cancels.push(() => d.promise);
   armed = true;
@@ -2040,7 +2049,7 @@ test('bingo legacy cancel shares the actual flight, rechecks after render and ke
   d.resolve(recoveredReply);
   await first;
   await flush();
-  assert.deepEqual([f.calls, f.last().legacy.status], [['subscribe', 'legacy:0', cancelSent], 'recovered']);
+  assert.deepEqual([f.calls, f.last().legacy.status, refreshed], [['subscribe', 'legacy:0', cancelSent], 'recovered', 1]);
   for (const change of ['phase', 'guards', 'switch', 'dispose']) {
     let go = false;
     let g!: ReturnType<typeof legacyFixture>;
@@ -2060,8 +2069,9 @@ test('bingo legacy cancel shares the actual flight, rechecks after render and ke
       [[], change === 'guards' ? 'available' : 'none'], change);
   }
   for (const change of ['switch', 'dispose']) {
+    let calls = 0;
     const late = deferred();
-    const g = legacyFixture();
+    const g = legacyFixture([], undefined, { recovered: () => { calls++; } });
     await availableAt(g);
     g.cancels.push(() => late.promise);
     const sent = g.controller.cancelLegacy();
@@ -2071,13 +2081,199 @@ test('bingo legacy cancel shares the actual flight, rechecks after render and ke
     late.resolve(recoveredReply);
     await sent;
     await flush();
-    assert.deepEqual([g.renders.length, g.controller.getState().legacy], [seen, noLegacy], change);
+    assert.deepEqual([calls, g.renders.length, g.controller.getState().legacy, g.controller.getState().refresh],
+      [0, seen, noLegacy, 'none'], change);
     if (change === 'dispose') continue;
     g.controller.setEvent('e1', 'line_declared');
     assert.deepEqual(g.last().legacy, { status: 'uncertain', check: null });
     g.answers.push(async () => recoveredReply);
     await g.controller.checkLegacy();
     await flush();
-    assert.deepEqual([g.last().legacy.status, cancels(g).length], ['recovered', 1]);
+    assert.deepEqual([calls, g.last().legacy.status, cancels(g).length], [1, 'recovered', 1]);
+  }
+});
+
+test('bingo recovery refresh waits for replacement flights, reports failures, and retryRefresh reruns only the hook', async () => {
+  for (const outcome of ['throw', 'reject', 'false']) {
+    let calls = 0;
+    const f = legacyFixture([], undefined, { recovered: () => {
+      calls++;
+      if (calls > 1) return true;
+      if (outcome === 'throw') throw new Error('x');
+      return outcome === 'reject' ? Promise.reject(new Error('x')) : false;
+    } });
+    f.controller.retryRefresh();
+    await availableAt(f);
+    await f.controller.cancelLegacy();
+    await flush();
+    assert.deepEqual([calls, f.last().refresh], [1, 'failed'], outcome);
+    f.controller.setEvent('e1', 'line_declared');
+    f.controller.setEvent('e1', 'checking_bingo');
+    await availableAt(f);
+    await f.controller.cancelLegacy();
+    const before = [...f.calls];
+    assert.deepEqual([cancels(f).length, f.last().legacy.status, f.last().refresh], [1, 'available', 'failed'], outcome);
+    f.controller.retryRefresh();
+    await flush();
+    f.controller.retryRefresh();
+    await flush();
+    assert.deepEqual([calls, f.controller.getState().refresh, f.last().refresh, f.calls], [2, 'none', 'none', before], outcome);
+    await f.controller.cancelLegacy();
+    assert.equal(cancels(f).length, 2, outcome);
+  }
+  let refreshed = 0;
+  let step = 0;
+  const r = deferred();
+  let f!: ReturnType<typeof legacyFixture>;
+  f = legacyFixture([], (state) => {
+    if (step === 1 && !state.pending && state.refresh === 'pending') {
+      step = 2;
+      void f.controller.checkLegacy();
+    } else if (step === 2 && !state.pending && state.legacy.status === 'available') {
+      step = 3;
+      f.controller.setGuards(clear);
+      void f.controller.cancelLegacy();
+    }
+  }, { recovered: () => { refreshed++; } });
+  await availableAt(f);
+  f.answers.push(() => r.promise);
+  step = 1;
+  await f.controller.cancelLegacy();
+  await flush();
+  assert.deepEqual([refreshed, f.controller.getState().refresh, f.controller.getState().pending, step], [0, 'pending', true, 2]);
+  r.resolve(legacyCheck());
+  await flush();
+  await flush();
+  assert.deepEqual([refreshed, step, cancels(f).length, f.controller.getState().refresh], [1, 3, 1, 'none']);
+  for (const change of ['switch', 'dispose', 'failed']) {
+    let calls = 0;
+    let go = change !== 'failed';
+    let g!: ReturnType<typeof legacyFixture>;
+    g = legacyFixture([], (state) => {
+      if (!go || state.pending || state.refresh !== 'pending') return;
+      go = false;
+      if (change === 'switch') g.controller.setEvent('e2', 'checking_bingo');
+      else g.controller.dispose();
+    }, { recovered: () => { calls++; return change === 'failed' ? false : undefined; } });
+    await availableAt(g);
+    await g.controller.cancelLegacy();
+    await flush();
+    if (change === 'failed') {
+      g.controller.setEvent('e2', 'checking_bingo');
+      g.controller.retryRefresh();
+      await flush();
+    }
+    assert.deepEqual([calls, g.controller.getState().refresh], [change === 'failed' ? 1 : 0, 'none'], change);
+  }
+});
+
+test('bingo recovery refresh stays pending and blocks legacy cancel until its own callback settles', async () => {
+  for (const outcome of ['true', 'undefined', 'false', 'reject'] as const) {
+    const settles: Array<ReturnType<typeof deferred>> = [];
+    let f!: ReturnType<typeof legacyFixture>;
+    f = legacyFixture([], undefined, { recovered: () => {
+      const d = deferred();
+      settles.push(d);
+      // Callback-origin reentry: a fresh explicit read and clear guards still may not reopen the cancel, and a retry
+      // while the callback runs never starts a second one.
+      if (settles.length === 1) {
+        void f.controller.checkLegacy().then(() => {
+          f.controller.setGuards(clear);
+          return f.controller.cancelLegacy();
+        });
+      }
+      f.controller.retryRefresh();
+      return d.promise;
+    } });
+    await availableAt(f);
+    await f.controller.cancelLegacy();
+    await flush();
+    assert.deepEqual([settles.length, cancels(f).length, f.last().legacy.status, f.last().refresh],
+      [1, 1, 'available', 'pending'], outcome);
+    f.controller.retryRefresh();
+    await f.controller.cancelLegacy();
+    assert.deepEqual([settles.length, cancels(f).length, f.controller.getState().refresh], [1, 1, 'pending'], outcome);
+    if (outcome === 'reject') settles[0].reject(new Error('x'));
+    else settles[0].resolve(outcome === 'true' ? true : outcome === 'false' ? false : undefined);
+    await flush();
+    const failed = outcome === 'false' || outcome === 'reject';
+    // Either settlement is rendered.
+    assert.deepEqual([settles.length, f.controller.getState().refresh, f.last().refresh],
+      [1, failed ? 'failed' : 'none', failed ? 'failed' : 'none'], outcome);
+    await f.controller.cancelLegacy();
+    assert.equal(cancels(f).length, failed ? 1 : 2, outcome);
+    if (!failed) continue;
+    const before = [...f.calls];
+    f.controller.retryRefresh();
+    assert.equal(f.last().refresh, 'pending', outcome);
+    f.controller.retryRefresh();
+    await f.controller.cancelLegacy();
+    assert.deepEqual([settles.length, f.controller.getState().refresh, f.last().refresh, f.calls],
+      [2, 'pending', 'pending', before], outcome);
+    settles[1].resolve(true);
+    await flush();
+    assert.equal(f.last().refresh, 'none', outcome);
+    await f.controller.cancelLegacy();
+    assert.deepEqual([settles.length, f.controller.getState().refresh, cancels(f).length], [3, 'pending', 2], outcome);
+  }
+  // A late settlement after an event change or disposal changes nothing, also not the newer recovery's refresh.
+  for (const change of ['switch-failure', 'switch-success', 'dispose']) {
+    const settles: Array<ReturnType<typeof deferred>> = [];
+    const f = legacyFixture([], undefined, { recovered: () => {
+      const d = deferred();
+      settles.push(d);
+      return d.promise;
+    } });
+    await availableAt(f);
+    await f.controller.cancelLegacy();
+    await flush();
+    const seen = f.renders.length;
+    if (change === 'dispose') {
+      f.controller.dispose();
+      settles[0].reject(new Error('late'));
+      await flush();
+      assert.deepEqual([f.renders.length, f.controller.getState().refresh], [seen, 'none']);
+      continue;
+    }
+    f.controller.setEvent('e2', 'checking_bingo');
+    f.controller.setEvent('e1', 'checking_bingo');
+    assert.equal(f.last().refresh, 'none');
+    await availableAt(f);
+    await f.controller.cancelLegacy();
+    await flush();
+    settles[0].resolve(change === 'switch-success');
+    await flush();
+    assert.deepEqual([settles.length, f.controller.getState().refresh, f.last().refresh], [2, 'pending', 'pending'], change);
+    settles[1].resolve(true);
+    await flush();
+    assert.deepEqual([f.controller.getState().refresh, f.last().refresh, cancels(f).length], ['none', 'none', 2], change);
+  }
+  // A retry renders pending before its callback: a flight started from that render holds it, a disposal drops it.
+  for (const change of ['flight', 'dispose']) {
+    let calls = 0;
+    let armed = false;
+    const read = deferred();
+    let g!: ReturnType<typeof legacyFixture>;
+    g = legacyFixture([], (state) => {
+      if (!armed || state.refresh !== 'pending') return;
+      armed = false;
+      if (change === 'dispose') g.controller.dispose();
+      else {
+        g.answers.push(() => read.promise);
+        void g.controller.checkLegacy();
+      }
+    }, { recovered: () => ++calls > 1 });
+    await availableAt(g);
+    await g.controller.cancelLegacy();
+    await flush();
+    assert.deepEqual([calls, g.last().refresh], [1, 'failed'], change);
+    armed = true;
+    g.controller.retryRefresh();
+    await flush();
+    assert.deepEqual([calls, g.controller.getState().refresh], [1, change === 'dispose' ? 'none' : 'pending'], change);
+    if (change === 'dispose') continue;
+    read.resolve(legacyCheck());
+    await flush();
+    assert.deepEqual([calls, g.last().refresh, g.last().legacy.status], [2, 'none', 'available'], change);
   }
 });
