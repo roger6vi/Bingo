@@ -4,7 +4,7 @@ import { createBingoController } from '../src/bingo-controller.mjs';
 
 // Bingo operator controller: validated read, event context, lifecycle (F1), explicit begin/cancel (F2a) and
 // confirmation with a fact-refresh hook (F2b), and held-award pushes with read-only staging (F3a, a subset of F3).
-// Pushes owned by an action or by a read owning a setup stay inert until F3b.
+// Pushes never settle begin or cancel; a dispatched confirm or a read stages them for its answer (F3b).
 const session = { sessionId: 's1', eventId: 'e1', calledNumbers: [12, 5, 90], bingoPrize: { amount: 50, lot: 'Jamón' } };
 const award = { eventId: 'e1', award: { winnerCount: 2, totalCents: 5000, shareCents: 2500, remainderCents: 0, lot: '',
   lotResolution: 'not_required' }, presentation: { id: 'p1', status: 'started', startedAt: 1000, deadlineAt: 5000 } };
@@ -859,7 +859,7 @@ test('bingo holds the committed hook while a read started from the settled rende
 });
 
 // F3a: pushes update only a held, trusted award; a read without a setup stages them and reconciles at its answer.
-// Not full F3: pushes during begin, cancel, confirm or a read owning a setup stay inert until F3b.
+// F3b extends staging to a dispatched confirm and to a read owning a setup; begin and cancel stay bound to their answer.
 const at = (status: string, id = 'p1', startedAt: number | null = ['pending', 'failed'].includes(status) ? null : 1000) =>
   ({ ...award, presentation: { id, status, startedAt, deadlineAt: startedAt === null ? null : startedAt + 4000 } });
 const declaredAt = async (f: ReturnType<typeof bingoFixture>, value: unknown = at('started')) => {
@@ -1027,7 +1027,7 @@ test('bingo read without a setup stages pushes and reconciles them with its answ
   }
 });
 
-test('bingo pushes during begin, cancel, confirm or a read owning a setup stay inert until F3b', async () => {
+test('bingo pushes never settle an action or a setup read, nor consume its session or flight', async () => {
   for (const kind of ['begin', 'cancel', 'confirm', 'read']) {
     let hooks = 0;
     const d = deferred();
@@ -1044,8 +1044,10 @@ test('bingo pushes during begin, cancel, confirm or a read owning a setup stay i
     d.resolve({ begin: setup(), cancel: { ok: true, state: 'cancelled' }, confirm: declared(), read: setup() }[kind]);
     await flight;
     await flush();
-    const expected = { begin: ['setup', session, null], cancel: ['idle', null, null], confirm: ['declared', null, award],
-      read: ['setup', session, null] }[kind];
+    // Begin and cancel follow their answer alone. The owned confirm commits but the conflicting observations keep it
+    // uncertain; the contradicted setup read keeps its session.
+    const expected = { begin: ['setup', session, null], cancel: ['idle', null, null], confirm: ['uncertain', null, null],
+      read: ['uncertain', session, null] }[kind];
     assert.deepEqual([f.last().mode, f.last().session, f.last().award, f.last().pending], [...expected, false], kind);
     assert.equal(hooks, kind === 'confirm' ? 1 : 0, kind);
   }
@@ -1116,5 +1118,175 @@ test('bingo keeps a compatible advance seen during a failed read, so later answe
       assert.deepEqual([f.last().mode, f.last().award], [mode, shown], label);
     }
     assert.equal(reads(f).length, 5, label);
+  }
+});
+
+// F3b: a dispatched confirm stages pushes; only its exact answer commits, owes one refresh and sets the held award.
+const confirmFixture = async () => {
+  const hooks = { count: 0 };
+  const d = deferred();
+  const f = bingoFixture({}, () => {}, { committed: () => { hooks.count++; } });
+  await setupAt(f);
+  f.actions.push(() => d.promise);
+  return { f, d, hooks, confirmed: f.controller.confirm(2) };
+};
+
+test('bingo confirm merges same-id pushes before or after its exact answer and owes one refresh', async () => {
+  for (const order of ['before', 'after']) {
+    const { f, d, hooks, confirmed } = await confirmFixture();
+    const completed = at('completed');
+    if (order === 'before') {
+      f.push(at('started'));
+      f.push(completed);
+      completed.presentation.status = 'interrupted';
+      assert.deepEqual([f.controller.getState().mode, f.controller.getState().pending, hooks.count], ['setup', true, 0]);
+    }
+    d.resolve(declared(at('pending')));
+    await confirmed;
+    if (order === 'after') {
+      f.push(at('started'));
+      f.push(completed);
+    }
+    await flush();
+    assert.deepEqual([f.last().mode, f.last().award, f.last().session, f.last().error, hooks.count],
+      ['declared', at('completed'), null, null, 1], order);
+    f.push(at('completed'));
+    f.push(at('started'));
+    f.reply(declared(at('pending')));
+    await f.controller.start();
+    await flush();
+    assert.deepEqual([f.last().mode, f.last().award, hooks.count], ['declared', at('completed'), 1], order);
+    assert.deepEqual(f.calls, ['subscribe', 'read:0', 'confirm:s1:2', 'read:0'], order);
+  }
+});
+
+test('bingo exact confirm commits once and stays locked when pushes conflict before or after it', async () => {
+  const conflicts = [null, { eventId: 'e1', presentation: 'x' }, at('failed'), at('started', 'p1', 2000),
+    { ...at('started'), award: { ...award.award, lot: 'Jamón', lotResolution: 'pending' } }, at('pending', 'p2')];
+  for (const order of ['before', 'after']) {
+    for (const pushed of conflicts) {
+      const label = `${order}:${JSON.stringify(pushed)}`;
+      const { f, d, hooks, confirmed } = await confirmFixture();
+      if (order === 'before') f.push(pushed);
+      d.resolve(declared());
+      await confirmed;
+      if (order === 'after') f.push(pushed);
+      await flush();
+      assert.deepEqual([f.last().mode, f.last().award, f.last().session, f.last().pending, hooks.count],
+        ['uncertain', null, null, false, 1], label);
+      for (const reply of [{ ok: true, state: 'none' }, setup()]) {
+        f.reply(reply);
+        await f.controller.start();
+        assert.deepEqual([f.last().mode, f.last().session], ['uncertain', null], label);
+      }
+      await f.controller.confirm(2);
+      f.reply(declared());
+      await f.controller.start();
+      await flush();
+      assert.deepEqual([f.last().mode, f.last().award, hooks.count], ['declared', award, 1], label);
+      assert.equal(f.calls.filter((call) => call.startsWith('confirm')).length, 1, label);
+    }
+  }
+});
+
+test('bingo invalid, lost or refused confirm answers owe nothing even beside a convincing push', async () => {
+  const replies: Array<[unknown, string, unknown]> = [
+    [declared({ ...award, award: { ...award.award, winnerCount: 1, shareCents: 5000 } }), 'uncertain', session],
+    [declared({ ...award, eventId: 'e2' }), 'uncertain', session], [{ ...declared(), extra: 1 }, 'uncertain', session],
+    [null, 'uncertain', session], [failure('storage_failure', 'Later.'), 'uncertain', session],
+    [failure('stale_session', 'Gone.'), 'uncertain', null], [failure('tongo_active', 'Tongo.'), 'setup', session],
+  ];
+  for (const [reply, mode, kept] of replies) {
+    const label = JSON.stringify(reply);
+    const { f, d, hooks, confirmed } = await confirmFixture();
+    f.push(declared().award);
+    f.push(at('completed'));
+    d.resolve(reply);
+    await confirmed;
+    await flush();
+    assert.deepEqual([f.last().mode, f.last().session, f.last().award, hooks.count], [mode, kept, null, 0], label);
+    // Only an explicit read recovers, never a retransmit; an observed award stays known so a setup cannot unlock it.
+    if (mode === 'uncertain') await f.controller.confirm(2);
+    f.reply(setup());
+    await f.controller.start();
+    assert.equal(f.last().mode, mode === 'setup' ? 'setup' : 'uncertain', label);
+    f.reply(declared(at('pending')));
+    await f.controller.start();
+    await flush();
+    assert.deepEqual([f.last().mode, f.last().award, f.last().session, hooks.count],
+      ['declared', mode === 'setup' ? at('pending') : at('completed'), null, 0], label);
+    assert.equal(f.calls.filter((call) => call.startsWith('confirm')).length, 1, label);
+  }
+});
+
+test('bingo ignores pushes before confirm dispatch and keeps a contradicted setup read owning its session', async () => {
+  let hooks = 0;
+  let armed = false;
+  const f = bingoFixture({}, () => {
+    if (!armed) return;
+    armed = false;
+    f.push(at('completed'));
+    f.push(null);
+  }, { committed: () => { hooks++; } });
+  await setupAt(f);
+  armed = true;
+  f.answer(declared());
+  await f.controller.confirm(2);
+  await flush();
+  assert.deepEqual([f.last().mode, f.last().award, hooks], ['declared', award, 1]);
+  const g = bingoFixture({}, () => {}, { committed: () => { hooks++; } });
+  await setupAt(g);
+  const d = deferred();
+  g.replies.push(() => d.promise);
+  const read = g.controller.start();
+  g.push(at('started'));
+  d.resolve(setup());
+  await read;
+  assert.deepEqual([g.last().mode, g.last().session, g.last().award], ['uncertain', session, null]);
+  await g.controller.confirm(2);
+  await g.controller.cancel();
+  await g.controller.begin();
+  assert.deepEqual(g.calls, ['subscribe', 'read:0', 'read:0']);
+  g.reply(declared(at('pending')));
+  await g.controller.start();
+  await flush();
+  assert.deepEqual([g.last().mode, g.last().award, g.last().session, hooks], ['declared', at('started'), null, 1]);
+});
+
+test('bingo confirm staging dies with its event or controller; API reentry joins the live confirm', async () => {
+  for (const change of ['switch', 'dispose', 'reenter']) {
+    const hooks = { count: 0 };
+    const d = deferred();
+    let joined: Promise<unknown> | undefined;
+    const f = bingoFixture({}, () => {}, { committed: () => { hooks.count++; } });
+    await setupAt(f);
+    f.actions.push(() => {
+      if (change === 'reenter') {
+        joined = f.controller.start();
+        f.push(at('completed'));
+      }
+      return d.promise;
+    });
+    const confirmed = f.controller.confirm(2);
+    if (change !== 'reenter') f.push(at('completed'));
+    if (change === 'switch') {
+      f.controller.setEvent('e2', 'line_declared');
+      f.controller.setEvent('e1', 'line_declared');
+    } else if (change === 'dispose') f.controller.dispose();
+    const seen = f.renders.length;
+    d.resolve(declared());
+    await confirmed;
+    await flush();
+    if (change === 'reenter') {
+      assert.equal(joined, confirmed);
+      assert.deepEqual([f.last().mode, f.last().award, hooks.count], ['declared', at('completed'), 1]);
+      continue;
+    }
+    assert.deepEqual([f.renders.length, hooks.count], [seen, 0], change);
+    if (change === 'dispose') continue;
+    f.push(at('completed'));
+    assert.deepEqual([f.last().mode, f.last().award, f.last().session, f.last().pending], ['unknown', null, null, false]);
+    await f.controller.start();
+    assert.equal(f.last().mode, 'idle');
   }
 });
