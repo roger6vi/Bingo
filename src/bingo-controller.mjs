@@ -3,9 +3,9 @@
 // Modes: unknown (not read for this event), idle, setup (a main-owned session is open), uncertain (an answer was
 // lost, refused or invalid, or the bridge is unavailable: only an explicit read may continue) and declared.
 // F3b stages pushes during a dispatched confirm and a read owning a setup; begin and cancel ignore them.
-// Deliberately incomplete: there are no retry, repeat or legacy actions yet and nothing is connected to the operator
-// UI. Nothing here reads, writes or plays by itself; the only writes are the explicit begin, cancel and confirm,
-// sharing the read's flight.
+// G1a adds explicit manual retry behind fresh guards. Deliberately incomplete: there are no repeat or legacy actions yet
+// and nothing is connected to the operator UI. Nothing here reads, writes or plays by itself; the only writes are the
+// explicit begin, cancel, confirm and retry, sharing the read's flight.
 import { validLineAward } from './operator-controller.mjs';
 
 const MAX_ID = 64;
@@ -35,7 +35,10 @@ const refusal = (result) => (typeof result.message === 'string' && result.messag
 // Typed refusals main returns before changing anything. Any other failure, including stale, is not "nothing happened".
 const refusalCodes = new Set(['invalid_request', 'not_available', 'setup_active', 'storage_failure', 'tongo_active',
   'presentation_busy']);
-const knownRefusal = (result) => isObject(result) && result.ok === false && refusalCodes.has(result.code) &&
+// Main's manual refusals: nothing was dispatched. A storage failure there may follow a dispatch, so it is not one.
+const manualRefusals = new Set(['invalid_request', 'not_available', 'setup_active', 'tongo_active', 'presentation_busy',
+  'presentation_refused']);
+const knownRefusal = (result, codes = refusalCodes) => isObject(result) && result.ok === false && codes.has(result.code) &&
   typeof result.message === 'string' && result.message.trim() !== '';
 const exactlyCancelled = (result) => isObject(result) && Object.keys(result).length === 2 && result.ok === true &&
   result.state === 'cancelled';
@@ -91,6 +94,9 @@ export function createBingoController(api, view, { committed = () => {} } = {}) 
   let generation = 0;
   // The generation of a committed fact refresh still owed to the page, or null. Held while any flight is pending.
   let refreshDue = null;
+  // The operator's latest Tongo, presentation and other-setup guards: true, false or null when unknown. Manual
+  // actions need all three freshly false. They are not part of the snapshot: the page that supplies them knows them.
+  let guards = { tongoPlaying: null, presentationBusy: null, otherSetupActive: null };
 
   const snapshot = () => ({ mode, pending, error, eventId: context, phase,
     session: session === null ? null : copySession(session), award: award === null ? null : copyAward(award) });
@@ -118,6 +124,11 @@ export function createBingoController(api, view, { committed = () => {} } = {}) 
     if (flight !== null) {
       const stage = flight.stage;
       if (stage === null || stage === 'dispatch') return;
+      // A manual action's source id only has to stay compatible: it never invalidates the rotation it answers.
+      if (next !== null && stage.source && next.presentation.id === stage.source.presentation.id) {
+        if (merge(stage.source, next) === null) stage.conflict = true;
+        return;
+      }
       const known = stage.award ?? (anchor?.presentation.id === next?.presentation.id ? anchor : null);
       const merged = next === null ? null : known === null ? next :
         known.presentation.id === next.presentation.id ? merge(known, next) : null;
@@ -203,8 +214,8 @@ export function createBingoController(api, view, { committed = () => {} } = {}) 
     try {
       render();
       if (disposed || flight !== own || !ready()) return;
-      // A confirm stages only what arrives once it is really sent, never during the render before.
-      if (own.stage === 'dispatch') own.stage = { award: null, conflict: false };
+      // A confirm or manual action stages only what arrives once it is really sent, never during the render before.
+      if (own.stage === 'dispatch') own.stage = { award: null, conflict: false, source: own.source };
       let result;
       try { result = await send(); } catch { result = null; }
       if (flight === own) settle(result, own.stage);
@@ -221,12 +232,13 @@ export function createBingoController(api, view, { committed = () => {} } = {}) 
 
   // Establish the shared settlement before any view or API callback, so every reentrant or competing start, begin
   // or cancel joins this flight's actual promise and sends nothing of its own.
-  // `stage` collects pushes for a read, or 'dispatch' for a confirm; begin and cancel have none.
-  function fly(ready, send, settle, stage = null) {
+  // `stage` collects pushes for a read, or 'dispatch' for a confirm or manual action (with its captured `source`
+  // award); begin and cancel have none.
+  function fly(ready, send, settle, stage = null, source = null) {
     let resolve;
     let reject;
     const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
-    const own = { promise, stage };
+    const own = { promise, stage, source };
     flight = own;
     pending = true;
     error = null;
@@ -346,7 +358,10 @@ export function createBingoController(api, view, { committed = () => {} } = {}) 
   function setEvent(eventId, nextPhase = null) {
     if (disposed) return;
     const id = validId(eventId) ? eventId : null;
+    const previous = phase;
     phase = typeof nextPhase === 'string' ? nextPhase : null;
+    // Guards hold only for the event and phase they were given in: any change makes all three unknown before render.
+    if (id !== context || phase !== previous) guards = { tongoPlaying: null, presentationBusy: null, otherSetupActive: null };
     if (id !== context) {
       context = id;
       generation += 1;
@@ -375,5 +390,60 @@ export function createBingoController(api, view, { committed = () => {} } = {}) 
   }
 
   render();
-  return { start, begin, cancel, confirm, setEvent, dispose, getState: snapshot };
+  // Synchronous and side-effect free: no render, read or action. Every call replaces all three guards, so an omitted
+  // or malformed one becomes unknown instead of keeping an earlier false.
+  function setGuards(value) {
+    const next = { tongoPlaying: null, presentationBusy: null, otherSetupActive: null };
+    try {
+      if (isObject(value)) {
+        for (const key of Object.keys(next)) {
+          const flag = value[key];
+          if (typeof flag === 'boolean') next[key] = flag;
+        }
+      }
+    } catch { /* A guard that cannot be read stays unknown. */ }
+    guards = next;
+  }
+  const guardsClear = () => guards.tongoPlaying === false && guards.presentationBusy === false &&
+    guards.otherSetupActive === false;
+
+  // A manual action on a presentation in `status` (retry: failed): only the exact id of the award shown for the current event,
+  // in bingo_declared, with no setup and clear guards, all rechecked after render. Main's coordinator dispatches once
+  // and plays; this never begins, notifies, reads or retries by itself, and owes no committed refresh.
+  function manual(name, status) {
+    return (id) => {
+      const source = anchor;
+      const eventId = context;
+      const allowed = () => mode === 'declared' && source !== null && anchor === source && award === source &&
+        context === eventId && session === null && phase === 'bingo_declared' && validId(id) &&
+        id === source.presentation.id && source.presentation.status === status && !retired.has(id) && guardsClear();
+      const joined = action(name, allowed);
+      if (joined !== undefined) return joined ?? Promise.resolve();
+      return fly(() => allowed() && typeof api[name] === 'function', () => api[name](id),
+        (result, stage) => settleManual(source, result, stage), 'dispatch', source);
+    };
+  }
+
+  // Only main's exact answer with the same durable facts under a new, never retired id rotates: the new id becomes the
+  // held award and the source is retired, whatever the pushes said. Another new id, null or corrupt evidence, or an
+  // incompatible source observation keeps that rotation but shows it uncertain. Any other answer rotates nothing; a
+  // clean refusal keeps the old award shown, everything else leaves it held but uncertain until an explicit read.
+  function settleManual(source, result, stage) {
+    const reply = result?.award;
+    if (isObject(result) && Object.keys(result).length === 3 && result.ok === true && result.state === 'declared' &&
+        validBingoAward(reply, source.eventId) && sameFacts(source, reply) &&
+        reply.presentation.id !== source.presentation.id && !retired.has(reply.presentation.id)) {
+      const fresh = copyAward(reply);
+      const seen = stage.award;
+      const best = seen === null ? fresh : seen.presentation.id === fresh.presentation.id ? merge(fresh, seen) : null;
+      retired.add(source.presentation.id);
+      anchor = best ?? fresh;
+      if (best === null || stage.conflict) uncertain(invalidUpdate);
+      else { mode = 'declared'; award = anchor; error = null; }
+    } else if (knownRefusal(result, manualRefusals) && stage.award === null && !stage.conflict) error = result.message;
+    else uncertain(result === null ? connectionError : result?.ok === false ? refusal(result) : invalidUpdate);
+  }
+  const retry = manual('retryBingoPresentation', 'failed');
+
+  return { start, begin, cancel, confirm, retry, setGuards, setEvent, dispose, getState: snapshot };
 }
