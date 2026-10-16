@@ -2,7 +2,8 @@ import { LitElement, css, html } from 'lit';
 import './bingo-button.mjs';
 
 export class BingoDialog extends LitElement {
-  // Each action's button dispatches its signal; Escape always dispatches 'dismiss'.
+  // Each action's button dispatches its signal; Escape always dispatches 'dismiss'. An action with
+  // disabled: true renders a disabled button that neither closes the dialog nor dispatches its signal.
   static properties = { label: { type: String }, actions: { attribute: false } };
   static styles = css`
     dialog {
@@ -36,8 +37,8 @@ export class BingoDialog extends LitElement {
     return html`<dialog aria-labelledby="dialog-heading" @cancel=${this.cancel}>
       <h2 id="dialog-heading">${this.label}</h2><slot></slot>
       <div class="actions">
-        ${this.actions.map(({ action, label, signal }) => html`<bingo-button data-action=${action}
-          @click=${() => this.finish(signal)}>${label}</bingo-button>`)}
+        ${this.actions.map(({ action, label, signal, disabled }) => html`<bingo-button data-action=${action}
+          ?disabled=${disabled === true} @click=${() => { if (disabled !== true) this.finish(signal); }}>${label}</bingo-button>`)}
       </div>
     </dialog>`;
   }
