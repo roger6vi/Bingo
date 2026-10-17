@@ -41,8 +41,12 @@ async function loadOperator(options = {}) {
   screen.textContent = (await (await fetch(new URL('../../src/screen.css', import.meta.url))).text()).replace(/@import [^;]+;/g, '');
   document.head.append(screen);
   const requests = [];
-  const replies = { getCurrentEvent: null, setTheme: null, updateEvent: null, drawManual: null, playTongo: null, getPrizes: null, updatePrizes: null };
-  const reads = { prizes: 0, line: 0, event: 0, legacy: 0 };
+  const replies = { getCurrentEvent: null, setTheme: null, updateEvent: null, drawManual: null, playTongo: null, getPrizes: null, updatePrizes: null,
+    ...options.replies };
+  const reads = { prizes: 0, line: 0, event: 0, legacy: 0, bingo: 0 };
+  // Bingo boundary: an idle main by default. `log` orders subscription, reads and cleanup; every other Bingo call is
+  // recorded as a request and refused, since nothing may write, recover or play before H3–H5.
+  const bingo = { read: async () => ({ ok: true, state: 'none' }), push: null, log: [], ...options.bingo };
   // Line-lot boundary: unavailable and refusing draws unless a test scripts it; logged apart from the other requests.
   const lot = { reads: 0, draws: [], presents: [], status: null, read: async () => ({ ok: false, code: 'not_available' }),
     draw: async () => ({ ok: false, code: 'not_available' }), present: async () => ({ ok: true }), ...options.lot };
@@ -90,6 +94,17 @@ async function loadOperator(options = {}) {
     readLegacyLineCheck: async () => { reads.legacy++; return legacy.read(); },
     cancelLegacyLineCheck: async (eventId, sequence, head) => { requests.push(`legacy:cancel:${eventId}:${sequence}:${head}`); return legacy.cancel(); },
     onLinePresentation: (callback) => { line.push = callback; return () => { line.push = null; }; },
+    readBingoSetup: async () => { reads.bingo++; bingo.log.push('read'); return bingo.read(); },
+    onBingoPresentation: (callback) => {
+      bingo.log.push('subscribe');
+      bingo.push = callback;
+      return () => { bingo.log.push('unsubscribe'); bingo.push = null; };
+    },
+    ...Object.fromEntries(['beginBingoSetup', 'cancelBingoSetup', 'confirmBingo', 'readLegacyBingoCheck', 'cancelLegacyBingoCheck',
+      'retryBingoPresentation', 'repeatBingoPresentation'].map((name) => [name, async (...args) => {
+      requests.push(`bingo:${name}:${args.join(':')}`);
+      return { ok: false, code: 'not_available', message: 'unexpected' };
+    }])),
     readLineLot: async () => { lot.reads++; return lot.read(); },
     drawLineLot: async (expected) => { lot.draws.push(expected); return lot.draw(expected); },
     // Private presentation request, recorded apart from draws; `omitPresent` scripts a desktop without the method.
@@ -102,7 +117,7 @@ async function loadOperator(options = {}) {
       theme = next;
       return { ok: true, theme };
     },
-    listEvents: async () => list(),
+    listEvents: async () => (replies.listEvents ? replies.listEvents() : list()),
     createEvent: async () => (options.createEvent ? options.createEvent() : list()),
     selectEvent: async (id) => {
       requests.push(`select:${id}`);
@@ -157,7 +172,7 @@ async function loadOperator(options = {}) {
     delete window.desktop;
     delete document.documentElement.dataset.theme;
   };
-  return { main, requests, replies, reads, line, legacy, lot, simulator, cleanup };
+  return { main, requests, replies, reads, line, legacy, lot, bingo, simulator, cleanup };
 }
 
 function type(input, value) {
@@ -474,6 +489,11 @@ it('operator wiring keeps committed state on failure and public controls use the
     // An unreadable line state now keeps drawing locked, so this wiring test supplies an idle main.
     readLineSetup: async () => ({ ok: true, state: 'none' }),
     onLinePresentation: () => () => {},
+    // Likewise an unread Bingo state, which needs an active event before it can be read.
+    listEvents: async () => ({ ok: true, events: [{ id: 'a', name: 'Verbena', date: '2026-08-15', place: 'Plaza',
+      phase: 'checking_bingo', createdAt: '2026-01-01T00:00:00.000Z', active: true }] }),
+    readBingoSetup: async () => ({ ok: true, state: 'none' }),
+    onBingoPresentation: () => () => {},
   };
   window.desktop = desktop;
   try {
@@ -2314,4 +2334,165 @@ it('a recovery in flight locks the page, an ordinary reload re-reads without wri
     expect(switched.ui.button.hidden).to.equal(true);
     expect(switched.ui.cancels()).to.deep.equal([]);
   } finally { switched.op.cleanup(); }
+});
+
+// Bingo composition (H2): explicit reads only, pushes repaint, Bingo locks the page and nothing writes before H3–H5.
+const bingoWrites = (op) => op.requests.filter((request) => request.startsWith('bingo:'));
+
+it('Bingo is read once after subscribing at load, then only by the explicit reload, selection and create paths', async () => {
+  const op = await loadOperator({ bingo: { read: async () => ({ ok: true, state: 'declared', award: awardFor('pending') }) } });
+  const { main, bingo, reads } = op;
+  try {
+    const controls = main.querySelector('#draw-controls');
+    const claim = main.querySelector('#claim-line');
+    const list = main.querySelector('#event-list');
+    expect([bingo.log, reads.bingo]).to.deep.equal([['subscribe', 'read'], 1]);
+    expect([claim.disabled, list.disabled, controls.manualDisabled]).to.deep.equal([true, true, true]);
+    const events = reads.event;
+    // Pushes only repaint: no read of any kind, and a completed celebration never unlocks drawing.
+    bingo.push(awardFor('started'));
+    await settle();
+    expect([claim.disabled, list.disabled]).to.deep.equal([true, true]);
+    bingo.push(awardFor('completed'));
+    await settle();
+    expect([claim.disabled, list.disabled, controls.manualDisabled, controls.digitalDisabled, main.querySelector('#operator-board').disabled])
+      .to.deep.equal([false, false, true, true, true]);
+    expect([reads.bingo, reads.event]).to.deep.equal([1, events]);
+    controls.reloadButton.click();
+    await settle();
+    main.querySelector('#reload-events').click();
+    await settle();
+    list.dispatchEvent(new CustomEvent('event-select', { detail: { id: 'b' } }));
+    await settle();
+    await settle();
+    submitCreate(main.querySelector('#create-event'));
+    await settle();
+    await settle();
+    expect(reads.bingo).to.equal(5, 'one explicit read per reload, selection and create');
+    expect([bingoWrites(op), bingo.log.filter((entry) => entry !== 'read')]).to.deep.equal([[], ['subscribe']]);
+  } finally { op.cleanup(); }
+  expect([bingo.log.at(-1), bingo.log.filter((entry) => entry === 'unsubscribe').length, bingo.push]).to.deep.equal(['unsubscribe', 1, null]);
+});
+
+it('an open or in-flight Bingo setup locks Tongo, Línea, drawing, selection, settings and create, visually and at dispatch', async () => {
+  let creates = 0;
+  const op = await loadOperator({ bingo: { read: async () => ({ ok: true, state: 'setup', session: { sessionId: 'b1', eventId: 'a',
+    calledNumbers: [4, 9], bingoPrize: { amount: 20, lot: '' } } }) }, createEvent: async () => { creates++; return { ok: false, message: 'x' }; } });
+  try {
+    const { main } = op;
+    const controls = main.querySelector('#draw-controls');
+    const tongo = main.querySelector('#tongo-control');
+    const ids = ['#claim-line', '#operator-board', '#event-list', '#settings-name', '#create-event-submit'];
+    const shown = () => [tongo.disabled, controls.manualDisabled, controls.digitalDisabled, controls.reloadDisabled,
+      ...ids.map((id) => main.querySelector(id).disabled)];
+    const force = async () => {
+      tongo.dispatchEvent(new CustomEvent('tongo-play'));
+      main.querySelector('#claim-line').click();
+      main.querySelector('#operator-board').dispatchEvent(new CustomEvent('number-select', { detail: { number: 5 } }));
+      controls.digitalButton.click();
+      main.querySelector('#event-list').dispatchEvent(new CustomEvent('event-select', { detail: { id: 'b' } }));
+      submitCreate(main.querySelector('#create-event'));
+      await settle();
+    };
+    expect(shown()).to.deep.equal([true, true, true, false, true, true, true, true, true], 'reload stays the recovery read');
+    await force();
+    expect([op.requests, creates]).to.deep.equal([[], 0]);
+    let release;
+    op.bingo.read = () => new Promise((resolve) => { release = resolve; });
+    controls.reloadButton.click();
+    await settle();
+    expect(shown()).to.deep.equal([true, true, true, true, true, true, true, true, true], 'a Bingo read in flight also holds reload');
+    await force();
+    expect([op.requests, creates]).to.deep.equal([[], 0]);
+    release({ ok: true, state: 'none' });
+    await settle();
+    expect(shown()).to.deep.equal([false, false, false, false, false, false, false, false, false], 'an idle Bingo locks nothing');
+  } finally { op.cleanup(); }
+});
+
+it('the shared fact refresh fails closed when the list went stale meanwhile, even back on the same event, or the read fails', async () => {
+  for (const scenario of ['stale', 'stale-and-back', 'read-error']) {
+    const op = await loadOperator({ line: { read: declaredAs('started') } });
+    try {
+      const { main, replies } = op;
+      const held = deferred();
+      replies.getCurrentEvent = () => held.promise;
+      op.line.push(awardFor('completed'));
+      await settle();
+      replies.listEvents = async () => ({ ok: false, message: 'Could not list the events.' });
+      if (scenario !== 'read-error') {
+        main.querySelector('#reload-events').click();
+        await settle();
+      }
+      replies.listEvents = null;
+      if (scenario === 'stale-and-back') {
+        main.querySelector('#reload-events').click();
+        await settle();
+      }
+      held.resolve(scenario === 'read-error' ? { ok: false, message: 'Could not read the current event. Try again.' }
+        : { ok: true, snapshot: { calledNumbers: [4, 9], phase: 'line_declared', lastTransitionAt: '2026-01-01T00:00:00.000Z' } });
+      await settle();
+      await settle();
+      expect([main.querySelector('#draw-controls').manualDisabled,
+        main.querySelector('#line-status').message.includes('no se pudo releer el evento')], scenario).to.deep.equal([true, true]);
+    } finally { op.cleanup(); }
+  }
+});
+
+it('a startup Line completion refresh never succeeds without an accepted initial list, and the explicit list reload restores it', async () => {
+  const failure = { ok: false, message: 'Could not list the events.' };
+  for (const scenario of ['failed', 'malformed', 'thrown', 'delayed']) {
+    // A fresh, still unresolved list per delayed run: nothing from an earlier iteration is already settled.
+    const held = deferred();
+    const listEvents = { failed: async () => failure, malformed: async () => ({ ok: true, events: 'x' }),
+      thrown: async () => { throw new Error('lost'); }, delayed: () => held.promise }[scenario];
+    const op = await loadOperator({ line: { read: declaredAs('completed') }, replies: { listEvents } });
+    try {
+      const { main } = op;
+      const status = main.querySelector('#line-status');
+      const shown = () => [status.message.includes('no se pudo releer el evento'), main.querySelector('#draw-controls').manualDisabled];
+      if (scenario === 'delayed') {
+        // The list is outstanding: the completion refresh waits for it, so it has neither read the event again (only the
+        // startup read) nor settled, and drawing stays locked.
+        expect([main.querySelector('#events-status').message, op.reads.event, ...shown()]).to.deep.equal(['Cargando eventos', 1, false, true]);
+        held.resolve(failure);
+      }
+      // The fresh event read itself succeeds; only the list that names the active event fails.
+      await settle();
+      await settle();
+      expect(shown(), scenario).to.deep.equal([true, true]);
+      op.replies.listEvents = null;
+      main.querySelector('#reload-events').click();
+      await settle();
+      await settle();
+      expect([status.message.includes('no se pudo releer'), main.querySelector('#draw-controls').manualDisabled, op.requests], scenario)
+        .to.deep.equal([false, false, []]);
+    } finally { op.cleanup(); }
+  }
+});
+
+it('the Bingo composition module exports its locks, fresh guards, dispatch predicate and owned fact refresh', async () => {
+  const { bingoLocks, bingoGuards, pageBlocked, createFactRefresh } = await import('../../src/bingo-ui.mjs');
+  const idle = { mode: 'idle', pending: false, eventId: 'a', session: null, award: null, legacy: { status: 'none' }, refresh: 'none' };
+  const declared = (status) => ({ ...idle, mode: 'declared', award: awardFor(status) });
+  expect([bingoLocks(idle, 'a'), bingoLocks(idle, 'b'), bingoLocks(declared('started'), 'a'), bingoLocks(declared('completed'), 'a')])
+    .to.deep.equal([{ live: false, draw: false }, { live: false, draw: true }, { live: true, draw: true }, { live: false, draw: true }]);
+  expect([bingoGuards({ mode: 'unknown', pending: false }, false),
+    bingoGuards({ mode: 'declared', pending: false, award: awardFor('started') }, true),
+    bingoGuards({ mode: 'setup', pending: false }, false)]).to.deep.equal([
+    { tongoPlaying: false, presentationBusy: null, otherSetupActive: null },
+    { tongoPlaying: true, presentationBusy: true, otherSetupActive: false },
+    { tongoPlaying: false, presentationBusy: false, otherSetupActive: true }]);
+  expect([pageBlocked({}), pageBlocked({ lineBlocked: true }), pageBlocked({ eventsStale: true })]).to.deep.equal([false, true, true]);
+  // A read in flight is awaited, then a new one is sent; a lost owner, a throw or unreadable facts answer false.
+  const run = async ({ owner = () => 'own', accepted = () => true, read }) => {
+    let busy = true;
+    let reads = 0;
+    const refresh = createFactRefresh({ owner, accepted, busy: () => busy, read: async () => { reads++; busy = false; await read?.(); } });
+    return [await refresh(), reads];
+  };
+  let token = {};
+  expect([await run({}), await run({ owner: () => token, read: () => { token = {}; } }),
+    await run({ read: () => { throw new Error('lost'); } }), await run({ accepted: () => false }), await run({ owner: () => null })])
+    .to.deep.equal([[true, 2], [false, 1], [false, 1], [false, 2], [false, 0]]);
 });

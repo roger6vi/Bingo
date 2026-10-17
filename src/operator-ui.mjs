@@ -28,6 +28,7 @@ import { bindCueControls } from './cue-ui.mjs';
 import { createLineLotController } from './line-lot-controller.mjs';
 import { createTongoController, tongoPlayable } from './tongo.mjs';
 import { validPrizes } from './prize-format.mjs';
+import { bingoGuards, bingoLocks, createBingoBinding, createFactRefresh } from './bingo-ui.mjs';
 
 function required(id, type) {
   const element = document.getElementById(id);
@@ -120,6 +121,20 @@ let lineState = { mode: 'unknown', pending: false, drawBlocked: true, liveBlocke
 let lineRef = null;
 let activeEventId = null;
 let createSubmitRef = null;
+// Until main's Bingo state is read for the active event, drawing stays locked; H3–H5 bind its actions.
+let bingoState = { mode: 'unknown', pending: false, eventId: null, session: null, award: null, legacy: { status: 'none' },
+  refresh: 'none' };
+let bingoRef = null;
+// Replaced by every selection or create, list failure and active-event change. An event snapshot names no event, so a
+// fact refresh only counts under an accepted, fresh list naming an active event, while the token it started under is
+// still current. A list never accepted (failed, malformed or lost) owns nothing.
+let factOwner = {};
+let listLoaded = false;
+const currentOwner = () => (!listLoaded || activeEventId === null || selecting || activating || eventsPending || eventsStale
+  ? null : factOwner);
+// The latest explicit list read (startup and «Recargar eventos»), which a fact refresh lets settle before it pins.
+let listing = Promise.resolve();
+const bingoBusy = () => bingoLocks(bingoState, activeEventId).live;
 // Main's line state must belong to the event the page shows as active; otherwise it is not trusted.
 // Only the data of the current mode counts: the controller keeps an old award after a later read of none.
 const lineEventId = () => (lineState.mode === 'setup' ? lineState.session?.eventId : lineState.mode === 'declared' ? lineState.award?.eventId : null) ?? null;
@@ -127,8 +142,12 @@ const lineMismatch = () => activeEventId !== null && lineEventId() !== null && l
 // A setup, a request in flight or a running celebration (pending/started) blocks the writes main refuses; a failed or
 // interrupted one does not, so another event can still be selected.
 const lineBlocked = () => lineState.liveBlocked !== false;
-// Drawing needs a known, completed (and event-refreshed) presentation for the event the page shows as active.
-const drawingBlocked = () => lineState.drawBlocked !== false || lineMismatch() || lineBlocked();
+// Either claim's setup, request in flight or running celebration locks the other claim and every live action.
+const liveLocked = () => lineBlocked() || bingoBusy();
+// Drawing needs a known, completed (and event-refreshed) presentation for the event the page shows as active, and an
+// idle Bingo.
+const drawingBlocked = () => lineState.drawBlocked !== false || lineMismatch() || liveLocked() ||
+  bingoLocks(bingoState, activeEventId).draw;
 const LINE_MISMATCH = 'El estado de la línea pertenece a otro evento. Pulsa «Recargar eventos» para leerlo de nuevo.';
 const claimLine = required('claim-line', BingoButton);
 const lineRetry = required('line-retry', BingoButton);
@@ -144,7 +163,8 @@ function syncLineContext() { lineRef?.setEvent(activeEventId, activeEventId === 
 // Dispatch-time gate for the cancellation: every lock the page knows, for exactly the check held for the active event.
 const legacyActionable = () => lineState.legacy?.status === 'available' && lineState.legacy.check.eventId === activeEventId &&
   activeEventId !== null && legacyPhase() === 'checking_line' && !lineMismatch() &&
-  !(selecting || activating || tongoBusy || eventsPending || lineState.pending || gameState.pending || lineState.mode !== 'idle');
+  !(selecting || activating || tongoBusy || eventsPending || lineState.pending || gameState.pending || lineState.mode !== 'idle' ||
+    bingoBusy());
 const lineRepeat = required('line-repeat', BingoButton);
 const LINE_LABELS = { setup: 'Reanudar línea', uncertain: 'Comprobar línea', declared: 'Línea declarada' };
 // Starting needs a fully known drawing game; recovery and resuming need only main's answer.
@@ -185,17 +205,23 @@ function syncLot() {
   // The panel's own display rule would otherwise override the hidden attribute.
   lotPanel.style.display = award === null ? 'none' : '';
 }
+// Bingo's event and fresh phase go first, then its three fresh guards; this never reads.
+function syncBingo() {
+  bingoRef?.sync(activeEventId, activeEventId === null ? null : legacyPhase(), bingoGuards(lineState, tongoBusy));
+}
 function applyLocks() {
-  // An open or in-flight first-line setup blocks the same writes main refuses.
-  const lineLocked = lineBlocked();
+  syncBingo();
+  // An open or in-flight Line or Bingo setup blocks the same writes main refuses.
+  const lineLocked = liveLocked();
   const locked = selecting || activating || tongoBusy || lineLocked;
   const drawLocked = locked || drawingBlocked();
-  claimLine.disabled = selecting || activating || tongoBusy || lineClaimDisabled();
+  claimLine.disabled = selecting || activating || tongoBusy || bingoBusy() || lineClaimDisabled();
   tongoControl.disabled = locked || !tongoPlayable(gameState);
   controls.manualDisabled = drawLocked || drawLocks.manualDisabled;
   controls.digitalDisabled = drawLocked || drawLocks.digitalDisabled;
-  // Reloading the event is the recovery path while a setup is open (it only re-reads); a line request in flight still blocks it.
-  controls.reloadDisabled = selecting || activating || tongoBusy || lineState.pending || drawLocks.reloadDisabled;
+  // Reloading the event is the recovery path while a setup is open (it only re-reads); a Line or Bingo request in flight still blocks it.
+  controls.reloadDisabled = selecting || activating || tongoBusy || lineState.pending || bingoState.pending ||
+    drawLocks.reloadDisabled;
   // A request in flight keeps the board idle-looking but inert; it is disabled only when it cannot draw.
   board.disabled = drawLocked || (drawLocks.manualDisabled && !drawLocks.pending);
   board.pending = drawLocks.pending;
@@ -226,7 +252,7 @@ controls.addEventListener('mode-change', () => { board.readonly = controls.mode 
 const controller = createOperatorController(desktop, {
   bind: ({ manual, digital, reload: reloadEvent }) => {
     // Reload only reads; after a failed post-celebration refresh it is also the explicit recovery.
-    const reload = () => { reloadEvent(); void rereadLine(); line.retryRefresh(); void lotController.resync(); };
+    const reload = () => { reloadEvent(); void rereadLine(); void bingo.reread(); line.retryRefresh(); void lotController.resync(); };
     // The board only requests a call; it shows the number called once the acknowledged snapshot arrives.
     board.addEventListener('number-select', (event) => {
       if (selecting || activating || tongoBusy || drawingBlocked() || controls.mode === 'digital') return;
@@ -273,6 +299,11 @@ const controller = createOperatorController(desktop, {
 });
 void controller.start();
 
+// A completed celebration needs a fresh authoritative event, for the Line and later for Bingo. The answer says whether
+// the page now holds an accepted, current event read under the same active event, selection and list.
+const refreshFacts = createFactRefresh({ owner: currentOwner, settled: () => listing, busy: () => drawLocks.pending,
+  read: () => controller.start(),
+  accepted: () => gameState !== null && !gameState.stale && gameState.error === null && gameState.snapshot !== null });
 const lineStatus = required('line-status', HTMLElement);
 const lineDialog = required('line-dialog', HTMLElement);
 const lineWinners = required('line-winners', BingoTextField);
@@ -283,7 +314,7 @@ let lineDialogShown = false;
 // Only a failed celebration can be retried and only an interrupted one repeated; nothing else is offered.
 function paintLineActions() {
   const presentation = lineState.mode === 'declared' && !lineMismatch() ? lineState.award?.presentation : undefined;
-  const busy = lineState.pending || selecting || activating || tongoBusy;
+  const busy = lineState.pending || selecting || activating || tongoBusy || bingoBusy();
   for (const [button, status] of [[lineRetry, 'failed'], [lineRepeat, 'interrupted']]) {
     button.hidden = presentation?.status !== status;
     button.disabled = busy;
@@ -338,21 +369,17 @@ const line = createLineController(desktop, {
     }
     applyLocks();
   },
-}, { committed: refreshEvent });
+}, { committed: refreshFacts });
 lineRef = line;
 syncLineContext();
-// A completed celebration needs a fresh authoritative event. A read already in flight may predate it, so the new
-// read is queued behind it; the answer says whether the page now holds an accepted, current event.
-async function refreshEvent() {
-  while (drawLocks.pending) await controller.start();
-  await controller.start();
-  return gameState !== null && !gameState.stale && gameState.error === null && gameState.snapshot !== null;
-}
+const bingo = createBingoBinding(desktop, { render: (state) => { bingoState = state; applyLocks(); }, refresh: refreshFacts });
+bingoRef = bingo;
+applyLocks();
 // Explicit buttons only: the handler re-validates the exact current id, status, event and busy state itself.
 const presentationClick = (status, run) => () => {
   const award = lineState.award;
   const presentation = award?.presentation;
-  if (lineState.pending || selecting || activating || tongoBusy || lineState.mode !== 'declared' || lineMismatch() ||
+  if (lineState.pending || selecting || activating || tongoBusy || bingoBusy() || lineState.mode !== 'declared' || lineMismatch() ||
     award.eventId !== activeEventId || presentation?.status !== status) return;
   void run(presentation.id);
 };
@@ -374,7 +401,7 @@ legacyDialog.addEventListener('confirm', () => {
 });
 lotPanel.addEventListener('line-lot-draw', () => { if (!lotPanel.hidden) void lotController.draw(); });
 lotPanel.addEventListener('line-lot-resync', () => { if (!lotPanel.hidden) void lotController.resync(); });
-window.addEventListener('pagehide', () => { line.dispose(); lotController.dispose(); });
+window.addEventListener('pagehide', () => { line.dispose(); bingo.dispose(); lotController.dispose(); });
 claimLine.addEventListener('click', () => { if (!claimLine.disabled) void line.open(); });
 lineDialog.addEventListener('dismiss', () => { lineDialogShown = false; void line.cancel(); });
 lineDialog.addEventListener('confirm', () => { lineDialogShown = false; void line.confirm(lineWinners.value); });
@@ -442,6 +469,8 @@ const events = createEventsController(desktop, {
   render: ({ events: list, loaded, pending, stale, error, active }) => {
     eventList.events = list;
     eventList.loaded = loaded;
+    if (pending === 'select' || pending === 'create' || stale || (active?.id ?? null) !== activeEventId) factOwner = {};
+    listLoaded = loaded;
     selecting = pending === 'select';
     eventsPending = pending !== null;
     eventsStale = stale;
@@ -468,10 +497,10 @@ const events = createEventsController(desktop, {
       : loaded ? 'Ningún evento seleccionado. Elige uno en Eventos.' : 'Cargando evento';
     banner.tone = active && !stale ? 'info' : 'warning';
   },
-}, () => Promise.all([controller.resync(), themes.start(), loadPrizes(), rereadLine()]));
+}, () => Promise.all([controller.resync(), themes.start(), loadPrizes(), rereadLine(), bingo.reread()]));
 // events.select resolves only after resync() and the theme re-read settle.
 eventList.addEventListener('event-select', async (event) => {
-  if (activating || tongoBusy || lineBlocked()) return;
+  if (activating || tongoBusy || liveLocked()) return;
   // Selecting another event would replace the draft: offer Save, Discard, or Cancel first.
   if (await settings.confirmLeave() !== true || activating) return;
   activating = true;
@@ -483,19 +512,27 @@ eventList.addEventListener('event-select', async (event) => {
     applyLocks();
   }
 });
-reloadEvents.addEventListener('click', () => { void events.start(); void loadPrizes(); void rereadLine(); line.retryRefresh(); void lotController.resync(); });
+// Bingo's read needs the active event, so it follows the list read, as at startup.
+const listEvents = () => {
+  listing = events.start();
+  void listing.then(() => bingo.reread());
+};
+reloadEvents.addEventListener('click', () => {
+  listEvents(); void loadPrizes(); void rereadLine(); line.retryRefresh(); void lotController.resync();
+});
 createForm.addEventListener('submit', async (event) => {
   event.preventDefault();
-  if (lineBlocked()) return;
+  if (liveLocked()) return;
   const meta = { name: createForm.elements.name.value, place: createForm.elements.place.value, date: eventDate.value };
   const created = await events.create(meta);
   // A create may have activated the new event, so main's line state is read again either way.
   void rereadLine();
+  void bingo.reread();
   if (created) {
     createForm.reset();
     eventDate.value = today();
   }
 });
-void events.start();
+listEvents();
 // If getTheme() never settles, reveal the default without marking it as the saved theme.
 revealAfter(document.documentElement, 2000);
