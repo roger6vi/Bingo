@@ -1,8 +1,10 @@
 // Private Bingo composition of the operator page (H2). It binds the Bingo controller to the page's active event,
 // fresh phase and guards, offers the explicit read the page's existing read paths use, and says what Bingo locks.
-// Nothing here reads, writes or plays by itself. H3 binds the explicit declaration; manual and legacy stay unbound until H4–H5.
+// Nothing here reads, writes or plays by itself. H3 binds the explicit declaration and H4a the failed-only retry; repeat
+// and legacy stay unbound until H4b–H5.
 import { createBingoController } from './bingo-controller.mjs';
 
+const NOT_NOW = 'The Bingo presentation cannot be started now.';
 const running = (award) => award !== null && (award.presentation.status === 'pending' || award.presentation.status === 'started');
 
 // Live: a Bingo read or action in flight, a setup main may hold (also while uncertain) or a public celebration in
@@ -27,6 +29,25 @@ export function bingoGuards(line, tongoBusy) {
 // renderer gates them with this (H3).
 export const pageBlocked = (page) => Boolean(page.selecting || page.activating || page.eventsPending || page.eventsStale ||
   page.tongoBusy || page.lineBlocked);
+
+const isObject = (value) => value !== null && typeof value === 'object';
+// The page's projection is clear for a Bingo write: no page lock, the accepted current list and event owner, no Line
+// request or owed refresh, no event read or draw in flight and the three fresh guards all known false.
+export const pageClear = (page) => !pageBlocked(page) && page.owner === true && page.linePending === false &&
+  page.lineRefresh === 'none' && page.eventPending === false && isObject(page.guards) &&
+  ['tongoPlaying', 'presentationBusy', 'otherSetupActive'].every((key) => page.guards[key] === false);
+
+// A manual action on the award shown (H4a): every page gate clear, a Line of this event, no owed committed refresh,
+// the fresh bingo_declared phase, and exactly the event, id and status `expected` captured at the click, with no
+// setup, legacy check or recovery refresh. The action's own pending reservation is not a blocker: the page checks
+// this once more after the controller's pending render, right before the bridge.
+export function manualAdmitted(page, state, expected) {
+  const shown = state?.mode === 'declared' ? state.award : null;
+  return pageClear(page) && page.lineForeign === false && page.owed === 'none' && page.phase === 'bingo_declared' &&
+    expected?.eventId !== null && page.eventId === expected.eventId && state.eventId === expected.eventId &&
+    state.session === null && state.legacy?.status === 'none' && state.refresh === 'none' &&
+    shown?.eventId === expected.eventId && shown.presentation?.id === expected.id && shown.presentation.status === expected.status;
+}
 
 // A Bingo winner count as typed: only a positive safe integer in full digits, never a blank, default or coercion.
 export function parseWinners(text) {
@@ -77,7 +98,19 @@ export function createBingoBinding(api, { render, refresh }) {
   let applied = null;
   let owed = null;
   let disposed = false;
-  const controller = createBingoController(api, { render }, { committed: () => committed(), recovered: refresh });
+  // The page's check of the manual retry being sent, or null. The controller renders pending, rechecks its own
+  // guards and calls the bridge synchronously within retry(), so the bridge below runs this check last: anything
+  // but true sends nothing and answers a refusal, which keeps the shown award.
+  let gate = null;
+  const bridge = { ...api };
+  if (typeof api?.retryBingoPresentation === 'function') {
+    bridge.retryBingoPresentation = (id) => {
+      let ready = false;
+      try { ready = gate?.() === true; } catch { /* Not admitted. */ }
+      return ready ? api.retryBingoPresentation(id) : { ok: false, code: 'not_available', message: NOT_NOW };
+    };
+  }
+  const controller = createBingoController(bridge, { render }, { committed: () => committed(), recovered: refresh });
   // Only the live binding's current attempt may refresh, settle or paint: a disposal, event change or newer attempt,
   // also from the pending render itself, orphans it before the refresh is called or after it settles.
   const live = (own) => !disposed && owed === own;
@@ -97,6 +130,14 @@ export function createBingoBinding(api, { render, refresh }) {
     begin: () => controller.begin(),
     cancel: () => controller.cancel(),
     confirm: (count) => controller.confirm(count),
+    // The explicit retry of exactly `id`, admitted by the page's `ready` once more right before the bridge. A call
+    // reentering from the pending render joins that flight and restores the outer check.
+    retry(id, ready) {
+      if (disposed) return Promise.resolve();
+      const outer = gate;
+      gate = ready;
+      try { return controller.retry(id); } finally { gate = outer; }
+    },
     // The explicit read of an uncertain answer: never a begin, confirm or playback.
     read: () => controller.start(),
     // The committed refresh of the given event: pending, failed or none.

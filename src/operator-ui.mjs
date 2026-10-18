@@ -29,7 +29,8 @@ import { bindCueControls } from './cue-ui.mjs';
 import { createLineLotController } from './line-lot-controller.mjs';
 import { createTongoController, tongoPlayable } from './tongo.mjs';
 import { validPrizes } from './prize-format.mjs';
-import { bingoGuards, bingoLocks, createBingoBinding, createFactRefresh, lineResolved, pageBlocked, parseWinners } from './bingo-ui.mjs';
+import { bingoGuards, bingoLocks, createBingoBinding, createFactRefresh, lineResolved, manualAdmitted, pageClear,
+  parseWinners } from './bingo-ui.mjs';
 
 function required(id, type) {
   const element = document.getElementById(id);
@@ -176,6 +177,7 @@ function lineClaimDisabled() {
   return false;
 }
 const claimBingo = required('claim-bingo', BingoButton);
+const bingoRetry = required('bingo-retry', BingoButton);
 const bingoStatus = required('bingo-status', HTMLElement);
 const bingoDialog = required('bingo-dialog', HTMLElement);
 const bingoWinners = required('bingo-winners', BingoTextField);
@@ -189,11 +191,20 @@ bingoDialog.actions = bingoActions(true);
 // before the begin is dispatched, so nothing rendered from its callbacks opens a second one.
 let bingoModal = null;
 let bingoTyped = null;
+// What the page knows for a Bingo write: its locks, the current owner, the Line, the event read and the fresh phase.
+const bingoPage = () => ({ selecting, activating, eventsPending, eventsStale, tongoBusy, lineBlocked: lineBlocked(),
+  owner: currentOwner() !== null, linePending: Boolean(lineState.pending), lineRefresh: lineState.refresh,
+  lineForeign: lineMismatch(), eventPending: Boolean(drawLocks.pending || gameState?.pending), guards: bingoGuards(lineState, tongoBusy),
+  eventId: activeEventId, phase: activeEventId === null ? null : legacyPhase(), owed: bingoRef?.refreshState(activeEventId) ?? 'none' });
 // Every page lock and fresh guard a Bingo begin or confirm needs at dispatch, since its controller checks none: an
 // accepted, current list and event read, no Tongo, and no Line request, setup, running celebration or owed refresh.
-const bingoClear = () => !pageBlocked({ selecting, activating, eventsPending, eventsStale, tongoBusy, lineBlocked: lineBlocked() }) &&
-  currentOwner() !== null && !lineState.pending && lineState.refresh === 'none' && !drawLocks.pending && !gameState?.pending &&
-  Object.values(bingoGuards(lineState, tongoBusy)).every((flag) => flag === false);
+const bingoClear = () => pageClear(bingoPage());
+// A retry needs all of that for exactly the failed award shown under `expected`, and no Bingo request of its own yet.
+const bingoRetryReady = (expected) => manualAdmitted(bingoPage(), bingoState, expected);
+const shownFailure = () => ({ eventId: activeEventId, id: bingoState.award?.presentation?.id, status: 'failed' });
+// An uncertain answer of the active event is only read again, in any phase, with no selection, list read or Tongo.
+const bingoReadable = () => bingoState.mode === 'uncertain' && bingoState.eventId !== null && bingoState.eventId === activeEventId &&
+  !(selecting || activating || tongoBusy || eventsPending);
 // A begin also needs the fresh line_declared phase, the Line's persisted, resolved award and an idle Bingo read for it.
 const bingoBeginnable = () => bingoModal === null && !bingoState.pending && bingoState.mode === 'idle' &&
   bingoState.eventId === activeEventId && legacyPhase() === 'line_declared' && bingoState.legacy.status === 'none' &&
@@ -217,9 +228,15 @@ function paintBingo() {
   // Pending stays enabled for the dialog's own begin so the button keeps focus; the click ignores it.
   claimBingo.disabled = state.mode === 'idle' ? !(bingoBeginnable() || (bingoModal !== null && state.pending))
     : state.mode === 'setup' ? !ownedSetup() || selecting || activating || tongoBusy
-      : state.mode === 'uncertain' ? !mine || selecting || activating : true;
+      : state.mode === 'uncertain' ? !bingoReadable() : true;
   const owed = bingoRef?.refreshState(state.eventId) ?? 'none';
   const presentation = state.mode === 'declared' ? state.award?.presentation?.status : undefined;
+  // Only a failed celebration is offered again; repeating an interrupted one is not bound yet (H4b).
+  const offered = !bingoRetry.hidden;
+  bingoRetry.hidden = !(mine && presentation === 'failed');
+  bingoRetry.disabled = bingoRetry.hidden || state.pending || !bingoRetryReady(shownFailure());
+  // Like the status, a newly offered retry must not stay clipped at the bottom of the rail.
+  if (!bingoRetry.hidden && !offered) void bingoRetry.updateComplete.then(() => bingoRetry.scrollIntoView({ block: 'nearest' }));
   const before = bingoStatus.hidden ? '' : bingoStatus.message;
   bingoStatus.message = !mine ? '' : state.pending ? 'Comprobando el bingo' : bingoMessage(state.error) ?? (state.mode === 'declared' && state.award
     ? `${bingoAwardSummary(state.award)}${owed === 'failed' ? ` ${BINGO_REFRESH_FAILED_ES}` : ''}`
@@ -476,7 +493,7 @@ window.addEventListener('pagehide', () => { closeBingo(); line.dispose(); bingo.
 // Bingo: an uncertain answer is only read again; an open setup resumes; an idle one begins only when everything allows it.
 claimBingo.addEventListener('click', () => {
   if (claimBingo.disabled || bingoState.pending) return;
-  if (bingoState.mode === 'uncertain') { void bingo.read(); return; }
+  if (bingoState.mode === 'uncertain') { if (bingoReadable()) void bingo.read(); return; }
   if (bingoState.mode === 'setup') {
     if (bingoModal === null && ownedSetup()) { bingoModal = { eventId: activeEventId, session: bingoState.session.sessionId, sent: false }; showBingo(); }
     return;
@@ -489,6 +506,13 @@ claimBingo.addEventListener('click', () => {
     if (ownedSetup() && own.eventId === activeEventId) { own.session = bingoState.session.sessionId; showBingo(); }
     else { bingoModal = null; applyLocks(); }
   });
+});
+// The event, id and status are captured at the click, and the binding checks the whole page once more right before
+// the bridge, after the pending render: a later change of any of them sends nothing.
+bingoRetry.addEventListener('click', () => {
+  const expected = shownFailure();
+  if (bingoRetry.disabled || bingoState.pending || !bingoRetryReady(expected)) return;
+  void bingo.retry(expected.id, () => bingoRetryReady(expected));
 });
 function showBingo() {
   const { session } = bingoState;

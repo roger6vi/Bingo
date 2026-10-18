@@ -216,3 +216,89 @@ test('an event change, a way back included, orphans the older attempt: its late 
   await flush();
   assert.deepEqual([f.binding.refreshState('e1'), f.renders.length], ['none', painted + 1]);
 });
+
+// The manual retry (H4a): the page's admission, and the binding running it after the controller's pending render,
+// right before the bridge, through the real Bingo controller with a declared award whose celebration failed.
+import { manualAdmitted } from '../src/bingo-ui.mjs';
+
+const failedAward = { ...bingoAward, presentation: { id: 'b1', status: 'failed', startedAt: null, deadlineAt: null } };
+const clearGuards = { tongoPlaying: false, presentationBusy: false, otherSetupActive: false };
+const expected = { eventId: 'e1', id: 'b1', status: 'failed' };
+const clearPage = { selecting: false, activating: false, eventsPending: false, eventsStale: false, tongoBusy: false,
+  lineBlocked: false, owner: true, linePending: false, lineRefresh: 'none', lineForeign: false, eventPending: false,
+  guards: clearGuards, eventId: 'e1', phase: 'bingo_declared', owed: 'none' };
+const shownState = { mode: 'declared', pending: true, eventId: 'e1', session: null, award: failedAward, legacy: { status: 'none' },
+  refresh: 'none' };
+
+test('manualAdmitted needs every page gate and exactly the shown award, never blocked by its own pending reservation', () => {
+  assert.equal(manualAdmitted(clearPage, shownState, expected), true, 'pending: the action\'s own reservation');
+  const pages: Array<[string, unknown]> = [['selecting', true], ['activating', true], ['eventsPending', true], ['eventsStale', true],
+    ['tongoBusy', true], ['lineBlocked', true], ['owner', false], ['linePending', true], ['lineRefresh', 'pending'],
+    ['lineRefresh', 'failed'], ['lineForeign', true], ['eventPending', true], ['eventId', 'e2'], ['eventId', null],
+    ['phase', 'line_declared'], ['phase', null], ['owed', 'pending'], ['owed', 'failed'], ['guards', null]];
+  for (const key of Object.keys(clearGuards)) pages.push(['guards', { ...clearGuards, [key]: null }], ['guards', { ...clearGuards, [key]: true }]);
+  for (const [key, value] of pages) {
+    assert.equal(manualAdmitted({ ...clearPage, [key]: value }, shownState, expected), false, `${key}: ${JSON.stringify(value)}`);
+  }
+  const states: Array<[string, unknown]> = [['mode', 'uncertain'], ['mode', 'setup'], ['eventId', 'e2'], ['session', bingoSession],
+    ['legacy', { status: 'available' }], ['refresh', 'pending'], ['refresh', 'failed'], ['award', null],
+    ['award', { ...failedAward, eventId: 'e2' }], ['award', { ...failedAward, presentation: { ...failedAward.presentation, id: 'b2' } }],
+    ['award', { ...failedAward, presentation: { ...failedAward.presentation, status: 'interrupted' } }]];
+  for (const [key, value] of states) {
+    assert.equal(manualAdmitted(clearPage, { ...shownState, [key]: value }, expected), false, `${key}: ${JSON.stringify(value)}`);
+  }
+  for (const other of [{ id: 'b0' }, { status: 'completed' }, { eventId: 'e2' }]) {
+    assert.equal(manualAdmitted(clearPage, shownState, { ...expected, ...other }), false, JSON.stringify(other));
+  }
+});
+
+// A binding over the e1 failed award, read and guarded; `onRender` then sees every later render.
+async function failedBinding(onRender: (state: any) => void = () => {}) {
+  const sent: string[] = [];
+  const renders: any[] = [];
+  let armed = false;
+  const api = { onBingoPresentation: () => () => {}, readBingoSetup: async () => ({ ok: true, state: 'declared', award: failedAward }),
+    retryBingoPresentation: async (id: string) => {
+      sent.push(id);
+      return { ok: true, state: 'declared', award: { ...failedAward, presentation: { ...failedAward.presentation, id: 'b2', status: 'pending' } } };
+    } };
+  const binding = createBingoBinding(api, { render: (state: any) => { renders.push(state); if (armed) onRender(state); },
+    refresh: async () => true });
+  binding.sync('e1', 'bingo_declared', clearGuards);
+  await binding.reread();
+  assert.equal(renders.at(-1).award.presentation.status, 'failed');
+  armed = true;
+  return { binding, sent, renders };
+}
+
+test('the page check runs after the pending render, admits its own reservation and sends the exact id once', async () => {
+  const seen: boolean[] = [];
+  const f = await failedBinding((state) => { seen.push(state.pending); });
+  let checks = 0;
+  await f.binding.retry('b1', () => { checks++; return manualAdmitted(clearPage, f.renders.at(-1), expected); });
+  assert.deepEqual([seen[0], checks, f.sent], [true, 1, ['b1']]);
+  assert.deepEqual([f.renders.at(-1).mode, f.renders.at(-1).award.presentation.id], ['declared', 'b2']);
+});
+
+test('a gate closed, an event switch or a disposal from the pending render stops the bridge; a reentrant retry joins', async () => {
+  for (const change of ['gate', 'switch', 'dispose', 'reentry', 'no check', 'stale id']) {
+    let open = true;
+    let armed = true;
+    const f = await failedBinding((state) => {
+      if (!armed || !state.pending) return;
+      armed = false;
+      if (change === 'gate') open = false;
+      else if (change === 'switch') f.binding.sync('e2', 'bingo_declared', clearGuards);
+      else if (change === 'dispose') f.binding.dispose();
+      else if (change === 'reentry') void f.binding.retry('b1', () => false);
+    });
+    const ready = change === 'no check' ? undefined : () => open;
+    await f.binding.retry(change === 'stale id' ? 'b0' : 'b1', ready as any);
+    assert.deepEqual(f.sent, change === 'reentry' ? ['b1'] : [], change);
+    if (change === 'gate' || change === 'no check') {
+      const last = f.renders.at(-1);
+      assert.deepEqual([last.mode, last.award.presentation.id, last.error], ['declared', 'b1',
+        'The Bingo presentation cannot be started now.'], change);
+    }
+  }
+});
