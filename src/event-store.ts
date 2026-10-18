@@ -1585,6 +1585,47 @@ export function createEventStore(path: string) {
       });
     },
     // Frozen store-authoritative baseline the operator confirms before declaring the first line.
+    // Commits the one manual Bingo lot result: the mirror of resolveLineLot on bingo_awards, with the same strict
+    // untrusted identity/result parsing, completed-presentation rule (the same store rule the user chose for Line),
+    // single compare-and-set of the four result columns and authoritative readback before COMMIT.
+    resolveBingoLot(expected: unknown, result: unknown): BingoLotSnapshot {
+      const want = exactPlain(expected, ['eventId', 'auditSequence', 'presentationId'], 'lot identity');
+      const pickRaw = exactPlain(result, ['participantNumber', 'colorId'], 'lot result');
+      if (typeof want.eventId !== 'string' || want.eventId === '' || typeof want.presentationId !== 'string' ||
+          want.presentationId.trim() === '' || !Number.isSafeInteger(want.auditSequence) || (want.auditSequence as number) < 1) {
+        throw new Error('Invalid lot identity');
+      }
+      parseLineLotResolution(MAX_SAFE_INTEGER, 'resolved', pickRaw);
+      const { eventId, auditSequence, presentationId } = want as { eventId: string; auditSequence: number; presentationId: string };
+      const { participantNumber, colorId } = pickRaw as { participantNumber: number; colorId: string };
+      return transaction(() => {
+        if (readActiveEventId(db) !== eventId) throw new Error('Bingo lot event is not the active event');
+        readEvent(db);
+        const current = readBingoAwardRecord(db, eventId, replayAudit(db, eventId));
+        if (current === null || current.auditSequence !== auditSequence || current.stored.presentation.id !== presentationId ||
+            current.stored.presentation.status !== 'completed') throw new Error('Bingo lot identity is stale');
+        if (current.stored.award.lot === '' || current.stored.award.winnerCount < 2 || current.fact === null ||
+            current.fact.origin !== 'none' || current.fact.resolution !== 'pending') throw new Error('Bingo lot is not pending');
+        parseLineLotResolution(current.stored.award.winnerCount, 'resolved', pickRaw);
+        const update = db.prepare(`UPDATE bingo_awards SET lot_resolution = 'resolved', lot_result_origin = 'numbered_v1',
+          lot_participant_number = ?, lot_color_id = ? WHERE event_id = ? AND audit_sequence = ? AND presentation_id = ?
+          AND presentation_status = 'completed' AND lot_resolution = 'pending' AND lot_result_origin = 'none'`)
+          .run(participantNumber, colorId, eventId, auditSequence, presentationId);
+        if (update.changes !== 1) throw new Error('Bingo lot changed concurrently');
+        readEvent(db);
+        const committed = readBingoAwardRecord(db, eventId, replayAudit(db, eventId));
+        const fact = committed?.fact;
+        if (committed === null || fact?.origin !== 'numbered_v1' || fact.participantNumber !== participantNumber ||
+            fact.colorId !== colorId || committed.auditSequence !== auditSequence ||
+            committed.stored.presentation.id !== presentationId ||
+            JSON.stringify({ ...committed.stored.award, lotResolution: 0 }) !==
+              JSON.stringify({ ...current.stored.award, lotResolution: 0 }) ||
+            JSON.stringify(committed.stored.presentation) !== JSON.stringify(current.stored.presentation)) {
+          throw new Error('Invalid stored bingo award: lot mismatch after write');
+        }
+        return lotSnapshot(eventId, committed as LineAwardRecord);
+      });
+    },
     loadLineDeclarationBaseline(): LineDeclarationBaseline {
       return readSnapshot(() => readLineDeclarationBaseline(db));
     },
