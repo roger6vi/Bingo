@@ -66,6 +66,11 @@ const cases: Array<[string, string, unknown[]]> = [
   ['cancelLegacyBingoCheck', 'bingo:legacy-check:cancel', ['event-canonical', 17, '2026-02-03T04:05:06Z']],
   ['retryBingoPresentation', 'bingo:retry-presentation', ['award-canonical']],
   ['repeatBingoPresentation', 'bingo:repeat-presentation', ['award-canonical']],
+  ['readBingoLot', 'bingo:lot:read', []],
+  ['drawBingoLot', 'bingo:lot:draw', [{ eventId: 'event-canonical', auditSequence: 9, presentationId: 'award-canonical' }]],
+  ['presentBingoLot', 'bingo:lot:present', [{ eventId: 'event-canonical', auditSequence: 9, winnerCount: 5, lot: 'Hamper',
+    presentation: { id: 'award-canonical', status: 'completed' },
+    fact: { origin: 'numbered_v1', resolution: 'resolved', paletteVersion: 1, participantNumber: 3, colorId: 'blue' } }]],
 ];
 
 for (const [method, channel, args] of cases) {
@@ -153,11 +158,21 @@ test('representative existing Line, lot, theme, event and public-status behavior
   assert.equal(bridge.confirmLine('session', 'event', 2), result);
   const identity = { eventId: 'event', auditSequence: 4, presentationId: 'line-award' };
   assert.equal(bridge.drawLineLot(identity), result);
+  const bingoIdentity = { eventId: 'event', auditSequence: 6, presentationId: 'bingo-award' };
+  const bingoSnapshot = { ...bingoIdentity, winnerCount: 5, lot: 'Hamper',
+    presentation: { id: 'bingo-award', status: 'completed' },
+    fact: { origin: 'numbered_v1', resolution: 'resolved', paletteVersion: 1, participantNumber: 3, colorId: 'blue' } };
+  assert.equal(bridge.readBingoLot(), result);
+  assert.equal(bridge.drawBingoLot(bingoIdentity), result);
+  assert.equal(bridge.presentBingoLot(bingoSnapshot), result);
   assert.equal(bridge.getTheme(), result);
   assert.equal(bridge.getCurrentEvent(), result);
   assert.deepEqual(calls, [
     { operation: 'invoke', channel: 'line:confirm', args: ['session', 'event', 2] },
     { operation: 'invoke', channel: 'line:lot:draw', args: [identity] },
+    { operation: 'invoke', channel: 'bingo:lot:read', args: [] },
+    { operation: 'invoke', channel: 'bingo:lot:draw', args: [bingoIdentity] },
+    { operation: 'invoke', channel: 'bingo:lot:present', args: [bingoSnapshot] },
     { operation: 'invoke', channel: 'theme:get', args: [] },
     { operation: 'invoke', channel: 'event:get', args: [] },
   ]);
