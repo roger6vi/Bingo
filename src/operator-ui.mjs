@@ -535,14 +535,22 @@ legacyDialog.addEventListener('confirm', () => {
   legacyDialogShown = false;
   if (legacyActionable()) void line.cancelLegacy();
 });
-// The Bingo recovery needs the same two explicit steps as the Line's: the button opens the confirmation or re-reads;
-// only the dialog's confirmation writes, and the controller revalidates the exact held check when it dispatches.
+// The recovery needs two explicit steps as the Line's: the button opens the confirmation or re-reads; only the
+// dialog's confirmation writes, and the controller revalidates the exact held check when it dispatches.
+// The dialog's own update must not outlive the page: the opener is remembered and the modal is shown only while the
+// page has not hidden during the update.
+const showBingoLegacyDialog = async () => {
+  bingoLegacyDialog.opener = document.activeElement;
+  await bingoLegacyDialog.updateComplete;
+  if (pageHid) { bingoLegacyDialogShown = false; return; }
+  bingoLegacyDialog.shadowRoot.querySelector('dialog').showModal();
+};
 bingoRecover.addEventListener('click', () => {
-  if (bingoRecover.disabled) return;
+  if (pageHid || bingoRecover.disabled) return;
   if (bingoState.legacy?.status === 'uncertain') { void bingo.checkLegacy(); return; }
   if (!bingoLegacyActionable()) return;
   bingoLegacyDialogShown = true;
-  void bingoLegacyDialog.show();
+  void showBingoLegacyDialog();
 });
 bingoLegacyDialog.addEventListener('dismiss', () => { bingoLegacyDialogShown = false; });
 bingoLegacyDialog.addEventListener('confirm', () => {
@@ -552,9 +560,11 @@ bingoLegacyDialog.addEventListener('confirm', () => {
 bingoRefresh.addEventListener('click', () => { if (!bingoRefresh.disabled) bingo.retryRecovery(); });
 lotPanel.addEventListener('line-lot-draw', () => { if (!lotPanel.hidden) void lotController.draw(); });
 lotPanel.addEventListener('line-lot-resync', () => { if (!lotPanel.hidden) void lotController.resync(); });
-// The page's disposal is permanent: no queued scroll continuation or later tab change may paint after the pagehide.
+// The page's disposal is permanent: no queued scroll continuation, later tab change or dialog opening may paint after
+// the pagehide, and an open confirmation is closed without writing.
 let pageHid = false;
-window.addEventListener('pagehide', () => { pageHid = true; closeBingo(); line.dispose(); bingo.dispose(); lotController.dispose(); });
+window.addEventListener('pagehide', () => { pageHid = true; closeBingo(); bingoLegacyDialogShown = false;
+  bingoLegacyDialog.shadowRoot?.querySelector('dialog')?.close(); line.dispose(); bingo.dispose(); lotController.dispose(); });
 // Bingo: an uncertain answer is only read again; an open setup resumes; an idle one begins only when everything allows it.
 claimBingo.addEventListener('click', () => {
   if (claimBingo.disabled || bingoState.pending) return;
