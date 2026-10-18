@@ -326,13 +326,16 @@ function syncLot() {
   lotPanel.style.display = award === null ? 'none' : '';
 }
 
-// The Bingo lot panel mirrors the Line's, for the declared Bingo's pending or resolved lot. C2a wires rendering,
-// visibility and the read-once sync only: the panel already dispatches its draw and resync intents, but nothing
-// consumes them yet (C2b), so the adapted api stays read-only and `drawLineLot` is left undefined — a C2a draw
-// attempt fails closed inside the shared controller, never reaching the Line's draw channel.
+// The Bingo lot panel mirrors the Line's, for the declared Bingo's pending or resolved lot: the same controller, the
+// same dispatch intents and the same one-shot presentation. The preload API is adapted, never shared: reads and draws
+// go to the Bingo lot channels, and only the controller's own committed draw is presented, once and best effort.
 const bingoLotPanel = required('bingo-lot', HTMLElement);
-const bingoLotController = createLineLotController({ ...desktop, readLineLot: desktop.readBingoLot, drawLineLot: undefined },
-  { render: (state) => { bingoLotPanel.state = { ...state, message: operatorMessage(state.message) }; paintBingo(); } });
+const presentBingoLot = (snapshot) => {
+  try { Promise.resolve(desktop.presentBingoLot?.(snapshot)).catch(() => {}); } catch { /* presentation is not lot state */ }
+};
+const bingoLotController = createLineLotController({ ...desktop, readLineLot: desktop.readBingoLot, drawLineLot: desktop.drawBingoLot },
+  { render: (state) => { bingoLotPanel.state = { ...state, message: operatorMessage(state.message) }; paintBingo(); } },
+  { onCommitted: presentBingoLot });
 // The page locks the dedicated panel needs: the same shared locks as ordinary drawing (see bingoLotBusy) minus the
 // declared Bingo draw lock, which would otherwise disable the lot draw forever.
 const bingoLotPage = () => ({ selecting, activating, tongoBusy, eventsPending, eventsStale,
@@ -352,6 +355,12 @@ function syncBingoLot() {
   // The panel's own display rule would otherwise override the hidden attribute.
   bingoLotPanel.style.display = visible ? '' : 'none';
 }
+// An explicit reload resyncs the lot like the Line's, but only under the same completed-only rule as the reads: before
+// the celebration completes the store refuses lot reads (decision 1), so resyncing then would flash an unavailable lot.
+// The panel's own resync button stays the always-available recovery for a visible panel.
+const resyncBingoLot = () => {
+  if (bingoLotVisible(bingoState, activeEventId) && bingoLotKey(bingoState)?.endsWith('true')) void bingoLotController.resync();
+};
 // Bingo's event and fresh phase go first, then its three fresh guards; this never reads.
 function syncBingo() {
   bingoRef?.sync(activeEventId, activeEventId === null ? null : legacyPhase(), bingoGuards(lineState, tongoBusy));
@@ -408,6 +417,7 @@ const controller = createOperatorController(desktop, {
       line.retryRefresh();
       bingo.retryRefresh();
       void lotController.resync();
+      resyncBingoLot();
       void checkBingoLegacy(bingoRead);
     };
     // The board only requests a call; it shows the number called once the acknowledged snapshot arrives.
@@ -588,11 +598,16 @@ bingoLegacyDialog.addEventListener('confirm', () => {
 bingoRefresh.addEventListener('click', () => { if (!bingoRefresh.disabled) bingo.retryRecovery(); });
 lotPanel.addEventListener('line-lot-draw', () => { if (!lotPanel.hidden) void lotController.draw(); });
 lotPanel.addEventListener('line-lot-resync', () => { if (!lotPanel.hidden) void lotController.resync(); });
+// The same intents from the dedicated Bingo panel reach the bingo lot controller; each panel listens on itself, so a
+// dispatch from one can never reach the other.
+bingoLotPanel.addEventListener('line-lot-draw', () => { if (!bingoLotPanel.hidden) void bingoLotController.draw(); });
+bingoLotPanel.addEventListener('line-lot-resync', () => { if (!bingoLotPanel.hidden) void bingoLotController.resync(); });
 // The page's disposal is permanent: no queued scroll continuation, later tab change or dialog opening may paint after
 // the pagehide, and an open confirmation is closed without writing.
 let pageHid = false;
 window.addEventListener('pagehide', () => { pageHid = true; closeBingo(); bingoLegacyDialogShown = false;
-  bingoLegacyDialog.shadowRoot?.querySelector('dialog')?.close(); line.dispose(); bingo.dispose(); lotController.dispose(); });
+  bingoLegacyDialog.shadowRoot?.querySelector('dialog')?.close(); line.dispose(); bingo.dispose(); lotController.dispose();
+  bingoLotController.dispose(); });
 // Bingo: an uncertain answer is only read again; an open setup resumes; an idle one begins only when everything allows it.
 claimBingo.addEventListener('click', () => {
   if (claimBingo.disabled || bingoState.pending) return;
@@ -782,6 +797,7 @@ const listEvents = () => {
 };
 reloadEvents.addEventListener('click', () => {
   listEvents(); void loadPrizes(); void rereadLine(); line.retryRefresh(); void lotController.resync();
+  resyncBingoLot();
 });
 createForm.addEventListener('submit', async (event) => {
   event.preventDefault();
