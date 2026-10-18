@@ -5,9 +5,6 @@ import { createOperatorGuard } from '../src/event-ipc.ts';
 import { participantColor } from '../src/line-lot-contract.ts';
 import { BINGO_LOT_CHANNELS, registerBingoLotIpc } from '../src/bingo-lot-ipc.ts';
 
-// B1a slice: the 13 uncertainty/recovery/refresh-sweep tests are deferred whole to B1b, which restores the
-// entire exact original test blob e5ecbfa5f792b9e1ccd40fb566597fa933ffdb35 (12 + 13 = 25 tests).
-
 type Handler = (event: { sender: object; senderFrame: object | null }, ...args: unknown[]) => any;
 const url = 'file:///app/operator.html';
 const id = { eventId: 'e1', auditSequence: 4, presentationId: 'p1' };
@@ -143,6 +140,42 @@ test('ineligible, unfinished, busy, Tongo and stale states reject before entropy
   assert.deepEqual([unreadable.selections.length, unreadable.writes.length], [0, 0]);
 });
 
+test('every reachable refusal speaks bingo wording, never a first-line or Line label', () => {
+  const messages: string[] = [];
+  const capture = (result: any, name: string) => {
+    assert.equal(result.ok, false, name);
+    messages.push(result.message);
+    return result;
+  };
+  capture(fixture({ state: null }).read(), 'no award');
+  capture(fixture().draw({ bad: true }), 'malformed identity');
+  capture(fixture({ state: pending({ winnerCount: 1 }) }).draw(id), 'single winner');
+  capture(fixture().draw({ ...id, auditSequence: 5 }), 'stale audit');
+  capture(fixture({ ports: { busy: () => true } }).draw(id), 'coordinator busy');
+  capture(fixture({ state: pending({ presentation: { id: 'p1', status: 'started' } }) }).draw(id), 'unfinished');
+  capture(fixture({ ports: { tongoPlaying: () => true } }).draw(id), 'tongo');
+  const failing = fixture({ select: () => { throw new Error('entropy secret'); } });
+  const selection = failing.draw(id);
+  assert.equal(selection.code, 'selection_failed');
+  assert.doesNotMatch(JSON.stringify(selection), /secret/);
+  messages.push(selection.message);
+  let inner: any;
+  const reentrant = fixture({ select: () => { inner = reentrant.draw(id); return { participantNumber: 2, colorId: 'blue' }; } });
+  reentrant.draw(id);
+  messages.push(inner.message);
+  const unreadable = fixture();
+  unreadable.failLoad = true;
+  messages.push(unreadable.read().message);
+  const uncertain = fixture({ write: (s: any) => { s.state = numbered(2, 'blue'); s.failLoad = true; throw new Error('x'); } });
+  messages.push(uncertain.draw(id).message);
+  assert.equal(messages.length, new Set(messages).size + 1, 'only the two busy variants share a message');
+  for (const message of messages) assert.doesNotMatch(message, /line/i, message);
+  assert.ok(messages.includes('No bingo lot is available.'));
+  assert.ok(messages.includes('Wait for the bingo celebration to finish first.'));
+  const stalled = fixture({ ports: { busy: () => true } });
+  assert.equal(stalled.draw(id).message, 'Wait for the bingo celebration to finish first.');
+});
+
 test('an already resolved or legacy lot returns current state with zero entropy', () => {
   for (const state of [numbered(3, 'green'), legacy()]) {
     const f = fixture({ state });
@@ -162,6 +195,33 @@ test('a successful draw selects once, writes once through resolveBingoLot with a
   assert.deepEqual(result, { ok: true, kind: 'committed', snapshot: numbered(2, 'blue') });
 });
 
+test('a competitor-committed winner is returned as recovered without selecting again', () => {
+  const f = fixture({ write: (state) => { state.state = numbered(4, 'yellow'); throw new Error('Bingo lot changed concurrently'); } });
+  const result = f.draw(id);
+  assert.deepEqual(result, { ok: true, kind: 'recovered', snapshot: numbered(4, 'yellow') });
+  assert.deepEqual([f.selections.length, f.writes.length], [1, 1]);
+});
+
+test('a failure before commit rereads the pending lot without a second selection', () => {
+  const f = fixture({ write: () => { throw new Error('secret write'); } });
+  const result = f.draw(id);
+  assert.deepEqual(result, { ok: true, kind: 'recovered', snapshot: pending() });
+  assert.doesNotMatch(JSON.stringify(result), /secret/);
+  assert.deepEqual([f.selections.length, f.writes.length], [1, 1]);
+});
+
+test('a commit followed by a throw, or a mismatched acknowledgement, rereads the committed fact', () => {
+  for (const ack of ['throw', 'wrong']) {
+    const f = fixture({ write: (state, _e, r) => {
+      state.state = numbered(r.participantNumber, r.colorId);
+      if (ack === 'throw') throw new Error('lost acknowledgement');
+      return numbered(5, 'purple');
+    } });
+    assert.deepEqual(f.draw(id), { ok: true, kind: 'recovered', snapshot: numbered(2, 'blue') }, ack);
+    assert.deepEqual([f.selections.length, f.writes.length], [1, 1], ack);
+  }
+});
+
 test('an unreadable acknowledgement requires an explicit read and never rerolls', () => {
   const f = fixture({ write: (state) => { state.state = numbered(2, 'blue'); state.failLoad = true; throw new Error('x'); } });
   const result = f.draw(id);
@@ -173,6 +233,60 @@ test('an unreadable acknowledgement requires an explicit read and never rerolls'
   assert.deepEqual([f.selections.length, f.writes.length], [1, 1]);
   const gone = fixture({ write: (state) => { state.state = null; throw new Error('x'); } });
   assert.equal(gone.draw(id).code, 'stale_identity');
+});
+
+test('an unreadable acknowledgement latches draws until an authorized strict read succeeds', () => {
+  const f = fixture({ write: (s) => { s.state = numbered(2, 'blue'); s.failLoad = true; throw new Error('x'); } });
+  assert.equal(f.draw(id).code, 'read_required');
+  const loads = f.loads;
+  assert.equal(f.draw(id).code, 'read_required');
+  assert.deepEqual([f.loads, f.selections.length, f.writes.length], [loads, 1, 1]);
+  assert.equal(f.read().code, 'storage_failure');
+  f.failLoad = false;
+  assert.equal(f.call(BINGO_LOT_CHANNELS.read, id).code, 'invalid_request');
+  f.setFrame(null);
+  assert.throws(() => f.read(), /Unauthorized/);
+  f.setFrame({ url });
+  assert.equal(f.draw(id).code, 'read_required');
+  assert.equal(f.read().kind, 'current');
+  assert.deepEqual(f.draw(id), { ok: true, kind: 'current', snapshot: numbered(2, 'blue') });
+  assert.deepEqual([f.selections.length, f.writes.length], [1, 1]);
+});
+
+test('a latched pending lot stays latched on a null read and, once read, allows one explicit retry', () => {
+  let broken = true;
+  const f = fixture({ write: (s, _e, r) => { if (broken) { s.failLoad = true; throw new Error('x'); }
+    s.state = numbered(r.participantNumber, r.colorId); return s.state; } });
+  assert.equal(f.draw(id).code, 'read_required');
+  f.failLoad = false;
+  f.state = null;
+  assert.equal(f.read().code, 'not_available');
+  assert.equal(f.draw(id).code, 'read_required');
+  f.state = pending();
+  assert.equal(f.read().kind, 'current');
+  broken = false;
+  assert.equal(f.draw(id).kind, 'committed');
+  assert.deepEqual([f.selections.length, f.writes.length], [2, 2]);
+});
+
+test('a mismatched acknowledgement recovers by reread, never commits or rerolls', () => {
+  const resolved = (n: number) => ({ ...numbered(n, participantColor(n).id), winnerCount: 8 });
+  const acks = [resolved(8), { ...resolved(2), eventId: 'e2' }, { ...resolved(2), auditSequence: 5 },
+    { ...resolved(2), presentation: { id: 'p2', status: 'completed' } }];
+  for (const ack of acks) {
+    const f = fixture({ state: pending({ winnerCount: 8 }), write: (s, _e, r) => { s.state = resolved(r.participantNumber); return ack; } });
+    assert.deepEqual(f.draw(id), { ok: true, kind: 'recovered', snapshot: resolved(2) });
+    assert.deepEqual([f.loads, f.selections.length, f.writes.length], [2, 1, 1]);
+  }
+});
+
+test('an explicit second request after a pre-commit failure selects and writes once more', () => {
+  let tries = 0;
+  const f = fixture({ write: (s, _e, r) => { if (tries++ === 0) throw new Error('x'); s.state = numbered(r.participantNumber, r.colorId); return s.state; } });
+  assert.equal(f.draw(id).kind, 'recovered');
+  assert.deepEqual([f.selections.length, f.writes.length], [1, 1]);
+  assert.equal(f.draw(id).kind, 'committed');
+  assert.deepEqual([f.selections.length, f.writes.length], [2, 2]);
 });
 
 test('a failing selection writes nothing and releases the guard', () => {
@@ -206,6 +320,70 @@ test('a guarded commit refreshes the public view once with the verified numbered
   assert.equal(result.kind, 'committed');
   assert.deepEqual(f.refreshed, [numbered(2, 'blue')]);
   assert.notEqual(f.refreshed[0], result.snapshot);
+  assert.deepEqual([f.selections.length, f.writes.length], [1, 1]);
+});
+
+test('an uncertain write recovered as a numbered fact refreshes without a second draw', () => {
+  for (const [name, write] of [
+    ['competitor', (s: any) => { s.state = numbered(4, 'yellow'); throw new Error('changed'); }],
+    ['lost acknowledgement', (s: any, _e: any, r: any) => { s.state = numbered(r.participantNumber, r.colorId); throw new Error('x'); }],
+  ] as const) {
+    const f = refreshFixture({ write });
+    assert.equal(f.draw(id).kind, 'recovered', name);
+    assert.equal(f.refreshed.length, 1, name);
+    assert.deepEqual([f.selections.length, f.writes.length], [1, 1], name);
+  }
+});
+
+test('a resolved current result on draw or read refreshes without entropy or write', () => {
+  const f = refreshFixture({ state: numbered(3, 'red') });
+  assert.equal(f.draw(id).kind, 'current');
+  assert.equal(f.read().kind, 'current');
+  assert.deepEqual(f.refreshed, [numbered(3, 'red'), numbered(3, 'red')]);
+  assert.deepEqual([f.selections.length, f.writes.length], [0, 0]);
+});
+
+test('pending, legacy, unreadable, stale, rejected and foreign calls never refresh', () => {
+  const cases: [any, () => void][] = [
+    [refreshFixture({ write: () => { throw new Error('x'); } }), () => {}],
+    [refreshFixture({ state: legacy() }), () => {}],
+    [refreshFixture({ state: null }), () => {}],
+    [refreshFixture({ ports: { busy: () => true } }), () => {}],
+    [refreshFixture({ ports: { tongoPlaying: () => true } }), () => {}],
+    [refreshFixture({ write: (s: any) => { s.state = numbered(2, 'blue'); s.failLoad = true; throw new Error('x'); } }), () => {}],
+  ];
+  for (const [f] of cases) { f.draw(id); f.draw({ ...id, auditSequence: 9 }); f.draw({ bad: true }); f.read(); }
+  for (const [f] of cases.slice(1, 5)) assert.deepEqual(f.refreshed, []);
+  assert.deepEqual(cases[0][0].refreshed, []);
+  assert.deepEqual(cases[5][0].refreshed, []);
+  const stale = refreshFixture({ write: (s: any) => { s.state = numbered(2, 'blue'); throw new Error('x'); } });
+  assert.equal(stale.draw({ ...id, presentationId: 'other' }).code, 'stale_identity');
+  assert.deepEqual(stale.refreshed, []);
+  const foreign = refreshFixture();
+  assert.throws(() => foreign.handlers.get(BINGO_LOT_CHANNELS.draw)!({ sender: {}, senderFrame: { url } }, id), /Unauthorized/);
+  assert.throws(() => foreign.handlers.get(BINGO_LOT_CHANNELS.read)!({ sender: {}, senderFrame: { url } }), /Unauthorized/);
+  assert.deepEqual(foreign.refreshed, []);
+  assert.ok(foreign.untouched());
+});
+
+test('a throwing refresh keeps the committed or recovered outcome and never selects or writes again', () => {
+  const boom = { refresh: () => { throw new Error('delivery secret'); } };
+  const committed = fixture({ ports: boom });
+  assert.deepEqual(committed.draw(id), { ok: true, kind: 'committed', snapshot: numbered(2, 'blue') });
+  const recovered = fixture({ ports: boom, write: (s: any) => { s.state = numbered(4, 'yellow'); throw new Error('x'); } });
+  assert.deepEqual(recovered.draw(id), { ok: true, kind: 'recovered', snapshot: numbered(4, 'yellow') });
+  assert.deepEqual(committed.read(), { ok: true, kind: 'current', snapshot: numbered(2, 'blue') });
+  assert.deepEqual([committed.selections.length, committed.writes.length, recovered.selections.length, recovered.writes.length], [1, 1, 1, 1]);
+  assert.equal(committed.draw(id).kind, 'current');
+  assert.deepEqual([committed.selections.length, committed.writes.length], [1, 1]);
+});
+
+test('a mutating or reentrant refresh cannot alter the result or trigger entropy', () => {
+  let again: any;
+  const f = fixture({ ports: { refresh: (snapshot: any) => { snapshot.fact.participantNumber = 99; again = f.draw(id); } } });
+  const result = f.draw(id);
+  assert.equal(result.snapshot.fact.participantNumber, 2);
+  assert.equal(again.code, 'draw_in_progress');
   assert.deepEqual([f.selections.length, f.writes.length], [1, 1]);
 });
 
