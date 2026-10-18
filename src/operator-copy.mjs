@@ -236,6 +236,11 @@ export function operatorMessage(message) {
 
 // Bingo answers share some English with the Line; only those whose Spanish names a Line action differ here.
 const BINGO_MESSAGES_ES = Object.freeze({
+  // Legacy bingo check recovery (src/bingo-ipc.ts and the bingo controller)
+  'Could not reach the Bingo state. Check it again.':
+    'No se pudo conectar con el estado del bingo. Pulsa «Releer comprobación de bingo» para leer el estado; no se repite sola.',
+  'Could not read the bingo check. Try again or review the event storage.':
+    'No se pudo leer la comprobación de bingo. Pulsa «Releer comprobación de bingo» o revisa el almacenamiento del evento.',
   'Could not read the clock. Try again.': 'No se pudo leer el reloj del equipo. Vuelve a leer el estado del bingo antes de reintentar.',
 });
 const BINGO_SPANISH = new Set(Object.values(BINGO_MESSAGES_ES));

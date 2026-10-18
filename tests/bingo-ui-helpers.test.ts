@@ -91,25 +91,34 @@ const bingoSession = { sessionId: 's1', eventId: 'e1', calledNumbers: [12, 5], b
 const bingoAward = { eventId: 'e1', award: { winnerCount: 2, totalCents: 5000, shareCents: 2500, remainderCents: 0, lot: '',
   lotResolution: 'not_required' }, presentation: { id: 'b1', status: 'started', startedAt: 1000, deadlineAt: 5000 } };
 const flush = () => new Promise((done) => setImmediate(done));
-function bindingFixture(onRender: (state: any) => void = () => {}) {
+function bindingFixture(onRender: (state: any) => void = () => {}, overrides: Record<string, unknown> = {}) {
   const calls: string[] = [];
   const refreshes: Array<{ resolve: (value: unknown) => void; reject: (error: unknown) => void }> = [];
   const renders: any[] = [];
   let unsubscribed = 0;
   let bound = false;
-  const api = {
+  // Legacy checking_bingo boundary: a held check for e1 unless a test scripts another answer (H5).
+  let legacyCheck: any = { ok: true, state: 'legacy_check',
+    check: { eventId: 'e1', phase: 'checking_bingo', lastTransitionAt: '2026-01-01T00:00:00.000Z', auditSequence: 9 } };
+  const api: any = {
     onBingoPresentation: () => () => { unsubscribed++; },
     readBingoSetup: async () => { calls.push('read'); return { ok: true, state: 'setup', session: bingoSession }; },
     confirmBingo: async (id: string, count: number) => {
       calls.push(`confirm:${id}:${count}`);
       return { ok: true, state: 'declared', award: bingoAward };
     },
+    readLegacyBingoCheck: async () => { calls.push('legacy:read'); return legacyCheck; },
+    cancelLegacyBingoCheck: async (eventId: string, sequence: number, head: string) => {
+      calls.push(`legacy:cancel:${eventId}:${sequence}:${head}`);
+      return { ok: true, state: 'recovered' };
+    },
+    ...overrides,
   };
   // The controller renders once while it is created, before `onRender` can reach the binding.
   const binding = createBingoBinding(api, { render: (state: any) => { renders.push(state); if (bound) onRender(state); },
     refresh: () => new Promise((resolve, reject) => { calls.push('refresh'); refreshes.push({ resolve, reject }); }) });
   bound = true;
-  return { binding, calls, refreshes, renders, unsubscribed: () => unsubscribed };
+  return { binding, calls, refreshes, renders, unsubscribed: () => unsubscribed, setLegacy: (value: any) => { legacyCheck = value; } };
 }
 // Reads the e1 setup and confirms two winners: the committed refresh is then delivered once, after the release.
 async function declare(f: ReturnType<typeof bindingFixture>) {
@@ -376,4 +385,49 @@ test('a gate closed, an event switch or a disposal from the pending render stops
         'The Bingo presentation cannot be started now.'], change);
     }
   }
+});
+
+// The binding's explicit legacy checking_bingo surface (H5): the read and the exact-identity cancel delegate to the
+// controller once, the recovered fact refresh stays pending through the async delivery and fails until the
+// callback-only recovery retry succeeds; a disposed or guarded binding never writes.
+test('the legacy read and cancel delegate once with the exact identity and the recovery refresh retries callback-only', async () => {
+  const f: any = bindingFixture(() => {}, { readBingoSetup: async () => ({ ok: true, state: 'none' }) });
+  const legacyCalls = () => f.calls.filter((call: string) => call.startsWith('legacy:'));
+  f.binding.sync('e1', 'checking_bingo', clearGuards);
+  await f.binding.reread();
+  assert.equal(f.renders.at(-1).mode, 'idle');
+  await f.binding.checkLegacy();
+  assert.deepEqual(legacyCalls(), ['legacy:read']);
+  assert.deepEqual(f.renders.at(-1).legacy,
+    { status: 'available', check: { eventId: 'e1', phase: 'checking_bingo', lastTransitionAt: '2026-01-01T00:00:00.000Z', auditSequence: 9 } });
+  await f.binding.cancelLegacy();
+  assert.deepEqual(legacyCalls(), ['legacy:read', 'legacy:cancel:e1:9:2026-01-01T00:00:00.000Z'], 'exactly the four-field identity, once');
+  assert.equal(f.renders.at(-1).legacy.status, 'recovered');
+  assert.equal(f.renders.at(-1).refresh, 'pending');
+  f.refreshes[0].resolve(false);
+  await flush();
+  assert.equal(f.renders.at(-1).refresh, 'failed');
+  f.binding.retryRecovery();
+  assert.equal(f.renders.at(-1).refresh, 'pending');
+  f.refreshes[1].resolve(true);
+  await flush();
+  assert.equal(f.renders.at(-1).refresh, 'none');
+  assert.deepEqual(legacyCalls(), ['legacy:read', 'legacy:cancel:e1:9:2026-01-01T00:00:00.000Z'], 'a recovery retry never re-reads or re-cancels');
+});
+
+test('a disposed binding or unclear guards never read or cancel the legacy check', async () => {
+  const disposed: any = bindingFixture(() => {}, { readBingoSetup: async () => ({ ok: true, state: 'none' }) });
+  disposed.binding.dispose();
+  await disposed.binding.checkLegacy();
+  await disposed.binding.cancelLegacy();
+  disposed.binding.retryRecovery();
+  assert.deepEqual(disposed.calls.filter((call: string) => call.startsWith('legacy:')), []);
+  const guarded: any = bindingFixture(() => {}, { readBingoSetup: async () => ({ ok: true, state: 'none' }) });
+  guarded.binding.sync('e1', 'checking_bingo', { tongoPlaying: true, presentationBusy: false, otherSetupActive: false });
+  await guarded.binding.reread();
+  await guarded.binding.checkLegacy();
+  assert.deepEqual(guarded.calls.filter((call: string) => call.startsWith('legacy:')), ['legacy:read']);
+  await guarded.binding.cancelLegacy();
+  assert.deepEqual(guarded.calls.filter((call: string) => call.startsWith('legacy:')), ['legacy:read'],
+    'unclear guards refuse the cancel before any write');
 });

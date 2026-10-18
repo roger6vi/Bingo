@@ -259,7 +259,7 @@ it('operator page is a Spanish three-tab application shell with shared panels an
     expect(page.querySelector(`footer[slot="status"] bingo-status#${id}`)).not.to.equal(null, `${id} in the status bar`);
   }
   for (const id of ['open-public', 'move-public']) expect(page.querySelector(`bingo-button#${id}`)).not.to.equal(null);
-  expect([...page.querySelectorAll('bingo-dialog')].map((dialog) => dialog.id)).to.deep.equal(['unsaved-dialog', 'line-dialog', 'legacy-dialog', 'bingo-dialog']);
+  expect([...page.querySelectorAll('bingo-dialog')].map((dialog) => dialog.id)).to.deep.equal(['unsaved-dialog', 'line-dialog', 'legacy-dialog', 'bingo-dialog', 'bingo-legacy-dialog']);
   // No English operator copy remains in the page.
   const copy = [page.title, page.body.textContent, ...[...page.querySelectorAll('[label],[heading],[message],[title],[aria-label]')]
     .flatMap((element) => ['label', 'heading', 'message', 'title', 'aria-label'].map((name) => element.getAttribute(name) ?? ''))].join(' ');
@@ -3089,5 +3089,240 @@ it('a tab change after the page hid never scrolls a disposed celebration control
     main.querySelector('#tab-bingo').click();
     await settle();
     expect(scrolls, 'no scroll after the pagehide at all').to.deep.equal([]);
+  } finally { op.cleanup(); }
+});
+
+// Legacy checking_bingo recovery (H5): the page reads the held check explicitly for the active event's fresh
+// checking_bingo phase, offers the Spanish confirmation, cancels exactly the held four-field identity once and owns
+// the recovered fact refresh: pending through the async delivery, failed until a successful callback-only retry.
+const bingoChecking = { ok: true, snapshot: { calledNumbers: [4, 9], phase: 'checking_bingo', lastTransitionAt: HEAD } };
+const bingoHeld = { ok: true, state: 'legacy_check',
+  check: { eventId: 'a', phase: 'checking_bingo', lastTransitionAt: HEAD, auditSequence: 11 } };
+const bingoLegacyReads = (op) => op.requests.filter((request) => request.startsWith('bingo:readLegacyBingoCheck'));
+async function loadBingoRecovery(extra = {}) {
+  let recovered = false;
+  const op = await loadOperator({ bingo: { readLegacyBingoCheck: async () => bingoHeld,
+    cancelLegacyBingoCheck: async () => { recovered = true; return { ok: true, state: 'recovered' }; }, ...extra } });
+  op.replies.getCurrentEvent = () => (recovered ? { ok: true, snapshot: { calledNumbers: [4, 9], phase: 'line_declared', lastTransitionAt: '2026-01-01T00:00:01.000Z' } } : bingoChecking);
+  op.main.querySelector('#draw-controls').reloadButton.click();
+  await settle();
+  const ui = { button: op.main.querySelector('#bingo-recover'), dialog: op.main.querySelector('#bingo-legacy-dialog'),
+    refresh: op.main.querySelector('#bingo-refresh'), status: op.main.querySelector('#bingo-status'),
+    controls: op.main.querySelector('#draw-controls'), claim: op.main.querySelector('#claim-bingo'),
+    cancels: () => op.requests.filter((request) => request.startsWith('bingo:cancelLegacyBingoCheck')) };
+  return { op, ui, setRecovered: (value) => { recovered = value; } };
+}
+
+it('a held checking_bingo is read on load, locks drawing and writes nothing; the offer is the Spanish cancel', async () => {
+  const { op, ui } = await loadBingoRecovery();
+  try {
+    expect(bingoLegacyReads(op)).to.have.length(1);
+    expect(ui.status.message).to.include('comprobación de bingo antigua');
+    expect([ui.controls.manualDisabled, ui.controls.digitalDisabled]).to.deep.equal([true, true]);
+    expect(ui.cancels()).to.deep.equal([]);
+    expect(op.requests.filter((request) => /^(line:|tongo)/.test(request))).to.deep.equal([]);
+    expect([ui.button.hidden, ui.button.disabled, ui.button.textContent]).to.deep.equal([false, false, 'Cancelar comprobación de bingo']);
+  } finally { op.cleanup(); }
+});
+
+it('no legacy read or offer happens outside the fresh checking_bingo phase or with a held award', async () => {
+  const idle = await loadOperator();
+  try {
+    idle.main.querySelector('#draw-controls').reloadButton.click();
+    await settle();
+    expect(idle.main.querySelector('#bingo-recover')?.hidden).to.equal(true);
+    expect(bingoLegacyReads(idle)).to.deep.equal([]);
+  } finally { idle.cleanup(); }
+  const declared = await loadOperator({ bingo: { read: async () => ({ ok: true, state: 'declared', award: awardFor('completed') }) } });
+  try {
+    declared.replies.getCurrentEvent = () => bingoChecking;
+    declared.main.querySelector('#draw-controls').reloadButton.click();
+    await settle();
+    expect(bingoLegacyReads(declared)).to.deep.equal([]);
+  } finally { declared.cleanup(); }
+});
+
+it('the Bingo confirmation is a Spanish modal that conserves the line, numbers and prizes; Volver and Escape write nothing', async () => {
+  const { op, ui } = await loadBingoRecovery();
+  try {
+    op.main.querySelector('#tab-bingo').click();
+    await settle();
+    for (const how of ['button', 'escape']) {
+      ui.button.button.focus();
+      ui.button.button.click();
+      await settle();
+      await ui.dialog.updateComplete;
+      expect(dialogOpen(ui.dialog)).to.equal(true);
+      expect(ui.dialog.label).to.equal('Cancelar comprobación de bingo');
+      expect(ui.dialog.textContent).to.include('línea declarada');
+      expect(ui.dialog.textContent).to.include('premios');
+      expect([...ui.dialog.shadowRoot.querySelectorAll('bingo-button')].map((button) => button.textContent))
+        .to.deep.equal(['Volver', 'Volver a «Línea cantada»']);
+      if (how === 'button') await expect(ui.dialog).to.be.accessible();
+      if (how === 'button') ui.dialog.shadowRoot.querySelector('[data-action="cancel"]').button.click();
+      else ui.dialog.shadowRoot.querySelector('dialog').dispatchEvent(new Event('cancel', { cancelable: true }));
+      await settle();
+      expect(dialogOpen(ui.dialog)).to.equal(false);
+      expect(ui.button.button.getRootNode().activeElement === ui.button.button).to.equal(true, 'focus returns to the opener');
+    }
+    expect(ui.cancels()).to.deep.equal([]);
+  } finally { op.cleanup(); }
+});
+
+it('confirming cancels the exact four-field identity once, re-reads the event and never celebrates or presents', async () => {
+  const { op, ui } = await loadBingoRecovery();
+  try {
+    op.main.querySelector('#tab-bingo').click();
+    await settle();
+    const eventReads = op.reads.event;
+    ui.button.button.click();
+    await settle();
+    const confirm = ui.dialog.shadowRoot.querySelector('[data-action="confirm"]').button;
+    confirm.click();
+    confirm.click();
+    await settle();
+    await settle();
+    expect(ui.cancels()).to.deep.equal([`bingo:cancelLegacyBingoCheck:a:11:${HEAD}`]);
+    expect(op.reads.event).to.be.greaterThan(eventReads, 'the committed event is read again');
+    expect(ui.button.hidden).to.equal(true);
+    expect(op.requests.filter((request) => /^bingo:(begin|confirm|retry|repeat)/.test(request))).to.deep.equal([]);
+    expect(op.requests.filter((request) => /^(tongo|line:)/.test(request))).to.deep.equal([]);
+    expect(op.lot.presents).to.deep.equal([]);
+  } finally { op.cleanup(); }
+});
+
+it('a lost cancel answer hides the stale identity, never retries, and an explicit read offers it again', async () => {
+  let lost = true;
+  const { op, ui } = await loadBingoRecovery({ cancelLegacyBingoCheck: async () => {
+    if (lost) return null;
+    return { ok: true, state: 'recovered' };
+  } });
+  try {
+    op.main.querySelector('#tab-bingo').click();
+    await settle();
+    ui.button.button.click();
+    await settle();
+    ui.dialog.shadowRoot.querySelector('[data-action="confirm"]').button.click();
+    await settle();
+    await settle();
+    expect(ui.button.textContent).to.equal('Releer comprobación de bingo');
+    expect(ui.status.tone).to.equal('error');
+    expect(ui.status.message).to.include('Releer comprobación de bingo');
+    expect([ui.controls.manualDisabled, ui.cancels().length]).to.deep.equal([true, 1]);
+    const before = bingoLegacyReads(op).length;
+    lost = false;
+    ui.button.button.click();
+    await settle();
+    expect(dialogOpen(ui.dialog)).to.equal(false, 'rereading never opens the confirmation or writes');
+    expect(bingoLegacyReads(op)).to.have.length(before + 1);
+    expect([ui.button.textContent, ui.cancels().length]).to.deep.equal(['Cancelar comprobación de bingo', 1]);
+  } finally { op.cleanup(); }
+});
+
+it('a failed legacy read fails closed in Spanish with only a read offered', async () => {
+  const { op, ui } = await loadBingoRecovery({ readLegacyBingoCheck: async () => ({ ok: false, code: 'storage_failure',
+    message: 'Could not read the bingo check. Try again or review the event storage.' }) });
+  try {
+    expect(bingoLegacyReads(op)).to.have.length(1);
+    expect(ui.button.textContent).to.equal('Releer comprobación de bingo');
+    expect(ui.status.message).to.include('almacenamiento');
+    expect([ui.controls.manualDisabled, ui.cancels().length]).to.deep.equal([true, 0]);
+  } finally { op.cleanup(); }
+});
+
+it('a recovery whose event refresh fails stays failed with a Spanish retry until a callback-only retry succeeds', async () => {
+  const { op, ui, setRecovered } = await loadBingoRecovery();
+  try {
+    op.main.querySelector('#tab-bingo').click();
+    await settle();
+    let failing = true;
+    op.replies.getCurrentEvent = () => (failing ? { ok: false, code: 'storage_failure', message: 'Could not read the current event. Try again.' } : bingoChecking);
+    ui.button.button.click();
+    await settle();
+    ui.dialog.shadowRoot.querySelector('[data-action="confirm"]').button.click();
+    await settle();
+    await settle();
+    expect(ui.cancels()).to.have.length(1);
+    expect(ui.status.message).to.include('no se pudo releer el evento');
+    expect(ui.refresh.hidden).to.equal(false);
+    expect(ui.refresh.textContent).to.equal('Reintentar lectura del evento');
+    expect(ui.cancels()).to.have.length(1);
+    failing = false;
+    setRecovered(true);
+    op.replies.getCurrentEvent = () => ({ ok: true, snapshot: { calledNumbers: [4, 9], phase: 'line_declared', lastTransitionAt: '2026-01-01T00:00:01.000Z' } });
+    ui.refresh.button.click();
+    await settle();
+    await settle();
+    expect([ui.refresh.hidden, ui.button.hidden]).to.deep.equal([true, true]);
+    expect(op.requests.filter((request) => /^bingo:(retryBingoPresentation|repeatBingoPresentation)/.test(request)))
+      .to.deep.equal([], 'the refresh retry is callback-only');
+    expect(ui.cancels()).to.have.length(1, 'a refresh retry never cancels again');
+  } finally { op.cleanup(); }
+});
+
+it('a phase change while the cancel is in flight settles the one answer without any celebration', async () => {
+  let release;
+  const { op, ui } = await loadBingoRecovery({ cancelLegacyBingoCheck: () => new Promise((resolve) => { release = resolve; }) });
+  try {
+    op.main.querySelector('#tab-bingo').click();
+    await settle();
+    ui.button.button.click();
+    await settle();
+    ui.dialog.shadowRoot.querySelector('[data-action="confirm"]').button.click();
+    await settle();
+    op.replies.getCurrentEvent = () => ({ ok: true, snapshot: { calledNumbers: [4, 9], phase: 'line_declared', lastTransitionAt: '2026-01-01T00:00:01.000Z' } });
+    op.main.querySelector('#draw-controls').reloadButton.click();
+    await settle();
+    release({ ok: true, state: 'recovered' });
+    await settle();
+    await settle();
+    expect(ui.cancels()).to.have.length(1);
+    expect(ui.button.hidden).to.equal(true);
+    expect(op.requests.filter((request) => /^bingo:(begin|confirm|retry|repeat)/.test(request))).to.deep.equal([]);
+    expect(op.lot.presents).to.deep.equal([]);
+  } finally { op.cleanup(); }
+});
+
+it('switching events drops the held check without writing; the switch back offers it again after a fresh reload', async () => {
+  const { op, ui } = await loadBingoRecovery();
+  try {
+    op.main.querySelector('#tab-bingo').click();
+    await settle();
+    op.main.querySelector('#event-list').dispatchEvent(new CustomEvent('event-select', { detail: { id: 'b' } }));
+    await settle();
+    await settle();
+    expect(ui.button.hidden).to.equal(true);
+    expect(ui.cancels()).to.deep.equal([]);
+    op.main.querySelector('#event-list').dispatchEvent(new CustomEvent('event-select', { detail: { id: 'a' } }));
+    await settle();
+    // After a switch-back an explicit reload settles the fresh read before any manual action.
+    op.main.querySelector('#draw-controls').reloadButton.click();
+    await settle();
+    await settle();
+    expect(bingoLegacyReads(op).length).to.be.greaterThanOrEqual(2);
+    expect([ui.button.hidden, ui.button.textContent]).to.deep.equal([false, 'Cancelar comprobación de bingo']);
+    expect(ui.cancels()).to.deep.equal([]);
+  } finally { op.cleanup(); }
+});
+
+it('a page hidden before the offered control paints never scrolls the disposed Bingo control', async () => {
+  const op = await loadOperator({ bingo: { read: async () => ({ ok: true, state: 'declared', award: awardFor('pending', 'i1') }),
+    repeatBingoPresentation: async () => repeatReply() } });
+  try {
+    const { main } = op;
+    main.querySelector('#tab-bingo').click();
+    await settle();
+    const repeat = main.querySelector('#bingo-repeat');
+    expect(repeat.hidden).to.equal(true, 'a pending celebration offers nothing yet');
+    const scrolls = [];
+    repeat.scrollIntoView = () => { scrolls.push('repeat'); };
+    const status = main.querySelector('#bingo-status');
+    status.scrollIntoView = () => { scrolls.push('status'); };
+    // The held presentation moves to interrupted: the offer paints in this same synchronous turn, so the page hiding
+    // right after the push must drop the paint-time continuation before it runs.
+    op.bingo.push(awardFor('interrupted', 'i1'));
+    window.dispatchEvent(new Event('pagehide'));
+    await settle();
+    expect(scrolls, 'no paint-time scroll after the pagehide').to.deep.equal([]);
   } finally { op.cleanup(); }
 });
