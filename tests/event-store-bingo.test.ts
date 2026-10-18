@@ -509,7 +509,12 @@ test('a stored pending bingo lot later resolved reads back and is still acknowle
   const baseline = store.loadBingoDeclarationBaseline();
   store.declareBingoDirectly(baseline, 3, BINGO_AT);
   const audit = JSON.stringify(store.readAudit());
-  withDb(path, (db) => db.exec("UPDATE bingo_awards SET lot_resolution = 'resolved'"));
+  // Under v11 a resolved stored lot carries legacy provenance, which only the migration may create: drop the
+  // retarget guard to write the controlled shape directly, exactly like the v8 line fixtures do.
+  withDb(path, (db) => {
+    db.exec('DROP TRIGGER bingo_awards_no_legacy_update');
+    db.exec("UPDATE bingo_awards SET lot_resolution = 'resolved', lot_result_origin = 'legacy_v8'");
+  });
   assert.equal(store.loadBingoAward().award.lotResolution, 'resolved');
   const confirmed = store.confirmBingoDeclaration(baseline, 3, BINGO_AT);
   assert.equal(confirmed.state, 'declared');

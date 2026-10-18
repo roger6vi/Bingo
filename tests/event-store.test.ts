@@ -1507,10 +1507,10 @@ function v6(path: string) {
 
 const lineAwards = (db: DatabaseSync) => db.prepare('SELECT count(*) AS count FROM line_awards').get()?.count;
 
-test('a fresh database is schema v10 with an empty line_awards table', (t) => {
+test('a fresh database is schema v11 with an empty line_awards table', (t) => {
   const path = fixture(t);
   createEventStore(path).close();
-  assert.equal(EVENT_SCHEMA_VERSION, 10);
+  assert.equal(EVENT_SCHEMA_VERSION, 11);
   withDb(path, (db) => {
     assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, EVENT_SCHEMA_VERSION);
     assert.equal(lineAwards(db), 0);
