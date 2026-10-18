@@ -38,11 +38,14 @@ export type PublicLineAward = {
   // The strict stored winner fact; present only when a strict lot loader is wired. Never inferred from arithmetic.
   readonly lotResult?: PublicLineLotResult;
 } | null;
-// The active event's committed Bingo award as static facts only; null when absent or unreadable. No presentation,
-// claimant or lot-result provenance, so hydrating it can never celebrate.
+// The active event's committed Bingo award as static facts; null when absent or unreadable. No presentation or
+// claimant identity, and the optional strict lot fact mirrors the line award's: it only describes an already
+// drawn lot, so hydrating it can never start, resume, or imply a finished celebration.
 export type PublicBingoAward = {
   readonly eventId: string; readonly winnerCount: number; readonly totalCents: number; readonly shareCents: number;
   readonly remainderCents: number; readonly lot: string; readonly lotResolution: LotResolution;
+  // The strict stored winner fact; present only when a strict lot loader is wired. Never inferred from arithmetic.
+  readonly lotResult?: PublicLineLotResult;
 } | null;
 export type PublicLineLotResult =
   | { readonly origin: 'none'; readonly resolution: 'not_required' | 'pending' }
@@ -50,8 +53,9 @@ export type PublicLineLotResult =
   | { readonly origin: 'numbered_v1'; readonly resolution: 'resolved'; readonly paletteVersion: 1;
     readonly participantNumber: number; readonly colorId: string };
 type CommittedLineAward = Pick<StoredLineAward, 'eventId' | 'award' | 'presentation'> | null;
-type CommittedBingoAward = Pick<StoredBingoAward, 'eventId' | 'award'> | null;
+type CommittedBingoAward = Pick<StoredBingoAward, 'eventId' | 'award' | 'presentation'> | null;
 type CommittedLineLot = Pick<LineLotSnapshot, 'eventId' | 'winnerCount' | 'lot' | 'presentation' | 'fact'> | null;
+type CommittedBingoLot = CommittedLineLot;
 type Payload = PublicEventResult | ThemeId | PublicEventMeta | PublicEventPrizes | PublicLineAward | PublicBingoAward
   | TongoPresentation | LinePresentationSignal | BingoPresentationSignal | LineLotSignal | BingoLotSignal;
 
@@ -95,6 +99,7 @@ export function createPublicEventDelivery(
   store: Store, committedTheme?: () => ThemeId, committedMeta?: () => PublicEventMeta,
   committedPrizes?: () => PublicEventPrizes, committedLineAward?: () => CommittedLineAward,
   committedLineLot?: () => CommittedLineLot, committedBingoAward?: () => CommittedBingoAward,
+  committedBingoLot?: () => CommittedBingoLot,
 ) {
   let current: Target | null = null;
   // The one line signal whose receipt may still arrive: the exact window and main frame it was sent to.
@@ -181,7 +186,11 @@ export function createPublicEventDelivery(
       const stored = committedBingoAward?.() ?? null;
       if (stored === null) return null;
       const { winnerCount, totalCents, shareCents, remainderCents, lot, lotResolution } = stored.award;
-      return { eventId: stored.eventId, winnerCount, totalCents, shareCents, remainderCents, lot, lotResolution };
+      const award = { eventId: stored.eventId, winnerCount, totalCents, shareCents, remainderCents, lot, lotResolution };
+      if (committedBingoLot === undefined) return award;
+      // Strict facts must describe the very same award; anything else clears it rather than show a stale winner.
+      const lotResult = strictLotResult(stored, committedBingoLot());
+      return lotResult === null ? null : { ...award, lotResult };
     } catch { return null; }
   }
 
@@ -329,8 +338,8 @@ export function createPublicEventDelivery(
       return current === target;
     },
     // The Bingo manual lot: the same transient one-shot handoff as the line lot, on its own channel. It sends the
-    // current static Bingo award and history first and the whitelisted signal last; the award itself is never
-    // hydrated with a lot result here. Never resent on attach or publishActive.
+    // current hydrated static Bingo award and history first and the whitelisted signal last. Never resent on attach
+    // or publishActive.
     publishBingoLot(signal: BingoLotSignal, expectedPublicUrl: string): boolean {
       const target = current;
       const epoch = generation;

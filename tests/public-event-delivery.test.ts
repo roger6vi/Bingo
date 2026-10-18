@@ -854,6 +854,76 @@ test('award refreshes are kind-isolated: neither kind touches the other award or
   assert.equal(channelsOf(target.messages).includes(PUBLIC_LINE_LOT_CHANNEL), false);
 });
 
+// BG-06C1b hydration: the committed Bingo award carries its strict lot fact exactly like the line award.
+const bingoFact = (participantNumber = 1, colorId = 'red'): LotFact => ({ origin: 'numbered_v1', resolution: 'resolved',
+  paletteVersion: 1, participantNumber, colorId });
+const resolvedBingo = () => ({ ...storedBingo('event-a', 'Cesta', 2),
+  award: { ...storedBingo('event-a', 'Cesta', 2).award, lotResolution: 'resolved' as const } });
+const bingoSnap = (fact: LotFact, over: Record<string, unknown> = {}) => ({ eventId: 'event-a', auditSequence: 7,
+  winnerCount: 2, lot: 'Cesta', presentation: { id: 'secret-bingo-presentation', status: 'completed' }, fact, ...over });
+function hydratedBingoFixture(award: ReturnType<typeof storedBingo> | null, lot: unknown) {
+  let currentLot = lot, fail = false;
+  const messages: Message[] = [];
+  const delivery = createPublicEventDelivery({ load: () => snapshot([5]) }, () => 'light',
+    () => ({ name: 'N', date: '2026-01-01', place: 'P' }),
+    () => ({ line: { amount: 10, lot: '' }, bingo: { amount: 50, lot: 'Cesta' } }), undefined, undefined,
+    () => { if (fail) throw new Error('private detail'); return award; },
+    () => { if (currentLot instanceof Error) throw currentLot; return currentLot as never; });
+  const target = { isDestroyed: () => false, send: (channel: string, result: unknown) => { messages.push({ channel, result }); } };
+  delivery.attachAfterLoad(target);
+  return { delivery, messages, target, setLot: (next: unknown) => { currentLot = next; }, fail: () => { fail = true; } };
+}
+const hydratedBingo = { ...publicBingo, lotResolution: 'resolved' as const, lotResult: bingoFact() };
+
+test('a hydrated Bingo award carries its strict lot fact on attach, publication, switch, refresh and lot publish', () => {
+  const f = hydratedBingoFixture(resolvedBingo(), bingoSnap(bingoFact()));
+  const awardAt = () => f.messages.find((m) => m.channel === BINGO_AWARD)!.result as Record<string, unknown>;
+  assert.deepEqual(awardAt(), hydratedBingo);
+  assert.notEqual(awardAt().lotResult, bingoSnap(bingoFact()).fact, 'a copy is sent');
+  f.messages.length = 0;
+  f.delivery.publishCommitted(snapshot([5, 6]));
+  assert.deepEqual(awardAt(), hydratedBingo);
+  f.messages.length = 0;
+  f.delivery.publishActive('light');
+  assert.deepEqual(awardAt(), hydratedBingo);
+  f.messages.length = 0;
+  assert.equal(f.delivery.refreshBingoAward('event-a'), true);
+  assert.deepEqual(channelsOf(f.messages), [BINGO_AWARD]);
+  assert.deepEqual(awardAt(), hydratedBingo);
+  assert.doesNotMatch(JSON.stringify(f.messages), /secret-bingo-presentation|auditSequence|startedAt/);
+  // publishBingoLot sends the hydrated award before history and the whitelisted signal.
+  const page = { isDestroyed: () => false, mainFrame: { url: PAGE },
+    send: (channel: string, result: unknown) => { f.messages.push({ channel, result }); } };
+  f.delivery.navigationStarted(f.target);
+  f.delivery.attachAfterLoad(page);
+  f.messages.length = 0;
+  assert.equal(f.delivery.publishBingoLot({ id: 'c9', participantNumber: 1, colorId: 'red' }, PAGE), true);
+  assert.deepEqual(channelsOf(f.messages), [BINGO_AWARD, PUBLIC_EVENT_CHANNEL, BINGO_LOT_CHANNEL]);
+  assert.deepEqual(f.messages[0].result, hydratedBingo);
+});
+
+test('a missing, unwired, throwing, foreign or inconsistent stored Bingo lot clears the award fail-closed', () => {
+  const ok = bingoFact();
+  const cases: [string, unknown][] = [['null lot', null], ['malformed lot', 'not an object'],
+    ['foreign event', bingoSnap(ok, { eventId: 'event-b' })], ['winner count', bingoSnap(ok, { winnerCount: 3 })],
+    ['lot', bingoSnap(ok, { lot: 'Other' })], ['presentation', bingoSnap(ok, { presentation: { id: 'other', status: 'completed' } })],
+    ['resolution mismatch', bingoSnap({ ...ok, resolution: 'pending' })], ['unknown origin', bingoSnap({ origin: 'mystery', resolution: 'resolved' })],
+    ['over count', bingoSnap({ ...ok, participantNumber: 4, colorId: 'yellow' })],
+    ['pending vs resolved', bingoSnap({ origin: 'none', resolution: 'pending' })]];
+  for (const [name, bad] of cases) {
+    assert.equal(hydratedBingoFixture(resolvedBingo(), bad).messages.find((m) => m.channel === BINGO_AWARD)!.result, null, name);
+  }
+  const thrown = hydratedBingoFixture(resolvedBingo(), bingoSnap(ok));
+  thrown.setLot(new Error('private detail'));
+  thrown.messages.length = 0;
+  thrown.delivery.publishCommitted(snapshot([5, 6]));
+  assert.deepEqual(thrown.messages[0], { channel: BINGO_AWARD, result: null });
+  assert.doesNotMatch(JSON.stringify(thrown.messages), /private detail/);
+  // An unwired loader adds no fact field and never fabricates one.
+  const unwired = bingoLotFixture(), target = bingoLotTarget(unwired.delivery);
+  assert.equal(Object.hasOwn(target.messages.find((m) => m.channel === BINGO_AWARD)!.result as object, 'lotResult'), false);
+});
+
 // Integration with the real strict store: corrupt Bingo storage fails the whole event read closed.
 const storeDirs: string[] = [];
 after(() => { for (const d of storeDirs) fs.rmSync(d, { recursive: true, force: true }); });

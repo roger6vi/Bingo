@@ -1,5 +1,5 @@
 import { createLineLotPlayback } from './line-lot-playback.mjs';
-import { describeLineAward } from './public-controller.mjs';
+import { describeBingoAward, describeLineAward } from './public-controller.mjs';
 
 const REDUCED_MOTION = '(prefers-reduced-motion: reduce)';
 
@@ -8,18 +8,21 @@ const REDUCED_MOTION = '(prefers-reduced-motion: reduce)';
 // receipt or styling: the line shows the already-known winner only while the playback reports one, and is cleared
 // whenever it reports null or the page goes away.
 //
-// options: { bridge: { subscribe(onSignal) => unsubscribe }, anchor: Element, win = window }.
+// options: { bridge: { subscribe(onSignal) => unsubscribe }, anchor: Element, win = window,
+//   kind = 'line' }: the 'bingo' kind reuses the same playback with Bingo award wording and its own DOM id.
 // Returns { observeAward, observeFrame, dispose }.
-export function createLineLotAdapter({ bridge, anchor, win = window }) {
+export function createLineLotAdapter({ bridge, anchor, win = window, kind = 'line' }) {
+  const bingo = kind === 'bingo';
   const line = anchor.ownerDocument.createElement('p');
-  line.id = 'line-lot-playback';
+  line.id = bingo ? 'bingo-lot-playback' : 'line-lot-playback';
   line.lang = 'es';
   line.hidden = true;
   anchor.after(line);
 
   // Reuses the award wording and colour translation instead of repeating the palette.
+  const describe = bingo ? describeBingoAward : describeLineAward;
   function winnerText({ participantNumber, colorId }) {
-    const facts = describeLineAward({ winnerCount: 1, shareCents: 0, remainderCents: 0, lot: '',
+    const facts = describe({ winnerCount: 1, shareCents: 0, remainderCents: 0, lot: '',
       lotResult: { origin: 'numbered_v1', participantNumber, colorId } });
     return facts.slice(facts.indexOf('Ganador del lote'));
   }

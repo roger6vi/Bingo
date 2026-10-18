@@ -92,9 +92,13 @@ function showBingo(award) {
   bingoAward.textContent = bingoFacts;
   bingoAward.hidden = !valid;
 }
+// Transient Bingo lot line: created before the award subscription so a hydrated award reaches it too. Shares the
+// line adapter with its own kind, wording and DOM id; only a live Bingo signal can play it.
+const bingoLotPlayback = createLineLotAdapter({ bridge: bridges.bingoLot, anchor: bingoAward, kind: 'bingo' });
 const unsubscribeBingoAward = bridges.bingoAward.subscribe((award) => {
   bingoFresh = true;
   showBingo(award);
+  bingoLotPlayback.observeAward(award);
 });
 
 const controller = createPublicController(bridges.event, {
@@ -125,6 +129,7 @@ const controller = createPublicController(bridges.event, {
       bingoFresh = false;
     }
     lotPlayback.observeFrame(state, frame);
+    bingoLotPlayback.observeFrame(state, frame);
   },
 });
 // Transient: only signals received by this page play, so a reload or reopen never replays one.
@@ -151,6 +156,7 @@ window.addEventListener('pagehide', () => {
   tongoPlayback.cleanup();
   linePlayback.cleanup();
   lotPlayback.dispose();
+  bingoLotPlayback.dispose();
   unsubscribeTheme();
   unsubscribeMeta();
   unsubscribePrizes();
