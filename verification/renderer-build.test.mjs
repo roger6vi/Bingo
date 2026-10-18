@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import vm from 'node:vm';
 import test from 'node:test';
 
 const root = path.resolve(import.meta.dirname, '..');
@@ -12,20 +13,90 @@ const csp = "default-src 'none'; script-src 'self'; style-src 'self'; media-src 
 const pageCsp = { public: csp, operator: csp.replace("object-src 'none';", "object-src 'none'; frame-src bingo-public:;") };
 const text = (file) => readFileSync(path.join(root, file), 'utf8');
 
-// The sandboxed public preload may send exactly one thing: the line-presentation start receipt. No invoke, no
-// sendSync, no other channel, and no way to pass anything but a validated string id.
-// The sandboxed public preload may send exactly one receipt per kind: the line-presentation and the
-// bingo-presentation start receipts. No invoke, no sendSync, no other channel, and no way to pass anything but a
-// validated string id.
-function assertReceiptSends(preload) {
-  const sends = [...preload.matchAll(/ipcRenderer\.(send|invoke|sendSync|postMessage|sendToHost)\b[^;]*;/g)].map(([call]) => call);
-  assert.equal(sends.length, 2, 'exactly two renderer-to-main calls, one per receipt kind');
-  assert.match(sends[0], /^ipcRenderer\.send\(PUBLIC_LINE_RECEIPT_CHANNEL, id\);$/);
-  assert.match(sends[1], /^ipcRenderer\.send\(PUBLIC_BINGO_RECEIPT_CHANNEL, id\);$/);
+// The sandboxed public preload's exercised renderer-to-main surface: the built preload is evaluated in an isolated
+// in-memory context with a stub Electron, so every send and listen that actually executes is recorded. This is not
+// a full Electron: the stub never invokes message callbacks, so listener bodies are not exercised paths, and the
+// own-listener identity is channel-only. Static call-site counting below covers unexercised capability call sites.
+function publicPreloadSurface(preload) {
+  const exposes = {};
+  const subscribed = [];
+  const removed = [];
+  const sent = [];
+  const forbidden = [];
+  const ipcRenderer = {
+    on: (channel) => subscribed.push([channel]),
+    removeListener: (channel) => removed.push([channel]),
+    send: (channel, ...args) => { subscribed.push([channel]); sent.push([channel, ...args]); },
+    invoke: (channel) => forbidden.push(channel),
+    sendSync: (channel) => forbidden.push(channel),
+    postMessage: (channel) => forbidden.push(channel),
+    sendToHost: (channel) => forbidden.push(channel),
+  };
+  vm.runInNewContext(preload, {
+    require: (name) => {
+      assert.equal(name, 'electron', 'the public preload requires only Electron');
+      return { contextBridge: { exposeInMainWorld: (key, api) => { exposes[key] = api; } }, ipcRenderer };
+    },
+    module: { exports: {} }, exports: {}, __filename: 'public-preload.js', __dirname: dist,
+  });
+  return { exposes, subscribed, removed, sent, forbidden };
+}
+
+// Receive-only bridges, in source order, each bound to exactly one listen channel.
+const receiveOnlyPublicApis = ['publicEvent', 'publicTheme', 'publicEventMeta', 'publicEventPrizes',
+  'publicLineAward', 'publicBingoAward', 'publicPresentation', 'publicLineLot', 'publicBingoLot'];
+const receiveOnlyPublicChannels = ['public:event-state', 'public:theme', 'public:event-meta', 'public:event-prizes',
+  'public:line-award', 'public:bingo-award', 'public:presentation', 'public:line-lot', 'public:bingo-lot'];
+// The window's only two sends: one fixed channel per receipt kind, never interchangeable.
+const publicReceiptApis = { publicLineReceipt: 'public:line-presentation-started',
+  publicBingoReceipt: 'public:bingo-presentation-started' };
+
+// The closed two-kind receipt contract: exactly the nine receive-only subscriptions plus two fixed-kind sends, each
+// from a frozen bridge whose only argument is one validated primitive id. No invoke, sendSync, postMessage or
+// sendToHost, and no channel outside the whitelist. The single-line receipt behavior of the old contract stays
+// pinned: the line send is still exactly its own channel with exactly one id argument.
+function assertTwoKindPublicReceipts(preload) {
+  const surface = publicPreloadSurface(preload);
+  assert.deepEqual(Object.keys(surface.exposes).sort(),
+    [...receiveOnlyPublicApis, ...Object.keys(publicReceiptApis)].sort(), 'the exposed bridge set is closed');
+  receiveOnlyPublicApis.forEach((name, index) => {
+    const channel = receiveOnlyPublicChannels[index];
+    const api = surface.exposes[name];
+    assert.ok(Object.isFrozen(api), `${name} is frozen`);
+    assert.deepEqual(Object.keys(api), ['subscribe'], `${name} exposes only receive-only subscribe`);
+    api.subscribe(() => {});
+    assert.deepEqual(surface.subscribed.at(-1), [channel], `${name} listens only on ${channel}`);
+    surface.exposes[name].subscribe(() => {})();
+    assert.deepEqual(surface.removed.at(-1), [channel], `${name} unsubscribes its own listener`);
+  });
+  assert.deepEqual([...new Set(surface.subscribed.map(([channel]) => channel))].sort(),
+    [...receiveOnlyPublicChannels].sort(), 'no listen channel outside the whitelist');
+  for (const [name] of Object.entries(publicReceiptApis)) {
+    const api = surface.exposes[name];
+    assert.ok(Object.isFrozen(api), `${name} is frozen`);
+    assert.deepEqual(Object.keys(api), ['started'], `${name} exposes only started`);
+    // The guard is a strict primitive check: string, non-empty, at most 128 characters.
+    assert.match(preload, new RegExp(`${name}', Object\\.freeze\\(\\{\\s*started: \\(id\\) => \\{\\s*` +
+      `if \\(typeof id === 'string' && id\\.length > 0 && id\\.length <= 128\\)`));
+    for (const bad of [undefined, null, 42, {}, ['id'], '', 'x'.repeat(129)]) api.started(bad);
+  }
+  assert.deepEqual(surface.sent, [], 'an invalid receipt id never sends');
+  assert.deepEqual(surface.forbidden, [], 'no invoke, sendSync, postMessage or sendToHost exists');
+  // Baseline static capability count, independent of exercised paths: exactly two renderer-to-main call sites exist
+  // (the two receipt sends). A third send hidden in a listener or dead branch that the stub never runs is caught here.
+  const capabilityCalls = [...preload.matchAll(/ipcRenderer\.(?:send|invoke|sendSync|postMessage|sendToHost)\b\s*\(/g)];
+  assert.equal(capabilityCalls.length, 2, 'exactly two renderer-to-main capability call sites');
+  assert.doesNotMatch(preload, /ipcRenderer\.(?:invoke|sendSync|postMessage|sendToHost)\b/);
+  // The only valid sends: exactly one per kind, on that kind's own channel, with nothing but the string id.
+  const id = 'x'.repeat(128);
+  surface.exposes.publicLineReceipt.started(id);
+  surface.exposes.publicBingoReceipt.started(id);
+  assert.deepEqual(surface.sent, [
+    ['public:line-presentation-started', id],
+    ['public:bingo-presentation-started', id],
+  ]);
   assert.match(preload, /PUBLIC_LINE_RECEIPT_CHANNEL = 'public:line-presentation-started'/);
   assert.match(preload, /PUBLIC_BINGO_RECEIPT_CHANNEL = 'public:bingo-presentation-started'/);
-  assert.match(preload, /exposeInMainWorld\('publicLineReceipt', Object\.freeze\(\{\s*started: \(id\) => \{\s*if \(typeof id === 'string'/);
-  assert.match(preload, /exposeInMainWorld\('publicBingoReceipt', Object\.freeze\(\{\s*started: \(id\) => \{\s*if \(typeof id === 'string'/);
 }
 
 for (const name of ['main', 'preload', 'public-preload']) {
@@ -183,7 +254,7 @@ test('theme selection keeps an operator-only setter, a receive-only sandboxed pu
   assert.match(publicPreload, /exposeInMainWorld\('publicTheme'/);
   assert.match(publicPreload, /exposeInMainWorld\('publicEventMeta'/);
   assert.match(publicPreload, /exposeInMainWorld\('publicEventPrizes'/);
-  assertReceiptSends(publicPreload);
+  assertTwoKindPublicReceipts(publicPreload);
   assert.match(text('dist/preload.js'), /invoke\('theme:set', theme\)/);
   assert.match(text('dist/preload.js'), /invoke\('events:update', id, meta\)/);
   assert.match(text('dist/preload.js'), /invoke\('prizes:update', id, prizes\)/);
@@ -191,6 +262,23 @@ test('theme selection keeps an operator-only setter, a receive-only sandboxed pu
   const css = readdirSync(path.join(renderer, 'assets'))
     .filter((file) => file.endsWith('.css')).map((file) => text(`dist/renderer/assets/${file}`)).join('\n');
   assert.match(css, /html:not\(\[data-theme\]\) body\s*\{\s*visibility:\s*hidden/);
+});
+
+test('the two-kind receipt whitelist catches a mutated send channel in the built preload', () => {
+  const preload = text('dist/public-preload.js');
+  const mutated = preload.replace("'public:bingo-presentation-started'", "'public:line-presentation-started'");
+  assert.notEqual(mutated, preload);
+  assert.throws(() => assertTwoKindPublicReceipts(mutated), assert.AssertionError);
+});
+
+test('the receipt contract catches a third send hidden inside a listener the stub never exercises', () => {
+  const preload = text('dist/public-preload.js');
+  // The behavioral stub records only exercised paths and does not invoke message callbacks, so a send capability
+  // buried in an actual listener body stays invisible to it. This mutation adds exactly such a hidden third call.
+  const mutated = preload.replace('const listener = (_event, result) => callback(result);',
+    "const listener = (_event, result) => { electron_1.ipcRenderer.send('public:evil', result); callback(result); }");
+  assert.notEqual(mutated, preload);
+  assert.throws(() => assertTwoKindPublicReceipts(mutated), assert.AssertionError);
 });
 
 test('the Configuración simulator frames the bundled public page without any privileged bridge', () => {
@@ -228,18 +316,20 @@ test('operator cue sounds are emitted as local files, referenced by the operator
 test('Tongo keeps an operator-only trigger and a receive-only, never-replayed public signal', () => {
   const main = text('dist/main.js');
   assert.match(main, /registerTongoIpc\)\(electron_1\.ipcMain, store, \{ authorize: operatorOnly, publish: publicDelivery\.publishPresentation,\s*lineBusy: presentations\.busy \}\)/);
-  // The manual line wiring keeps its shared-guard tail: committed publish, Tongo gate and the shared setup guard
-  // that now asks the Bingo wiring instead of the line controller.
-  assert.match(main, /publicDelivery\.publishCommitted, committed: presentation\.begin, retry: presentation\.retry,\s*repeat: presentation\.repeat, busy: presentations\.busy, tongoPlaying: tongo\.playing,\s*otherSetupActive: \(\) => bingo\.active\(\) \}\)/);
+  // Both celebration kinds share one busy guard: the Bingo wiring uses it for Tongo, draws and event changes too.
+  assert.match(main, /otherSetupActive: line\.active, tongoPlaying: tongo\.playing, presentationBusy: presentations\.busy,/);
+  // The manual draw wiring keeps its full shared-guard tail: committed publish, Tongo gate, shared setup guard, busy.
+  assert.match(main, /publicDelivery\.publishCommitted, tongo\.playing, setupActive,\s*presentations\.busy\)/);
+  assert.match(main, /publicDelivery\.publishMeta, setupActive, presentations\.busy\)/);
   assert.match(text('dist/preload.js'), /playTongo: \(\) => electron_1\.ipcRenderer\.invoke\('tongo:play'\)/);
   const publicPreload = text('dist/public-preload.js');
   assert.match(publicPreload, /exposeInMainWorld\('publicPresentation'/);
   assert.match(publicPreload, /'public:presentation'/);
   assert.doesNotMatch(publicPreload, /tongo:play/);
-  assertReceiptSends(publicPreload);
+  assertTwoKindPublicReceipts(publicPreload);
 });
 
-test('committed line and bingo awards reach the public page through a main provider and receive-only bridges', () => {
+test('committed line awards reach the public page through a main provider and one receive-only bridge', () => {
   const main = text('dist/main.js');
   assert.match(main, /createPublicEventDelivery\)\(store, \(\) => theme\.current\(\), activeMeta, activePrizes,\s*\(\) => store\.loadLineAward\(\),\s*\(\) => store\.loadLineLotResult\(\),\s*\(\) => store\.loadBingoAward\(\),\s*\(\) => store\.loadBingoLotResult\(\)\)/);
   const delivery = text('dist/public-event-delivery.js');
@@ -247,12 +337,13 @@ test('committed line and bingo awards reach the public page through a main provi
   assert.match(delivery, /PUBLIC_BINGO_AWARD_CHANNEL = 'public:bingo-award'/);
   const publicPreload = text('dist/public-preload.js');
   assert.match(publicPreload, /exposeInMainWorld\('publicLineAward'/);
-  assert.match(publicPreload, /exposeInMainWorld\('publicBingoAward'/);
   assert.match(publicPreload, /'public:line-award'/);
+  assert.match(publicPreload, /exposeInMainWorld\('publicBingoAward'/);
   assert.match(publicPreload, /'public:bingo-award'/);
-  assertReceiptSends(publicPreload);
+  assertTwoKindPublicReceipts(publicPreload);
   // Static committed state only: no award channel on the presentation signal or an attach-time replay.
   assert.doesNotMatch(publicPreload, /public:presentation[^;]*line-award|line-award[^;]*public:presentation/);
+  assert.doesNotMatch(publicPreload, /public:presentation[^;]*bingo-award|bingo-award[^;]*public:presentation/);
 });
 
 test('main reconciles line presentations once at startup (interrupt, then fail pending), before any window, delivery or IPC exists', () => {
@@ -279,14 +370,29 @@ test('line presentation wiring: coordinator ports, commit-only start, receipt gu
   // Main only supplies the clock, timers, the public signal, the operator notifications and the receipt
   // authorization; both coordinators are constructed inside the emitted presentation wiring factory.
   assert.match(main, /createPresentationWiring\)\(store, \{/);
-  assert.match(main, /publish: publicDelivery\.publishPresentation/);
-  assert.match(main, /operator\.webContents\.send\('line:presentation', award\)/);
-  assert.match(main, /committed: presentation\.begin, retry: presentation\.retry,\s*repeat: presentation\.repeat, busy: presentations\.busy, tongoPlaying: tongo\.playing/);
+  assert.match(main, /now: Date\.now,\s*schedule: \(fn, ms\) => setTimeout\(fn, ms\),\s*cancel: \(handle\) => clearTimeout\(handle\),\s*publish: publicDelivery\.publishPresentation,/);
+  assert.match(main, /notifyLine: \(award\) => \{ if \(!operator\.isDestroyed\(\)\)\s*operator\.webContents\.send\('line:presentation', award\); \},/);
+  assert.match(main, /notifyBingo/);
+  assert.match(main, /acceptLineReceipt: \(event, id\) => publicDelivery\.acceptLineReceipt\(event, id, publicUrl\),\s*acceptBingoReceipt: \(event, id\) => publicDelivery\.acceptBingoReceipt\(event, id, publicUrl\),/);
+  // Main routes each receipt kind into the wiring's own kind; the delivery authorizes each by the exact public URL.
   assert.match(main, /ipcMain\.on\(public_event_delivery_1\.PUBLIC_LINE_RECEIPT_CHANNEL, \(event, id\) => \{ presentations\.lineReceipt\(event, id\); \}\);/);
   assert.match(main, /ipcMain\.on\(public_event_delivery_1\.PUBLIC_BINGO_RECEIPT_CHANNEL, \(event, id\) => \{ presentations\.bingoReceipt\(event, id\); \}\);/);
   const wiring = text('dist/presentation-wiring.js');
   assert.match(wiring, /createLinePresentationCoordinator\)\(store, \{/);
   assert.match(wiring, /createBingoPresentationCoordinator\)\(store, \{/);
+  // The two kinds are mutually exclusive: neither publishes while the other is active.
+  assert.match(wiring, /publish: \(signal\) => !bingo\.busy\(\) && ports\.publish\(signal\)/);
+  assert.match(wiring, /publish: \(signal\) => !line\.busy\(\) && ports\.publish\(signal\)/);
+  // Each kind's manual paths refuse while the other is active, before touching the store.
+  assert.match(wiring, /if \(other\.busy\(\)\)\s*throw new Error\(`\$\{label\} presentation is busy`\);/);
+  assert.match(wiring, /manual\(bingo, 'Bingo', line\.retry\), repeat: manual\(bingo, 'Bingo', line\.repeat\)/);
+  assert.match(wiring, /manual\(line, 'Line', bingo\.retry\), repeat: manual\(line, 'Line', bingo\.repeat\)/);
+  // Only a string id the delivery authorizes reaches the coordinator of that receipt's own kind.
+  assert.match(wiring, /lineReceipt: \(event, id\) => typeof id === 'string' && ports\.acceptLineReceipt\(event, id\) && line\.receiptStarted\(id\)/);
+  assert.match(wiring, /bingoReceipt: \(event, id\) => typeof id === 'string' && ports\.acceptBingoReceipt\(event, id\) && bingo\.receiptStarted\(id\)/);
+  assert.match(wiring, /busy: \(\) => line\.busy\(\) \|\| bingo\.busy\(\)/);
+  // Line's committed begin/retry/repeat stay exact, now guarded by the shared busy.
+  assert.match(main, /committed: presentation\.begin, retry: presentation\.retry,\s*repeat: presentation\.repeat, busy: presentations\.busy, tongoPlaying: tongo\.playing/);
   // A main-frame (not subframe, not same-document) navigation voids pending receipt authority at its start; the
   // finished load only re-attaches static state.
   assert.match(main, /contents\.on\('did-start-navigation', \(details\) => \{\s*if \(details\.isMainFrame && !details\.isSameDocument\)\s*publicDelivery\.navigationStarted\(contents\);\s*\}\);/);
@@ -296,7 +402,8 @@ test('line presentation wiring: coordinator ports, commit-only start, receipt gu
   assert.match(operatorPreload, /invoke\('line:retry-presentation', id\)/);
   assert.match(operatorPreload, /invoke\('line:repeat-presentation', id\)/);
   assert.match(operatorPreload, /ipcRenderer\.on\('line:presentation', listener\)/);
-  assert.doesNotMatch(operatorPreload, /public:line-presentation-started/, 'the operator cannot forge the public receipt');
+  assert.doesNotMatch(operatorPreload, /public:line-presentation-started/, 'the operator cannot forge the line receipt');
+  assert.doesNotMatch(operatorPreload, /public:bingo-presentation-started/, 'the operator cannot forge the Bingo receipt');
   assert.match(text('dist/line-ipc.js'), /retryPresentation: 'line:retry-presentation'/);
   assert.match(text('dist/line-ipc.js'), /repeatPresentation: 'line:repeat-presentation'/);
 });
