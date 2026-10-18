@@ -291,6 +291,43 @@ describe('bingo-form-actions and bingo-button', () => {
     form.querySelector('bingo-button').click();
     expect(field.value).to.equal('x');
   });
+
+  // UI-A: the additive success variant paints the contracted success-on-surface pair, keeps that identity
+  // while disabled (on the disabled surface, with the disabled affordance), and `ariaLabel` names the actual
+  // action for assistive tech without touching the visible label. Default and primary stay unchanged.
+  it('success variant paints success on surface in every theme, keeps disabled identity and names the action', async () => {
+    const form = await fixture(html`<form>
+      <bingo-button id="success" variant="success">Línea</bingo-button>
+      <bingo-button id="default">Cancelar</bingo-button>
+      <bingo-button id="primary" variant="primary">Guardar</bingo-button>
+    </form>`);
+    const [success, defaultButton, primary] = ['#success', '#default', '#primary'].map((id) => form.querySelector(id));
+    await withThemes(async () => {
+      success.disabled = false;
+      await success.updateComplete;
+      expect([getComputedStyle(success.button).color, getComputedStyle(success.button).backgroundColor,
+        getComputedStyle(success.button).borderTopColor]).to.deep.equal(
+        [token(success, 'color-success'), token(success, 'color-surface'), token(success, 'color-success')]);
+      expect([getComputedStyle(defaultButton.button).color, getComputedStyle(defaultButton.button).backgroundColor],
+        'the default variant keeps its own appearance').to.deep.equal(
+        [token(defaultButton, 'color-text'), token(defaultButton, 'color-surface')]);
+      expect([getComputedStyle(primary.button).backgroundColor, getComputedStyle(primary.button).color],
+        'the primary variant keeps its own appearance').to.deep.equal(
+        [token(primary, 'color-accent'), token(primary, 'color-on-accent')]);
+      success.ariaLabel = 'Línea cantada';
+      await success.updateComplete;
+      expect(success.button.getAttribute('aria-label')).to.equal('Línea cantada');
+      success.ariaLabel = null;
+      await success.updateComplete;
+      expect(success.button.hasAttribute('aria-label'), 'no empty aria-label is left behind').to.equal(false);
+      success.disabled = true;
+      await success.updateComplete;
+      const disabled = getComputedStyle(success.button);
+      expect([disabled.color, disabled.backgroundColor, disabled.cursor, disabled.opacity, disabled.boxShadow])
+        .to.deep.equal([token(success, 'color-success'), token(success, 'color-disabled-surface'),
+          'not-allowed', '0.65', 'none'], 'disabled success keeps success identity on the disabled surface');
+    });
+  });
 });
 
 it('every control consumes semantic tokens in both themes with a visible focus indicator', async () => {

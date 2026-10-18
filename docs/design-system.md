@@ -154,16 +154,21 @@ committed persistence snapshots (presentation never acknowledges its own intent)
 
 ### `bingo-button`
 - **Purpose:** the single, form-associated action control. Inside a form, `type="submit"`/`"reset"`
-  acts on the owning form; `variant="primary"` marks the one main action of a form or dialog; `block`
+  acts on the owning form; `variant="primary"` marks the one main action of a form or dialog;
+  `variant="success"` marks a completed or committed state (claim buttons) with the contracted
+  success-on-surface pair, keeping that identity while disabled on the disabled surface; `block`
   stretches the button to fill its container. **Anatomy:** native `button[type=button]` → slot label.
-- **Properties:** `disabled` (reflected boolean), `type`, `variant` (reflected), `block` (reflected).
+- **Properties:** `disabled` (reflected boolean), `type`, `variant` (reflected), `block` (reflected),
+  `ariaLabel` (accessible action name on the inner button, for when the visible label alone cannot name
+  the action).
   **States:** normal, hover, active, focus, disabled, pending (owner sets `disabled` while a request
-  is outstanding).
+  is outstanding). Success keeps its colors on hover, active and disabled; the disabled surface,
+  opacity and cursor still carry the disabled affordance.
 - **Accessibility:** native button semantics and keyboard activation; visible focus ring.
 - **Tokens:** `border-width.default`, `border-width.focus`, `border-width.strong`, `color.accent`,
   `color.accent-active`, `color.accent-hover`, `color.border`, `color.border-strong`,
   `color.disabled`, `color.disabled-surface`, `color.focus`, `color.on-accent`, `color.shadow`,
-  `color.surface`, `color.text`, `font.emphasis`, `motion.easing`, `motion.normal`,
+  `color.success`, `color.surface`, `color.text`, `font.emphasis`, `motion.easing`, `motion.normal`,
   `opacity.disabled`, `radius.control`, `space.inset-compact`, `space.inset-inline`, `space.small`.
 
 ### `bingo-number`

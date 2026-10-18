@@ -1462,7 +1462,7 @@ it('confirming sends the explicit count once and shows the committed share, rema
     expect(status.message).to.include('Sobra');
     expect(status.message).to.include('pendiente de resolver');
     expect(status.message).to.include('todavía no muestra la celebración');
-    expect([claim.disabled, claim.textContent]).to.deep.equal([true, 'Línea declarada']);
+    expect([claim.disabled, claim.textContent, claim.ariaLabel, claim.variant]).to.deep.equal([true, 'Línea', 'Línea cantada', 'success']);
   } finally { op.cleanup(); }
 });
 
@@ -1474,8 +1474,8 @@ it('a lost confirmation asks to check the state, never confirms again, and a rea
       message: 'Could not declare the line. Reopen the setup and check the state before trying again.' });
     action('confirm').click();
     await settle();
-    expect(status.message).to.equal('No se pudo confirmar la línea. No la declares de nuevo: pulsa «Comprobar línea» para leer el estado.');
-    expect([status.tone, claim.disabled, claim.textContent]).to.deep.equal(['error', false, 'Comprobar línea']);
+    expect(status.message).to.equal('No se pudo confirmar la línea. No la declares de nuevo: pulsa «Línea» para comprobar el estado.');
+    expect([status.tone, claim.disabled, claim.ariaLabel]).to.deep.equal(['error', false, 'Comprobar línea']);
     expect(op.requests.filter((request) => request.startsWith('line:confirm'))).to.have.length(1);
     op.line.read = async () => ({ ok: true, state: 'declared', award: { eventId: 'a', award: { winnerCount: 1, totalCents: 1000,
       shareCents: 1000, remainderCents: 0, lot: '', lotResolution: 'not_required' }, presentation: { id: 'p', status: 'pending', startedAt: null, deadlineAt: null } } });
@@ -1495,8 +1495,9 @@ it('reload recovery adopts an open setup without opening, cancelling or confirmi
     const { main } = op;
     const claim = main.querySelector('#claim-line');
     expect(main.querySelector('#line-dialog').shadowRoot.querySelector('dialog').open).to.equal(false);
-    expect(claim.textContent).to.equal('Reanudar línea');
-    expect(main.querySelector('#line-status').message).to.include('declaración de línea abierta');
+    expect(claim.ariaLabel).to.equal('Reanudar línea');
+    expect(main.querySelector('#line-status').message)
+      .to.equal('Hay una declaración de línea abierta. Pulsa «Línea» para reanudarla o cancelarla.');
     expect(op.requests.filter((request) => request.startsWith('line:'))).to.deep.equal([]);
     // A setup in main blocks draws, so the controls say so instead of failing at main.
     expect(main.querySelector('#draw-controls').manualDisabled).to.equal(true);
@@ -1523,7 +1524,7 @@ it('an open setup blocks drawing, event selection and settings but leaves the ex
     controls.reloadButton.click();
     await settle();
     expect(op.requests.filter((request) => request.startsWith('line:'))).to.deep.equal([]);
-    expect(main.querySelector('#claim-line').textContent).to.equal('Reanudar línea');
+    expect(main.querySelector('#claim-line').ariaLabel).to.equal('Reanudar línea');
     expect(controls.reloadDisabled).to.equal(false);
   } finally { op.cleanup(); }
 });
@@ -1534,7 +1535,7 @@ it('a line already declared at load is shown after reload and cannot be declared
     presentation: { id: 'p', status: 'pending', startedAt: null, deadlineAt: null } } }) } });
   try {
     const claim = op.main.querySelector('#claim-line');
-    expect([claim.disabled, claim.textContent]).to.deep.equal([true, 'Línea declarada']);
+    expect([claim.disabled, claim.textContent, claim.ariaLabel, claim.variant]).to.deep.equal([true, 'Línea', 'Línea cantada', 'success']);
     expect(op.main.querySelector('#line-status').message).to.include('5,00 € cada uno');
   } finally { op.cleanup(); }
 });
@@ -1549,13 +1550,53 @@ function submitCreate(form) {
 const declaredA = { ok: true, state: 'declared', award: { eventId: 'a', award: { winnerCount: 1, totalCents: 1000, shareCents: 1000,
   remainderCents: 0, lot: '', lotResolution: 'not_required' }, presentation: { id: 'p', status: 'completed', startedAt: 1000, deadlineAt: 5000 } } };
 
+// Resolves a semantic token to the computed color the browser would paint (same technique as form-components).
+const tokenOf = (element, name) => {
+  const probe = document.createElement('span');
+  probe.style.color = getComputedStyle(element).getPropertyValue(`--bingo-${name}`).trim();
+  document.body.append(probe);
+  const color = getComputedStyle(probe).color;
+  probe.remove();
+  return color;
+};
+
+// UI-A: the claim buttons keep one short visible label that always fits the fixed claims grid; the actual
+// action lives in the accessible name (ariaLabel), the declared claim paints the success variant and stays
+// disabled, and recovery detail stays in the external status.
+it('claim buttons keep one short visible label; the action lives in the accessible name and a declared claim turns success', async () => {
+  let answer = { ok: true, state: 'none' };
+  const op = await loadOperator({ line: { read: async () => answer } });
+  try {
+    const { main } = op;
+    const claim = main.querySelector('#claim-line');
+    const reload = async () => { main.querySelector('#reload-events').click(); await settle(); await settle(); };
+    expect([claim.textContent, claim.ariaLabel, claim.variant], 'idle')
+      .to.deep.equal(['Línea', null, '']);
+    answer = { ok: false, message: 'Could not read the first-line state. Try again.' };
+    await reload();
+    expect([claim.textContent, claim.ariaLabel, claim.disabled], 'uncertain')
+      .to.deep.equal(['Línea', 'Comprobar línea', false]);
+    answer = { ok: true, state: 'setup', session: { sessionId: 's9', eventId: 'a', calledNumbers: [4, 9], linePrize: { amount: 0, lot: '' } } };
+    await reload();
+    expect([claim.textContent, claim.ariaLabel], 'setup').to.deep.equal(['Línea', 'Reanudar línea']);
+    answer = declaredA;
+    await reload();
+    expect([claim.textContent, claim.ariaLabel, claim.variant, claim.disabled], 'declared')
+      .to.deep.equal(['Línea', 'Línea cantada', 'success', true]);
+    // The declared claim is disabled by the existing guards: success identity rides on the disabled surface.
+    const style = getComputedStyle(claim.button);
+    expect([style.color, style.backgroundColor]).to.deep.equal(
+      [tokenOf(claim, 'color-success'), tokenOf(claim, 'color-disabled-surface')]);
+  } finally { op.cleanup(); }
+});
+
 it('selecting another event re-reads the line state instead of keeping the previous event declared', async () => {
   let answer = declaredA;
   const op = await loadOperator({ line: { read: async () => answer } });
   try {
     const { main } = op;
     const claim = main.querySelector('#claim-line');
-    expect([claim.disabled, claim.textContent]).to.deep.equal([true, 'Línea declarada']);
+    expect([claim.disabled, claim.textContent, claim.ariaLabel]).to.deep.equal([true, 'Línea', 'Línea cantada']);
     answer = { ok: true, state: 'none' };
     const before = op.reads.line;
     main.querySelector('#event-list').dispatchEvent(new CustomEvent('event-select', { detail: { id: 'b' } }));
@@ -1580,7 +1621,7 @@ it('reloading events and the draw reload re-read the line state, and a create th
     answer = declaredA;
     main.querySelector('#reload-events').click();
     await settle();
-    expect(claim.textContent).to.equal('Línea declarada');
+    expect(claim.ariaLabel).to.equal('Línea cantada');
     answer = { ok: true, state: 'none' };
     main.querySelector('#draw-controls').reloadButton.click();
     await settle();
@@ -1593,7 +1634,7 @@ it('reloading events and the draw reload re-read the line state, and a create th
     await settle();
     await settle();
     expect(op.reads.line).to.be.greaterThan(before);
-    expect(claim.textContent).to.equal('Línea declarada');
+    expect(claim.ariaLabel).to.equal('Línea cantada');
   } finally { op.cleanup(); }
 });
 
@@ -1610,7 +1651,7 @@ it('an interrupted celebration shows a specific Spanish warning with the award, 
     expect(status.message).to.include('bloqueados');
     expect(status.message).to.include('manualmente');
     expect(status.message).to.not.match(/completada|entregad|todavía no muestra/);
-    expect([claim.disabled, claim.textContent]).to.deep.equal([true, 'Línea declarada']);
+    expect([claim.disabled, claim.textContent, claim.ariaLabel]).to.deep.equal([true, 'Línea', 'Línea cantada']);
     expect(op.requests.filter((request) => request.startsWith('line:'))).to.deep.equal([]);
     expect(op.main.querySelector('#line-retry').hidden).to.equal(true);
     expect(op.main.querySelector('#line-repeat').hidden).to.equal(false);
@@ -1626,15 +1667,15 @@ it('a line state that names another event than the active one is rejected, never
     const status = main.querySelector('#line-status');
     const controls = main.querySelector('#draw-controls');
     // The initial read raced the naming of the active event: whatever it held, the foreign award is not shown.
-    expect(claim.textContent).to.not.equal('Línea declarada');
+    expect(claim.ariaLabel).to.not.equal('Línea cantada');
     expect(status.message).to.not.include('Línea declarada');
     expect([controls.manualDisabled, controls.digitalDisabled]).to.deep.equal([true, true]);
     // An explicit reload under the named event reads the foreign award again: it fails closed with the check message.
     main.querySelector('#reload-events').click();
     await settle();
     await settle();
-    expect([claim.textContent, claim.disabled, status.tone]).to.deep.equal(['Comprobar línea', false, 'error']);
-    expect(status.message).to.equal('Respuesta de la línea no válida. Pulsa «Comprobar línea» para leer el estado; no la declares de nuevo.');
+    expect([claim.ariaLabel, claim.disabled, status.tone]).to.deep.equal(['Comprobar línea', false, 'error']);
+    expect(status.message).to.equal('Respuesta de la línea no válida. Pulsa «Línea» para comprobar el estado; no la declares de nuevo.');
     expect(status.message).to.not.include('Línea declarada');
     expect([controls.manualDisabled, controls.digitalDisabled, main.querySelector('#operator-board').disabled]).to.deep.equal([true, true, true]);
     expect(op.requests.filter((request) => request.startsWith('line:'))).to.deep.equal([]);
@@ -1643,7 +1684,7 @@ it('a line state that names another event than the active one is rejected, never
     claim.button.click();
     await settle();
     await settle();
-    expect([claim.textContent, controls.manualDisabled]).to.deep.equal(['Línea declarada', false]);
+    expect([claim.ariaLabel, controls.manualDisabled]).to.deep.equal(['Línea cantada', false]);
     expect(op.requests.filter((request) => request.startsWith('line:'))).to.deep.equal([]);
   } finally { op.cleanup(); }
 });
@@ -1686,7 +1727,7 @@ it('a line confirmation that cannot read the clock is explained in Spanish', asy
     op.line.confirm = async () => ({ ok: false, code: 'storage_failure', message: 'Could not read the clock. Try again.' });
     action('confirm').click();
     await settle();
-    expect(status.message).to.equal('No se pudo leer el reloj del equipo. Pulsa «Comprobar línea» para leer el estado y reintentar.');
+    expect(status.message).to.equal('No se pudo leer el reloj del equipo. Pulsa «Línea» para comprobar el estado y reintentar.');
   } finally { op.cleanup(); }
 });
 
@@ -1751,7 +1792,7 @@ it('pending, started, completed and unknown states offer no action and a forced 
   const unknown = await loadOperator({ line: { read: async () => ({ ok: false, message: 'Could not read the first-line state. Try again.' }) } });
   try {
     expect([unknown.main.querySelector('#line-retry').hidden, unknown.main.querySelector('#line-repeat').hidden,
-      unknown.main.querySelector('#claim-line').textContent]).to.deep.equal([true, true, 'Comprobar línea']);
+      unknown.main.querySelector('#claim-line').ariaLabel]).to.deep.equal([true, true, 'Comprobar línea']);
   } finally { unknown.cleanup(); }
 });
 
@@ -1800,7 +1841,7 @@ it('a null, corrupt or foreign push fails closed or is ignored, and only Comprob
     expect([main.querySelector('#line-status').message.includes('todavía no muestra'), op.reads.event]).to.deep.equal([true, before]);
     op.line.push(null);
     await settle();
-    expect([claim.textContent, main.querySelector('#line-status').tone, main.querySelector('#draw-controls').manualDisabled]).to.deep.equal(['Comprobar línea', 'error', true]);
+    expect([claim.ariaLabel, main.querySelector('#line-status').tone, main.querySelector('#draw-controls').manualDisabled]).to.deep.equal(['Comprobar línea', 'error', true]);
     op.line.push(awardFor('completed'));
     await settle();
     expect(main.querySelector('#draw-controls').manualDisabled).to.equal(true, 'a push does not leave uncertainty');
@@ -2786,7 +2827,7 @@ it('the Bingo dialog starts at one winner, keeps every invalid count unsent and 
     ui.dialog.dispatchEvent(new Event('confirm'));
     await settle();
     expect(bingoWrites(op)).to.deep.equal(['bingo:beginBingoSetup:', 'bingo:confirmBingo:b1:3']);
-    expect([ui.open(), ui.claim.textContent, ui.claim.disabled, ui.status.hidden]).to.deep.equal([false, 'Bingo cantado', true, false]);
+    expect([ui.open(), ui.claim.ariaLabel, ui.claim.variant, ui.claim.disabled, ui.status.hidden]).to.deep.equal([false, 'Bingo cantado', 'success', true, false]);
     expect(ui.status.message).to.include('Bingo cantado con 3 ganadores').and.include('Lote \u00abCopa\u00bb: pendiente de resolver');
     // The award never finishes the game or unlocks drawing; the tie settlement stays a disabled placeholder.
     const controls = op.main.querySelector('#draw-controls');
@@ -2830,13 +2871,14 @@ it('an unknown confirmation stays uncertain, offers only an explicit read and re
     ui.action('confirm').button.click();
     await settle();
     await settle();
-    expect([ui.open(), ui.claim.textContent, ui.claim.disabled, ui.status.message]).to.deep.equal([false, 'Comprobar bingo', false,
+    expect([ui.open(), ui.claim.ariaLabel, ui.claim.disabled, ui.status.message]).to.deep.equal([false, 'Comprobar bingo', false,
       'No se pudo leer el reloj del equipo. Vuelve a leer el estado del bingo antes de reintentar.']);
     const reads = op.reads.bingo;
     op.bingo.read = async () => ({ ok: true, state: 'setup', session: bingoSession() });
     ui.claim.button.click();
     await settle();
-    expect([op.reads.bingo - reads, ui.open(), ui.claim.textContent]).to.deep.equal([1, false, 'Reanudar bingo']);
+    expect([op.reads.bingo - reads, ui.open(), ui.claim.ariaLabel]).to.deep.equal([1, false, 'Reanudar bingo']);
+    expect(ui.status.message).to.equal('Hay una declaración de bingo abierta. Pulsa «Bingo» para reanudarla o cancelarla.');
     ui.claim.button.click();
     await settle();
     expect([ui.open(), ui.field.value, bingoWrites(op)]).to.deep.equal([true, '4', ['bingo:beginBingoSetup:', 'bingo:confirmBingo:b1:4']]);
@@ -2869,7 +2911,7 @@ it('a stale, repeated or disposed Bingo dialog never cancels or confirms another
     await settle();
     ui.dialog.dispatchEvent(new Event('dismiss'));
     await settle();
-    expect([ui.open(), ui.claim.textContent]).to.deep.equal([false, 'Reanudar bingo']);
+    expect([ui.open(), ui.claim.ariaLabel]).to.deep.equal([false, 'Reanudar bingo']);
     ui.claim.button.click();
     await settle();
     expect([ui.open(), ui.field.value]).to.deep.equal([true, '1']);
@@ -2912,7 +2954,7 @@ it('a phase change after the confirmation was sent never discards its valid repl
     held.resolve({ ok: true, state: 'declared', award: bingoAward(1) });
     await settle();
     await settle();
-    expect([ui.status.message.startsWith('Bingo cantado con 1 ganador.'), ui.claim.textContent, bingoWrites(op)])
+    expect([ui.status.message.startsWith('Bingo cantado con 1 ganador.'), ui.claim.ariaLabel, bingoWrites(op)])
       .to.deep.equal([true, 'Bingo cantado', ['bingo:beginBingoSetup:', 'bingo:confirmBingo:b1:1']]);
   } finally { op.cleanup(); }
 });
@@ -2939,7 +2981,7 @@ it('a failed Bingo celebration offers Reintentar celebraci\u00f3n for its exact 
     await retry.updateComplete;
     expect([retry.hidden, retry.disabled, retry.textContent.trim(), main.querySelector('#bingo-repeat')?.hidden, main.querySelector('#line-retry').hidden])
       .to.deep.equal([false, false, 'Reintentar celebraci\u00f3n', true, true]);
-    expect([claim.textContent, claim.disabled, status.tone]).to.deep.equal(['Bingo cantado', true, 'warning']);
+    expect([claim.ariaLabel, claim.disabled, status.tone]).to.deep.equal(['Bingo cantado', true, 'warning']);
     expect(status.message).to.include('Pulsa \u00abReintentar celebraci\u00f3n\u00bb');
     const [button, rail] = [retry, main.querySelector('bingo-side-rail')].map((element) => element.getBoundingClientRect());
     expect([button.top >= rail.top, button.bottom <= rail.bottom]).to.deep.equal([true, true], 'the retry is in view at 1280\u00d7720');
@@ -2963,7 +3005,7 @@ it('pending, started, completed, interrupted and uncertain Bingo states offer no
     const op = await failedBingo({ bingo: { read, retryBingoPresentation: async () => rotated() } });
     try {
       const retry = op.main.querySelector('#bingo-retry');
-      expect([retry.hidden, retry.disabled, op.main.querySelector('#claim-bingo').textContent], name)
+      expect([retry.hidden, retry.disabled, op.main.querySelector('#claim-bingo').ariaLabel], name)
         .to.deep.equal([true, true, name === 'uncertain' ? 'Comprobar bingo' : 'Bingo cantado']);
       // Forced past the native lock: the click itself rechecks the status shown.
       retry.disabled = false;
@@ -3036,17 +3078,17 @@ it('a Bingo retry reply converges through the controller: rotation, kept refusal
       await settle();
       expect([bingoWrites(op), op.reads.bingo - reads], name).to.deep.equal([['bingo:retryBingoPresentation:f1'], 0]);
       if (shown === 'refused') {
-        expect([status.message, retry.hidden, retry.disabled, claim.textContent], name)
+        expect([status.message, retry.hidden, retry.disabled, claim.ariaLabel], name)
           .to.deep.equal(['Espera a que termine la celebraci\u00f3n.', false, false, 'Bingo cantado']);
       } else if (shown !== 'uncertain') {
-        expect([status.message.includes(text[shown]), retry.hidden, claim.textContent], name).to.deep.equal([true, true, 'Bingo cantado']);
+        expect([status.message.includes(text[shown]), retry.hidden, claim.ariaLabel], name).to.deep.equal([true, true, 'Bingo cantado']);
       } else {
-        expect([claim.textContent, claim.disabled, retry.hidden, status.tone], name).to.deep.equal(['Comprobar bingo', false, true, 'error']);
+        expect([claim.ariaLabel, claim.disabled, retry.hidden, status.tone], name).to.deep.equal(['Comprobar bingo', false, true, 'error']);
         // Only the explicit read settles it; a completed answer is shown, never replayed, retried or declared again.
         op.bingo.read = async () => ({ ok: true, state: 'declared', award: awardFor('completed', 'f2') });
         claim.click();
         await settle();
-        expect([op.reads.bingo - reads, claim.textContent, status.message.includes('termin\u00f3'), retry.hidden, bingoWrites(op).length], name)
+        expect([op.reads.bingo - reads, claim.ariaLabel, status.message.includes('termin\u00f3'), retry.hidden, bingoWrites(op).length], name)
           .to.deep.equal([1, 'Bingo cantado', true, true, 1]);
       }
     } finally { op.cleanup(); }
@@ -3129,7 +3171,7 @@ it('an interrupted Bingo celebration offers Repetir celebración completa for it
     const claim = main.querySelector('#claim-bingo');
     const status = main.querySelector('#bingo-status');
     await repeat?.updateComplete;
-    expect([repeatState(main), main.querySelector('#bingo-retry').hidden, claim.textContent, claim.disabled, status.tone])
+    expect([repeatState(main), main.querySelector('#bingo-retry').hidden, claim.ariaLabel, claim.disabled, status.tone])
       .to.deep.equal([[false, false, 'Repetir celebración completa'], true, 'Bingo cantado', true, 'warning']);
     expect(status.message).to.include('Pulsa «Repetir celebración completa»');
     const [button, rail] = [repeat, main.querySelector('bingo-side-rail')].map((element) => element.getBoundingClientRect());
@@ -3142,7 +3184,7 @@ it('an interrupted Bingo celebration offers Repetir celebración completa for it
     repeat.button.click();
     await settle();
     expect(bingoWrites(op)).to.deep.equal(['bingo:repeatBingoPresentation:i1']);
-    expect([repeatState(main), claim.textContent, status.message.includes('todavía no muestra la celebración del bingo')])
+    expect([repeatState(main), claim.ariaLabel, status.message.includes('todavía no muestra la celebración del bingo')])
       .to.deep.equal([[true, true, 'Repetir celebraci\u00f3n completa'], 'Bingo cantado', true]);
     expect(main.querySelector('#draw-controls').manualDisabled).to.equal(true, 'a repeat never unlocks drawing');
   } finally { op.cleanup(); await setViewport({ width: 800, height: 600 }); }
@@ -3156,7 +3198,7 @@ it('completed, failed, pending, started and uncertain Bingo states offer no repe
     const op = await interruptedBingo({ bingo: { read, repeatBingoPresentation: async () => repeatReply() } });
     try {
       const repeat = op.main.querySelector('#bingo-repeat');
-      expect([repeatState(op.main), op.main.querySelector('#claim-bingo').textContent], name)
+      expect([repeatState(op.main), op.main.querySelector('#claim-bingo').ariaLabel], name)
         .to.deep.equal([[true, true, 'Repetir celebraci\u00f3n completa'], name === 'uncertain' ? 'Comprobar bingo' : 'Bingo cantado']);
       if (name === 'failed') {
         expect(op.main.querySelector('#bingo-retry').hidden, name).to.equal(false, 'failed stays retry-only');

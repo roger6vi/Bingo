@@ -1,8 +1,10 @@
-import { LitElement, css, html } from 'lit';
+import { LitElement, css, html, nothing } from 'lit';
 
 // A themed button. Inside a form, type="submit" or "reset" acts on the owning form (the shadow
-// button cannot); variant="primary" marks the one main action of a form or dialog, and block
-// stretches the button to fill its container.
+// button cannot); variant="primary" marks the one main action of a form or dialog, variant="success"
+// marks a completed or committed state with the contracted success-on-surface pair, and block
+// stretches the button to fill its container. `ariaLabel` names the actual action for assistive tech
+// when the visible label alone cannot (the inner button owns the name, not the host).
 export class BingoButton extends LitElement {
   static formAssociated = true;
   // disabled is attribute-backed and synchronous like a native button's: a form-associated host with
@@ -11,6 +13,7 @@ export class BingoButton extends LitElement {
     disabled: { type: Boolean, noAccessor: true },
     type: { type: String },
     variant: { type: String, reflect: true },
+    ariaLabel: { type: String },
     block: { type: Boolean, reflect: true },
   };
   static styles = css`
@@ -33,6 +36,20 @@ export class BingoButton extends LitElement {
     button:not(:disabled):hover { color: var(--bingo-color-on-accent); background: var(--bingo-color-accent-hover); }
     button:not(:disabled):active { color: var(--bingo-color-on-accent); background: var(--bingo-color-accent-active); }
     :host([variant="primary"]) button:not(:disabled):hover { color: var(--bingo-color-accent); background: var(--bingo-color-surface); }
+    /* Success keeps its identity on hover, active and disabled: the contracted success-on-surface pair is
+       never swapped for the accent hover or the gray disabled colors; the disabled surface, opacity and
+       cursor still carry the disabled affordance. */
+    :host([variant="success"]) button {
+      color: var(--bingo-color-success); background: var(--bingo-color-surface); border-color: var(--bingo-color-success);
+      font-weight: var(--bingo-font-emphasis);
+    }
+    :host([variant="success"]) button:not(:disabled):hover,
+    :host([variant="success"]) button:not(:disabled):active {
+      color: var(--bingo-color-success); background: var(--bingo-color-surface); border-color: var(--bingo-color-success);
+    }
+    :host([variant="success"]) button:disabled {
+      color: var(--bingo-color-success); background: var(--bingo-color-disabled-surface); border-color: var(--bingo-color-success);
+    }
     button:disabled {
       color: var(--bingo-color-disabled); background: var(--bingo-color-disabled-surface); border-color: var(--bingo-color-border);
       box-shadow: none; cursor: not-allowed; opacity: var(--bingo-opacity-disabled);
@@ -43,7 +60,7 @@ export class BingoButton extends LitElement {
   `;
   constructor() {
     super();
-    this.type = 'button'; this.variant = ''; this.block = false;
+    this.type = 'button'; this.variant = ''; this.ariaLabel = null; this.block = false;
     this.internals = this.attachInternals();
     // Registered first, so a disabled host swallows even programmatic clicks before other listeners.
     this.addEventListener('click', (event) => this.activate(event));
@@ -67,7 +84,7 @@ export class BingoButton extends LitElement {
     else if (this.type === 'reset') this.form?.reset();
   }
   render() {
-    return html`<button part="button" type="button" ?disabled=${this.disabled}><slot></slot></button>`;
+    return html`<button part="button" type="button" ?disabled=${this.disabled} aria-label=${this.ariaLabel ?? nothing}><slot></slot></button>`;
   }
 }
 

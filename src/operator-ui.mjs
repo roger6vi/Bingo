@@ -168,7 +168,10 @@ const legacyActionable = () => lineState.legacy?.status === 'available' && lineS
   !(selecting || activating || tongoBusy || eventsPending || lineState.pending || gameState.pending || lineState.mode !== 'idle' ||
     bingoBusy());
 const lineRepeat = required('line-repeat', BingoButton);
-const LINE_LABELS = { setup: 'Reanudar línea', uncertain: 'Comprobar línea', declared: 'Línea declarada' };
+// The claim buttons keep one short visible label (Línea/Bingo) so the fixed claims grid never wraps or
+// overflows; this map is the accessible action name per state, not the visible text, and the declared
+// claim additionally paints the success variant while the existing guards keep it disabled.
+const LINE_LABELS = { setup: 'Reanudar línea', uncertain: 'Comprobar línea', declared: 'Línea cantada' };
 // Starting needs a fully known drawing game; recovery and resuming need only main's answer.
 function lineClaimDisabled() {
   // Pending stays enabled so the button keeps focus; the controller already ignores a second request.
@@ -240,7 +243,9 @@ function paintBingo() {
   if (bingoModal !== null && (bingoModal.eventId !== activeEventId ||
     (bingoModal.session !== null && !bingoModal.sent && !state.pending && !ownedSetup(bingoModal)))) closeBingo();
   const mine = state.eventId !== null && state.eventId === activeEventId;
-  claimBingo.textContent = BINGO_LABELS[state.mode] ?? 'Bingo';
+  claimBingo.textContent = 'Bingo';
+  claimBingo.ariaLabel = BINGO_LABELS[state.mode] ?? null;
+  claimBingo.variant = state.mode === 'declared' ? 'success' : '';
   // Pending stays enabled for the dialog's own begin so the button keeps focus; the click ignores it.
   claimBingo.disabled = state.mode === 'idle' ? !(bingoBeginnable() || (bingoModal !== null && state.pending))
     : state.mode === 'setup' ? !ownedSetup() || selecting || activating || tongoBusy
@@ -279,7 +284,7 @@ function paintBingo() {
             : legacy === 'recovered' ? BINGO_LEGACY_ES.recovered
               : state.mode === 'declared' && state.award
     ? `${bingoAwardSummary(state.award)}${owed === 'failed' ? ` ${BINGO_REFRESH_FAILED_ES}` : ''}`
-    : state.mode === 'setup' && bingoModal === null ? 'Hay una declaración de bingo abierta. Pulsa «Reanudar bingo» para continuar o cancelarla.' : '');
+    : state.mode === 'setup' && bingoModal === null ? 'Hay una declaración de bingo abierta. Pulsa «Bingo» para reanudarla o cancelarla.' : '');
   bingoStatus.tone = state.error || legacy === 'uncertain' ? 'error' : legacy === 'available' || legacy === 'recovered' ||
     owed === 'failed' || presentation === 'failed' || presentation === 'interrupted' ? 'warning' : 'info';
   bingoStatus.hidden = bingoStatus.message === '';
@@ -518,7 +523,7 @@ function paintLineStatus() {
         : state.mode === 'idle' && state.refresh === 'failed' ? LEGACY_CHECK_ES.refreshFailed
           : legacy === 'recovered' ? LEGACY_CHECK_ES.recovered : state.mode === 'declared' && state.award
       ? `${lineAwardSummary(state.award)}${state.refresh === 'failed' ? ` ${LINE_REFRESH_FAILED_ES}` : ''}`
-      : state.mode === 'setup' && !state.dialogOpen ? 'Hay una declaración de línea abierta. Pulsa «Reanudar línea» para continuar o cancelarla.' : '');
+      : state.mode === 'setup' && !state.dialogOpen ? 'Hay una declaración de línea abierta. Pulsa «Línea» para reanudarla o cancelarla.' : '');
   lineStatus.tone = state.error || legacy === 'uncertain' ? 'error' : lineMismatch() || legacy === 'available' ||
     presentation === 'failed' || presentation === 'interrupted' || state.refresh === 'failed' ? 'warning'
     : presentation === 'completed' ? 'success' : 'info';
@@ -529,7 +534,9 @@ function paintLineStatus() {
 const line = createLineController(desktop, {
   render: (state) => {
     lineState = state;
-    claimLine.textContent = LINE_LABELS[state.mode] ?? 'Línea';
+    claimLine.textContent = 'Línea';
+    claimLine.ariaLabel = LINE_LABELS[state.mode] ?? null;
+    claimLine.variant = state.mode === 'declared' ? 'success' : '';
     paintLineStatus();
     paintLineActions();
     if (state.session) linePrize.textContent = linePrizeSummary(state.session.linePrize);
