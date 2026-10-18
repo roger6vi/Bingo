@@ -29,7 +29,8 @@ function channel(...initial) {
 }
 
 const BRIDGES = ['publicEvent', 'publicTheme', 'publicEventMeta', 'publicEventPrizes', 'publicLineAward',
-  'publicPresentation', 'publicLineReceipt', 'publicLineLot', 'publicBingoAward', 'publicBingoReceipt'];
+  'publicPresentation', 'publicLineReceipt', 'publicLineLot', 'publicBingoAward', 'publicBingoReceipt',
+  'publicBingoLot'];
 // Injected before every entry import and restored on teardown: the page's media query and, when `timed`, its 4000 ms timers.
 const GLOBALS = ['Audio', 'matchMedia', 'setTimeout', 'clearTimeout'];
 const realSetTimeout = window.setTimeout;
@@ -45,7 +46,8 @@ async function mount({ award: hydrated, event = frame(), reduced = false, timed 
   const audio = { count: 0 };
   const receipts = [];
   const ch = { event: channel(event), theme: channel('light'), meta: channel(), prizes: channel(),
-    lineAward: hydrated === undefined ? channel() : channel(hydrated), presentation: channel(), lot: channel(), bingoAward: channel() };
+    lineAward: hydrated === undefined ? channel() : channel(hydrated), presentation: channel(), lot: channel(), bingoAward: channel(),
+    bingoLot: channel() };
   const mq = { matches: reduced, adds: 0, removes: 0, saved: [],
     addEventListener: (type, callback) => { mq.adds++; mq.saved.push(callback); },
     removeEventListener: () => { mq.removes++; },
@@ -60,7 +62,7 @@ async function mount({ award: hydrated, event = frame(), reduced = false, timed 
   [['publicEvent', ch.event], ['publicTheme', ch.theme], ['publicEventMeta', ch.meta], ['publicEventPrizes', ch.prizes],
     ['publicLineAward', ch.lineAward], ['publicPresentation', ch.presentation],
     ['publicLineReceipt', { started: (id) => receipts.push(id) }], ['publicLineLot', ch.lot], ['publicBingoAward', ch.bingoAward],
-    ['publicBingoReceipt', { started: () => {} }],
+    ['publicBingoReceipt', { started: () => {} }], ['publicBingoLot', ch.bingoLot],
     ['matchMedia', () => mq], ['Audio', function Audio() { audio.count++; }]].forEach(([name, value]) => define(name, value));
   if (timed) {
     define('setTimeout', (fn, delay, ...args) => {
@@ -240,10 +242,10 @@ it('keeps ordinary declaration, draw, history and explicit celebration behaviour
 it('unsubscribes every bridge once on pagehide and ignores later deliveries', async () => {
   const m = await mount({ award: withResult(numbered(3)) });
   const counts = () => Object.values(m.ch).map((ch) => [ch.subs, ch.unsubs, ch.listeners.size]);
-  expect(counts()).to.deep.equal([[1, 0, 1], [1, 0, 1], [1, 0, 1], [1, 0, 1], [1, 0, 1], [2, 0, 2], [1, 0, 1], [1, 0, 1]]);
+  expect(counts()).to.deep.equal([[1, 0, 1], [1, 0, 1], [1, 0, 1], [1, 0, 1], [1, 0, 1], [2, 0, 2], [1, 0, 1], [1, 0, 1], [0, 0, 0]]);
   m.dispose();
   m.dispose();
-  expect(counts()).to.deep.equal([[1, 1, 0], [1, 1, 0], [1, 1, 0], [1, 1, 0], [1, 1, 0], [2, 2, 0], [1, 1, 0], [1, 1, 0]]);
+  expect(counts()).to.deep.equal([[1, 1, 0], [1, 1, 0], [1, 1, 0], [1, 1, 0], [1, 1, 0], [2, 2, 0], [1, 1, 0], [1, 1, 0], [0, 0, 0]]);
   const before = lineAward().textContent;
   m.ch.lineAward.emit(null);
   expect(lineAward().textContent).to.equal(before);

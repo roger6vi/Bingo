@@ -160,6 +160,12 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
     lotListeners++;
     return () => { if (active) { active = false; lotListeners--; unsubscribed++; } };
   } });
+  // Receive-only live lot channel for the Bingo award, as with the real preload.
+  window.publicBingoLot = Object.freeze({ subscribe: () => {
+    let active = true;
+    lotListeners++;
+    return () => { if (active) { active = false; lotListeners--; unsubscribed++; } };
+  } });
   try {
     const entry = new URL('../../src/public-ui.mjs', import.meta.url);
     const response = await fetch(entry);
@@ -309,6 +315,7 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
     delete window.publicLineReceipt;
     delete window.publicBingoReceipt;
     delete window.publicLineLot;
+    delete window.publicBingoLot;
     delete document.documentElement.dataset.theme;
   }
 });
