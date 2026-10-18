@@ -261,6 +261,23 @@ test('draws are refused with a dedicated code while a line presentation runs, be
   assert.deepEqual(f.calls, []);
 });
 
+test('a committed bingo store refusal maps to invalid_draw for both draw modes with state unchanged', () => {
+  for (const channel of [EVENT_CHANNELS.manual, EVENT_CHANNELS.digital] as const) {
+    const notified: EventSnapshot[] = [];
+    const f = fixture([90, 1], () => { f.calls.push('random'); return 0; }, (snapshot) => notified.push(snapshot));
+    let storeAttempts = 0;
+    f.store.update = () => { storeAttempts += 1; throw new Error('Draw not allowed after bingo is declared'); };
+    const result = f.invoke(channel, channel === EVENT_CHANNELS.manual ? [90] : []) as
+      { ok: false; code: string; message: string };
+    assert.deepEqual([result.ok, result.code], [false, 'invalid_draw']);
+    assert.equal(result.message, 'Could not draw a number. Reload and try again.');
+    assert.deepEqual(f.snapshot(), [90, 1]);
+    assert.equal(storeAttempts, 1);
+    assert.deepEqual(f.calls, []);
+    assert.deepEqual(notified, []);
+  }
+});
+
 test('a store refusal for an unfinished line presentation maps to presentation_pending, not storage_failure', () => {
   const f = fixture([5]);
   f.store.update = () => { throw new Error('Draw not allowed until the line presentation is completed'); };
