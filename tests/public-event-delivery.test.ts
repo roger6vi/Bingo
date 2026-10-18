@@ -8,7 +8,7 @@ import { drawManual } from '../src/event-core.ts';
 import { createEventStore } from '../src/event-store.ts';
 import {
   createPublicEventDelivery, PUBLIC_EVENT_CHANNEL, PUBLIC_META_CHANNEL, PUBLIC_PRESENTATION_CHANNEL,
-  PUBLIC_BINGO_RECEIPT_CHANNEL, PUBLIC_LINE_AWARD_CHANNEL, PUBLIC_LINE_RECEIPT_CHANNEL, PUBLIC_PRIZES_CHANNEL, PUBLIC_THEME_CHANNEL, type PublicEventMeta, type PublicEventPrizes,
+  PUBLIC_BINGO_RECEIPT_CHANNEL, PUBLIC_LINE_AWARD_CHANNEL, PUBLIC_LINE_LOT_CHANNEL, PUBLIC_LINE_RECEIPT_CHANNEL, PUBLIC_PRIZES_CHANNEL, PUBLIC_THEME_CHANNEL, type PublicEventMeta, type PublicEventPrizes,
 } from '../src/public-event-delivery.ts';
 import type { EventSnapshot } from '../src/event-core.ts';
 
@@ -774,6 +774,84 @@ test('a reentrant award read that replaces or detaches the target stops the old 
       }
     }
   }
+});
+
+// Bingo lot transport (BG-06C1a): purely additive receive-only channel; the renderer consumes it in C1b.
+const BINGO_LOT_CHANNEL = 'public:bingo-lot';
+const bingoLotSignal = { id: 'c1', participantNumber: 2, colorId: 'blue' };
+function bingoLotFixture() {
+  let current: unknown = storedBingo(), fail = false;
+  const delivery = createPublicEventDelivery({ load: () => snapshot([5]) }, () => 'light',
+    () => ({ name: 'N', date: '2026-01-01', place: 'P' }),
+    () => ({ line: { amount: 10, lot: '' }, bingo: { amount: 50, lot: 'Cesta' } }), () => storedAward(), undefined,
+    (() => { if (fail) throw new Error('private detail'); return current; }) as never);
+  return { delivery, set: (next: unknown) => { current = next; }, fail: () => { fail = true; } };
+}
+function bingoLotTarget(delivery: ReturnType<typeof bingoLotFixture>['delivery']) {
+  const messages: Message[] = [];
+  const target = { messages, mainFrame: { url: PAGE } as { url: string } | null, isDestroyed: () => false,
+    send: (channel: string, result: unknown) => { messages.push({ channel, result }); } };
+  delivery.attachAfterLoad(target);
+  return target;
+}
+
+test('publishBingoLot sends the static Bingo award, then history, then the whitelisted signal, never replayed', () => {
+  const f = bingoLotFixture();
+  const target = bingoLotTarget(f.delivery);
+  target.messages.length = 0;
+  assert.equal(f.delivery.publishBingoLot(bingoLotSignal, PAGE), true);
+  assert.deepEqual(channelsOf(target.messages), [BINGO_AWARD, PUBLIC_EVENT_CHANNEL, BINGO_LOT_CHANNEL]);
+  assert.deepEqual(target.messages[2].result, { id: 'c1', participantNumber: 2, colorId: 'blue' });
+  target.messages.length = 0;
+  f.delivery.navigationStarted(target);
+  f.delivery.attachAfterLoad(target);
+  f.delivery.publishActive('light');
+  assert.equal(channelsOf(target.messages).includes(BINGO_LOT_CHANNEL), false, 'attach and switch never replay it');
+});
+
+test('publishBingoLot refuses missing, destroyed, wrong-URL, frameless and failing targets', () => {
+  const f = bingoLotFixture();
+  assert.equal(f.delivery.publishBingoLot(bingoLotSignal, PAGE), false, 'nothing attached');
+  const arms: ((t: ReturnType<typeof bingoLotTarget>) => void)[] = [(t) => { t.isDestroyed = () => true; },
+    (t) => { (t.mainFrame as { url: string }).url = 'file:///x.html'; }, (t) => { t.mainFrame = null; },
+    (t) => { t.send = () => { throw new Error('send failed'); }; }];
+  for (const arm of arms) {
+    const target = bingoLotTarget(f.delivery);
+    arm(target);
+    assert.equal(f.delivery.publishBingoLot(bingoLotSignal, PAGE), false);
+    assert.equal(channelsOf(target.messages).includes(BINGO_LOT_CHANNEL), false);
+  }
+});
+
+test('refreshBingoAward resends only the static Bingo award for the bound event, never a lot channel or history', () => {
+  const f = bingoLotFixture();
+  const target = bingoLotTarget(f.delivery);
+  target.messages.length = 0;
+  assert.equal(f.delivery.refreshBingoAward('event-a'), true);
+  assert.deepEqual(channelsOf(target.messages), [BINGO_AWARD]);
+  assert.deepEqual(target.messages[0].result, publicBingo);
+  target.messages.length = 0;
+  assert.equal(f.delivery.refreshBingoAward('event-b'), false);
+  f.set(null);
+  assert.equal(f.delivery.refreshBingoAward('event-a'), false);
+  f.set(new Error('private detail'));
+  assert.equal(f.delivery.refreshBingoAward('event-a'), false);
+  assert.doesNotMatch(JSON.stringify(target.messages), /private detail/);
+  f.set(storedBingo());
+  f.delivery.detachIfCurrent(target);
+  assert.equal(f.delivery.refreshBingoAward('event-a'), false);
+  assert.equal(target.messages.length, 0);
+});
+
+test('award refreshes are kind-isolated: neither kind touches the other award or either lot channel', () => {
+  const f = bingoLotFixture();
+  const target = bingoLotTarget(f.delivery);
+  target.messages.length = 0;
+  f.delivery.refreshLineAward('event-a');
+  f.delivery.refreshBingoAward('event-a');
+  assert.deepEqual(channelsOf(target.messages), [PUBLIC_LINE_AWARD_CHANNEL, BINGO_AWARD]);
+  assert.equal(channelsOf(target.messages).includes(BINGO_LOT_CHANNEL), false);
+  assert.equal(channelsOf(target.messages).includes(PUBLIC_LINE_LOT_CHANNEL), false);
 });
 
 // Integration with the real strict store: corrupt Bingo storage fails the whole event read closed.

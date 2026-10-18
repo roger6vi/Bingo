@@ -278,6 +278,12 @@ test('source boundary: operator-named preload only, no public permission, no cel
   assert.match(publicPreload, /const PUBLIC_LINE_LOT_CHANNEL = 'public:line-lot';/);
   assert.match(publicPreload, /exposeInMainWorld\('publicLineLot', Object\.freeze\(\{\s+subscribe: [^]*?ipcRenderer\.on\(PUBLIC_LINE_LOT_CHANNEL, listener\);\s+return \(\) => ipcRenderer\.removeListener\(PUBLIC_LINE_LOT_CHANNEL, listener\);/);
   assert.equal(publicPreload.match(/PUBLIC_LINE_LOT_CHANNEL/g)?.length, 3);
+  // Bingo lot transport is additive: no operator bingo:lot channel reaches the public preload, and the delivery
+  // module owns the only public bingo-lot literal.
+  assert.doesNotMatch(publicPreload, /bingo:lot:/);
+  assert.match(read('../src/public-event-delivery.ts'), /PUBLIC_BINGO_LOT_CHANNEL = 'public:bingo-lot'/);
+  assert.match(publicPreload, /exposeInMainWorld\('publicBingoLot', Object\.freeze\(\{\s+subscribe: [^]*?ipcRenderer\.on\(PUBLIC_BINGO_LOT_CHANNEL, listener\);\s+return \(\) => ipcRenderer\.removeListener\(PUBLIC_BINGO_LOT_CHANNEL, listener\);/);
+  assert.equal(publicPreload.match(/PUBLIC_BINGO_LOT_CHANNEL/g)?.length, 3);
   const main = read('../src/main.ts');
   assert.match(main, /registerLineLotPresentation\(ipcMain, store, \{ authorize: operatorOnly,/);
   const ipc = read('../src/line-lot-ipc.ts');

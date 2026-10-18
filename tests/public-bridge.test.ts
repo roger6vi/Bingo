@@ -19,14 +19,17 @@ test('the public window uses its preload subscriptions and never listens to fram
     publicEventMeta: { subscribe: () => () => {} }, publicEventPrizes: { subscribe: () => () => {} },
     publicPresentation: { subscribe: () => () => {} }, publicLineAward: { subscribe: () => () => {} },
     publicBingoAward: { subscribe: () => () => {} }, publicLineReceipt: { started: () => {} }, publicLineLot: { subscribe: () => () => {} },
-    publicBingoReceipt: { started: () => {} } });
+    publicBingoReceipt: { started: () => {} }, publicBingoLot: { subscribe: () => () => {} } });
   const bridges = publicBridges(win);
   assert.deepEqual([bridges.event, bridges.theme, bridges.meta, bridges.prizes, bridges.lineAward, bridges.presentation,
-    bridges.lineReceipt, bridges.lineLot], [win.publicEvent, win.publicTheme, win.publicEventMeta, win.publicEventPrizes,
-    win.publicLineAward, win.publicPresentation, win.publicLineReceipt, win.publicLineLot]);
+    bridges.lineReceipt, bridges.lineLot, bridges.bingoLot], [win.publicEvent, win.publicTheme, win.publicEventMeta, win.publicEventPrizes,
+    win.publicLineAward, win.publicPresentation, win.publicLineReceipt, win.publicLineLot, win.publicBingoLot]);
   assert.equal(bridges.bingoReceipt, win.publicBingoReceipt);
   delete win.publicBingoReceipt;
   assert.throws(() => publicBridges(win), /Missing public display bridge/, 'the Bingo receipt bridge is required');
+  win.publicBingoReceipt = { started: () => {} };
+  delete win.publicBingoLot;
+  assert.throws(() => publicBridges(win), /Missing public display bridge/, 'the bingo lot bridge is required');
   assert.equal(listeners.length, 0);
   assert.throws(() => publicBridges(fakeWindow().win), /Missing public display bridge/);
   // A top-level page missing any one preload bridge is not the public window.
@@ -40,7 +43,7 @@ test('the public window fails closed without the committed line-award bridge', (
   const bridge = () => ({ subscribe: () => () => {} });
   Object.assign(win, { publicEvent: bridge(), publicTheme: bridge(), publicEventMeta: bridge(),
     publicEventPrizes: bridge(), publicPresentation: bridge(), publicLineReceipt: { started: () => {} },
-    publicLineLot: bridge(), publicBingoAward: bridge(), publicBingoReceipt: { started: () => {} } });
+    publicLineLot: bridge(), publicBingoAward: bridge(), publicBingoReceipt: { started: () => {} }, publicBingoLot: bridge() });
   assert.throws(() => publicBridges(win), /Missing public display bridge/);
   win.publicLineAward = bridge();
   assert.equal(publicBridges(win).lineAward, win.publicLineAward);
@@ -130,7 +133,7 @@ test('the public window fails closed without the line-lot bridge', () => {
   const bridge = () => ({ subscribe: () => () => {} });
   Object.assign(win, { publicEvent: bridge(), publicTheme: bridge(), publicEventMeta: bridge(), publicEventPrizes: bridge(),
     publicLineAward: bridge(), publicBingoAward: bridge(), publicPresentation: bridge(), publicLineReceipt: { started: () => {} },
-    publicBingoReceipt: { started: () => {} } });
+    publicBingoReceipt: { started: () => {} }, publicBingoLot: bridge() });
   assert.throws(() => publicBridges(win), /Missing public display bridge/);
   win.publicLineLot = bridge();
   assert.equal(publicBridges(win).lineLot, win.publicLineLot);
@@ -150,12 +153,26 @@ test('the simulator line-lot input is inert: forged messages never reach it and 
   assert.deepEqual([received, Object.isFrozen(lineLot), Object.keys(lineLot)], [[], true, ['subscribe']]);
 });
 
+test('the simulator bingo-lot input is inert: forged messages never reach it and it cannot be fed', () => {
+  const parent = {};
+  const { win, dispatch } = fakeWindow(parent);
+  const { bingoLot } = publicBridges(win);
+  const received: unknown[] = [];
+  const unsubscribe = bingoLot.subscribe((payload: unknown) => received.push(payload));
+  for (const channel of ['bingoLot', 'bingo-lot', 'public:bingo-lot']) {
+    dispatch(parent, { type: SIMULATOR_MESSAGE, channel, payload: { id: 'forged', participantNumber: 1, colorId: 'red' } });
+  }
+  assert.equal(typeof unsubscribe, 'function');
+  assert.equal(unsubscribe(), undefined);
+  assert.deepEqual([received, Object.isFrozen(bingoLot), Object.keys(bingoLot)], [[], true, ['subscribe']]);
+});
+
 test('the public window requires the Bingo award bridge; the simulator relays it statically and stays non-celebrating', () => {
   const { win } = fakeWindow();
   const bridge = () => ({ subscribe: () => () => {} });
   Object.assign(win, { publicEvent: bridge(), publicTheme: bridge(), publicEventMeta: bridge(), publicEventPrizes: bridge(),
     publicLineAward: bridge(), publicPresentation: bridge(), publicLineReceipt: { started: () => {} }, publicLineLot: bridge(),
-    publicBingoReceipt: { started: () => {} } });
+    publicBingoReceipt: { started: () => {} }, publicBingoLot: bridge() });
   assert.throws(() => publicBridges(win), /Missing public display bridge/);
   win.publicBingoAward = bridge();
   assert.equal((publicBridges(win) as Record<string, unknown>).bingoAward, win.publicBingoAward);
