@@ -178,6 +178,7 @@ function lineClaimDisabled() {
 }
 const claimBingo = required('claim-bingo', BingoButton);
 const bingoRetry = required('bingo-retry', BingoButton);
+const bingoRepeat = required('bingo-repeat', BingoButton);
 const bingoStatus = required('bingo-status', HTMLElement);
 const bingoDialog = required('bingo-dialog', HTMLElement);
 const bingoWinners = required('bingo-winners', BingoTextField);
@@ -199,9 +200,11 @@ const bingoPage = () => ({ selecting, activating, eventsPending, eventsStale, to
 // Every page lock and fresh guard a Bingo begin or confirm needs at dispatch, since its controller checks none: an
 // accepted, current list and event read, no Tongo, and no Line request, setup, running celebration or owed refresh.
 const bingoClear = () => pageClear(bingoPage());
-// A retry needs all of that for exactly the failed award shown under `expected`, and no Bingo request of its own yet.
+// A retry needs all of that for exactly the failed award shown under `expected`, and no Bingo request of its own yet;
+// the repeat (H4b) reuses the same admission for the interrupted award.
 const bingoRetryReady = (expected) => manualAdmitted(bingoPage(), bingoState, expected);
 const shownFailure = () => ({ eventId: activeEventId, id: bingoState.award?.presentation?.id, status: 'failed' });
+const shownRepeat = () => ({ eventId: activeEventId, id: bingoState.award?.presentation?.id, status: 'interrupted' });
 // An uncertain answer of the active event is only read again, in any phase, with no selection, list read or Tongo.
 const bingoReadable = () => bingoState.mode === 'uncertain' && bingoState.eventId !== null && bingoState.eventId === activeEventId &&
   !(selecting || activating || tongoBusy || eventsPending);
@@ -231,12 +234,15 @@ function paintBingo() {
       : state.mode === 'uncertain' ? !bingoReadable() : true;
   const owed = bingoRef?.refreshState(state.eventId) ?? 'none';
   const presentation = state.mode === 'declared' ? state.award?.presentation?.status : undefined;
-  // Only a failed celebration is offered again; repeating an interrupted one is not bound yet (H4b).
-  const offered = !bingoRetry.hidden;
-  bingoRetry.hidden = !(mine && presentation === 'failed');
-  bingoRetry.disabled = bingoRetry.hidden || state.pending || !bingoRetryReady(shownFailure());
-  // Like the status, a newly offered retry must not stay clipped at the bottom of the rail.
-  if (!bingoRetry.hidden && !offered) void bingoRetry.updateComplete.then(() => bingoRetry.scrollIntoView({ block: 'nearest' }));
+  // Only a failed celebration is retried and only an interrupted one repeated; nothing else is offered.
+  const controls = [[bingoRetry, 'failed', shownFailure], [bingoRepeat, 'interrupted', shownRepeat]];
+  const offered = controls.map(([button]) => !button.hidden);
+  controls.forEach(([button, status, expected], index) => {
+    button.hidden = !(mine && presentation === status);
+    button.disabled = button.hidden || state.pending || !bingoRetryReady(expected());
+    // Like the status, a newly offered control must not stay clipped at the bottom of the rail.
+    if (!button.hidden && !offered[index]) void button.updateComplete.then(() => button.scrollIntoView({ block: 'nearest' }));
+  });
   const before = bingoStatus.hidden ? '' : bingoStatus.message;
   bingoStatus.message = !mine ? '' : state.pending ? 'Comprobando el bingo' : bingoMessage(state.error) ?? (state.mode === 'declared' && state.award
     ? `${bingoAwardSummary(state.award)}${owed === 'failed' ? ` ${BINGO_REFRESH_FAILED_ES}` : ''}`
@@ -489,7 +495,9 @@ legacyDialog.addEventListener('confirm', () => {
 });
 lotPanel.addEventListener('line-lot-draw', () => { if (!lotPanel.hidden) void lotController.draw(); });
 lotPanel.addEventListener('line-lot-resync', () => { if (!lotPanel.hidden) void lotController.resync(); });
-window.addEventListener('pagehide', () => { closeBingo(); line.dispose(); bingo.dispose(); lotController.dispose(); });
+// The page's disposal is permanent: no queued scroll continuation or later tab change may paint after the pagehide.
+let pageHid = false;
+window.addEventListener('pagehide', () => { pageHid = true; closeBingo(); line.dispose(); bingo.dispose(); lotController.dispose(); });
 // Bingo: an uncertain answer is only read again; an open setup resumes; an idle one begins only when everything allows it.
 claimBingo.addEventListener('click', () => {
   if (claimBingo.disabled || bingoState.pending) return;
@@ -513,6 +521,12 @@ bingoRetry.addEventListener('click', () => {
   const expected = shownFailure();
   if (bingoRetry.disabled || bingoState.pending || !bingoRetryReady(expected)) return;
   void bingo.retry(expected.id, () => bingoRetryReady(expected));
+});
+// The repeat captures, rechecks and gates exactly like the retry, for the interrupted celebration it re-presents.
+bingoRepeat.addEventListener('click', () => {
+  const expected = shownRepeat();
+  if (bingoRepeat.disabled || bingoState.pending || !bingoRetryReady(expected)) return;
+  void bingo.repeat(expected.id, () => bingoRetryReady(expected));
 });
 function showBingo() {
   const { session } = bingoState;
@@ -597,6 +611,14 @@ void themes.start();
 
 // Leaving Configuración with unsaved edits offers Save, Discard, or Cancel first.
 required('workspace-tabs', HTMLElement).canLeave = (current) => (current.id === 'tab-settings' ? settings.confirmLeave() : true);
+// An offer painted while the Bingo panel was hidden could not scroll itself; when the panel becomes shown, the
+// offered celebration controls are brought into view once more.
+required('workspace-tabs', HTMLElement).addEventListener('tab-change', (event) => {
+  if (pageHid || event.detail.id !== 'tab-bingo') return;
+  for (const button of [bingoRetry, bingoRepeat]) {
+    if (!button.hidden) void button.updateComplete.then(() => { if (!pageHid) button.scrollIntoView({ block: 'nearest' }); });
+  }
+});
 const eventList = required('event-list', HTMLElement);
 eventListRef = eventList;
 const eventsStatus = required('events-status', HTMLElement);
