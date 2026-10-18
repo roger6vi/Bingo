@@ -22,13 +22,14 @@ import { createOperatorController, createLineController } from './operator-contr
 import { createManualDrawHandler } from './manual-draw.mjs';
 import { createEventsController, today } from './events-controller.mjs';
 import { applyTheme, createThemeController, DEFAULT_THEME, revealAfter } from './theme-controller.mjs';
-import { operatorMessage, lineAwardSummary, linePrizeSummary, LEGACY_CHECK_ES, LINE_REFRESH_FAILED_ES, PHASE_LABELS_ES, THEME_NAMES_ES } from './operator-copy.mjs';
+import { operatorMessage, lineAwardSummary, linePrizeSummary, LEGACY_CHECK_ES, LINE_REFRESH_FAILED_ES, PHASE_LABELS_ES, THEME_NAMES_ES,
+  bingoAwardSummary, bingoMessage, bingoPrizeSummary } from './operator-copy.mjs';
 import { bindSettings } from './settings-ui.mjs';
 import { bindCueControls } from './cue-ui.mjs';
 import { createLineLotController } from './line-lot-controller.mjs';
 import { createTongoController, tongoPlayable } from './tongo.mjs';
 import { validPrizes } from './prize-format.mjs';
-import { bingoGuards, bingoLocks, createBingoBinding, createFactRefresh } from './bingo-ui.mjs';
+import { bingoGuards, bingoLocks, createBingoBinding, createFactRefresh, lineResolved, pageBlocked, parseWinners } from './bingo-ui.mjs';
 
 function required(id, type) {
   const element = document.getElementById(id);
@@ -174,6 +175,61 @@ function lineClaimDisabled() {
   if (lineState.mode === 'idle') return !(gameState?.snapshot && !gameState.stale && !gameState.pending && gameState.phase === 'drawing');
   return false;
 }
+const claimBingo = required('claim-bingo', BingoButton);
+const bingoStatus = required('bingo-status', HTMLElement);
+const bingoDialog = required('bingo-dialog', HTMLElement);
+const bingoWinners = required('bingo-winners', BingoTextField);
+const bingoPrize = required('bingo-prize', HTMLElement);
+const BINGO_LABELS = { setup: 'Reanudar bingo', uncertain: 'Comprobar bingo', declared: 'Bingo cantado' };
+const BINGO_COUNT_ERROR = bingoMessage('Choose how many players share the Bingo (a whole number of at least 1).');
+const bingoActions = (disabled) => [{ action: 'cancel', label: 'Cancelar', signal: 'dismiss' },
+  { action: 'confirm', label: 'Declarar bingo', signal: 'confirm', disabled }];
+bingoDialog.actions = bingoActions(true);
+// The Bingo dialog belongs to one event and, once main opened it, one setup: { eventId, session, sent }. It is reserved
+// before the begin is dispatched, so nothing rendered from its callbacks opens a second one.
+let bingoModal = null;
+let bingoTyped = null;
+// Every page lock and fresh guard a Bingo begin or confirm needs at dispatch, since its controller checks none: an
+// accepted, current list and event read, no Tongo, and no Line request, setup, running celebration or owed refresh.
+const bingoClear = () => !pageBlocked({ selecting, activating, eventsPending, eventsStale, tongoBusy, lineBlocked: lineBlocked() }) &&
+  currentOwner() !== null && !lineState.pending && lineState.refresh === 'none' && !drawLocks.pending && !gameState?.pending &&
+  Object.values(bingoGuards(lineState, tongoBusy)).every((flag) => flag === false);
+// A begin also needs the fresh line_declared phase, the Line's persisted, resolved award and an idle Bingo read for it.
+const bingoBeginnable = () => bingoModal === null && !bingoState.pending && bingoState.mode === 'idle' &&
+  bingoState.eventId === activeEventId && legacyPhase() === 'line_declared' && bingoState.legacy.status === 'none' &&
+  bingoState.refresh === 'none' && !lineMismatch() && lineResolved(lineState, lotController.getState(), activeEventId) && bingoClear();
+// Main's open setup for the active event and, given a dialog, that dialog's own setup.
+const ownedSetup = (own = null) => bingoState.mode === 'setup' && bingoState.eventId === activeEventId &&
+  bingoState.session?.eventId === activeEventId && (own === null || (own.eventId === activeEventId && own.session === bingoState.session.sessionId));
+const bingoConfirmable = (own) => own !== null && own.session !== null && !own.sent && !bingoState.pending && ownedSetup(own) &&
+  legacyPhase() === 'line_declared' && bingoClear();
+// Closing a dialog that lost its event or setup cancels nothing.
+function closeBingo() {
+  bingoModal = null;
+  bingoDialog.shadowRoot?.querySelector('dialog')?.close();
+}
+function paintBingo() {
+  const state = bingoState;
+  if (bingoModal !== null && (bingoModal.eventId !== activeEventId ||
+    (bingoModal.session !== null && !bingoModal.sent && !state.pending && !ownedSetup(bingoModal)))) closeBingo();
+  const mine = state.eventId !== null && state.eventId === activeEventId;
+  claimBingo.textContent = BINGO_LABELS[state.mode] ?? 'Bingo';
+  // Pending stays enabled for the dialog's own begin so the button keeps focus; the click ignores it.
+  claimBingo.disabled = state.mode === 'idle' ? !(bingoBeginnable() || (bingoModal !== null && state.pending))
+    : state.mode === 'setup' ? !ownedSetup() || selecting || activating || tongoBusy
+      : state.mode === 'uncertain' ? !mine || selecting || activating : true;
+  const presentation = state.mode === 'declared' ? state.award?.presentation?.status : undefined;
+  const before = bingoStatus.hidden ? '' : bingoStatus.message;
+  bingoStatus.message = !mine ? '' : state.pending ? 'Comprobando el bingo' : bingoMessage(state.error) ?? (state.mode === 'declared' && state.award
+    ? bingoAwardSummary(state.award)
+    : state.mode === 'setup' && bingoModal === null ? 'Hay una declaración de bingo abierta. Pulsa «Reanudar bingo» para continuar o cancelarla.' : '');
+  bingoStatus.tone = state.error ? 'error' : presentation === 'failed' || presentation === 'interrupted' ? 'warning' : 'info';
+  bingoStatus.hidden = bingoStatus.message === '';
+  // Like the Line's, a new Bingo message must not stay clipped at the bottom of the rail.
+  if (!bingoStatus.hidden && bingoStatus.message !== before) void bingoStatus.updateComplete.then(() => bingoStatus.scrollIntoView({ block: 'nearest' }));
+  const disabled = parseWinners(bingoWinners.value) === null || !bingoConfirmable(bingoModal);
+  if (bingoDialog.actions[1].disabled !== disabled) bingoDialog.actions = bingoActions(disabled);
+}
 const tongoControl = required('tongo-control', HTMLElement);
 const tongoError = required('tongo-error', HTMLElement);
 const lotPanel = required('line-lot', HTMLElement);
@@ -183,7 +239,13 @@ const lotPanel = required('line-lot', HTMLElement);
 const presentLot = (snapshot) => {
   try { Promise.resolve(desktop.presentLineLot?.(snapshot)).catch(() => {}); } catch { /* presentation is not lot state */ }
 };
-const lotController = createLineLotController(desktop, { render: (state) => { lotPanel.state = { ...state, message: operatorMessage(state.message) }; } }, { onCommitted: presentLot });
+// A settled lot read may complete the Line evidence a Bingo needs, so it repaints Bingo too.
+const lotController = createLineLotController(desktop, {
+  render: (state) => {
+    lotPanel.state = { ...state, message: operatorMessage(state.message) };
+    paintBingo();
+  },
+}, { onCommitted: presentLot });
 const lotAward = () => {
   const award = lineState.mode === 'declared' && !lineMismatch() ? lineState.award : null;
   return award && activeEventId !== null && award.eventId === activeEventId && award.award?.lotResolution !== 'not_required' ? award : null;
@@ -233,6 +295,7 @@ function applyLocks() {
   paintLineActions();
   paintLegacy();
   syncLot();
+  paintBingo();
 }
 
 openPublic.addEventListener('click', () => window.desktop.openPublic());
@@ -252,7 +315,13 @@ controls.addEventListener('mode-change', () => { board.readonly = controls.mode 
 const controller = createOperatorController(desktop, {
   bind: ({ manual, digital, reload: reloadEvent }) => {
     // Reload only reads; after a failed post-celebration refresh it is also the explicit recovery.
-    const reload = () => { reloadEvent(); void rereadLine(); void bingo.reread(); line.retryRefresh(); void lotController.resync(); };
+    const reload = () => {
+      reloadEvent();
+      void rereadLine();
+      void bingo.reread();
+      line.retryRefresh();
+      void lotController.resync();
+    };
     // The board only requests a call; it shows the number called once the acknowledged snapshot arrives.
     board.addEventListener('number-select', (event) => {
       if (selecting || activating || tongoBusy || drawingBlocked() || controls.mode === 'digital') return;
@@ -401,7 +470,58 @@ legacyDialog.addEventListener('confirm', () => {
 });
 lotPanel.addEventListener('line-lot-draw', () => { if (!lotPanel.hidden) void lotController.draw(); });
 lotPanel.addEventListener('line-lot-resync', () => { if (!lotPanel.hidden) void lotController.resync(); });
-window.addEventListener('pagehide', () => { line.dispose(); bingo.dispose(); lotController.dispose(); });
+window.addEventListener('pagehide', () => { closeBingo(); line.dispose(); bingo.dispose(); lotController.dispose(); });
+// Bingo: an uncertain answer is only read again; an open setup resumes; an idle one begins only when everything allows it.
+claimBingo.addEventListener('click', () => {
+  if (claimBingo.disabled || bingoState.pending) return;
+  if (bingoState.mode === 'uncertain') { void bingo.read(); return; }
+  if (bingoState.mode === 'setup') {
+    if (bingoModal === null && ownedSetup()) { bingoModal = { eventId: activeEventId, session: bingoState.session.sessionId, sent: false }; showBingo(); }
+    return;
+  }
+  if (!bingoBeginnable()) return;
+  const own = { eventId: activeEventId, session: null, sent: false };
+  bingoModal = own;
+  void bingo.begin().then(() => {
+    if (bingoModal !== own) return;
+    if (ownedSetup() && own.eventId === activeEventId) { own.session = bingoState.session.sessionId; showBingo(); }
+    else { bingoModal = null; applyLocks(); }
+  });
+});
+function showBingo() {
+  const { session } = bingoState;
+  // A new setup starts at one winner; the same setup, resumed after an unknown answer, keeps what was typed.
+  if (session.sessionId !== bingoTyped) { bingoTyped = session.sessionId; bingoWinners.value = '1'; bingoWinners.error = ''; }
+  bingoPrize.textContent = bingoPrizeSummary(session.bingoPrize);
+  paintBingo();
+  void bingoDialog.show();
+}
+bingoWinners.addEventListener('input', () => {
+  bingoWinners.error = parseWinners(bingoWinners.value) === null ? BINGO_COUNT_ERROR : '';
+  paintBingo();
+});
+// The count is parsed (its input already shows why it is invalid) and every shared lock and the dialog's own setup
+// rechecked here; anything else sends nothing and keeps the dialog open with what was typed while it owns its setup.
+bingoDialog.addEventListener('confirm', () => {
+  const own = bingoModal;
+  const count = parseWinners(bingoWinners.value);
+  if (count === null || !bingoConfirmable(own)) {
+    if (own?.session && !own.sent && ownedSetup(own) && !bingoDialog.shadowRoot.querySelector('dialog').open) void bingoDialog.show();
+    paintBingo();
+    return;
+  }
+  own.sent = true;
+  void bingo.confirm(count).then(() => {
+    if (bingoModal === own) { bingoModal = null; applyLocks(); }
+  });
+});
+// Cancel and Escape cancel only the dialog's own setup, whatever else is locked; a stale dialog cancels nothing.
+bingoDialog.addEventListener('dismiss', () => {
+  const own = bingoModal;
+  bingoModal = null;
+  if (own?.session && !own.sent && ownedSetup(own)) void bingo.cancel();
+  applyLocks();
+});
 claimLine.addEventListener('click', () => { if (!claimLine.disabled) void line.open(); });
 lineDialog.addEventListener('dismiss', () => { lineDialogShown = false; void line.cancel(); });
 lineDialog.addEventListener('confirm', () => { lineDialogShown = false; void line.confirm(lineWinners.value); });
