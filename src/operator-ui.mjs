@@ -23,7 +23,7 @@ import { createManualDrawHandler } from './manual-draw.mjs';
 import { createEventsController, today } from './events-controller.mjs';
 import { applyTheme, createThemeController, DEFAULT_THEME, revealAfter } from './theme-controller.mjs';
 import { operatorMessage, lineAwardSummary, linePrizeSummary, LEGACY_CHECK_ES, LINE_REFRESH_FAILED_ES, PHASE_LABELS_ES, THEME_NAMES_ES,
-  bingoAwardSummary, bingoMessage, bingoPrizeSummary } from './operator-copy.mjs';
+  bingoAwardSummary, bingoMessage, bingoPrizeSummary, BINGO_REFRESH_FAILED_ES } from './operator-copy.mjs';
 import { bindSettings } from './settings-ui.mjs';
 import { bindCueControls } from './cue-ui.mjs';
 import { createLineLotController } from './line-lot-controller.mjs';
@@ -218,12 +218,13 @@ function paintBingo() {
   claimBingo.disabled = state.mode === 'idle' ? !(bingoBeginnable() || (bingoModal !== null && state.pending))
     : state.mode === 'setup' ? !ownedSetup() || selecting || activating || tongoBusy
       : state.mode === 'uncertain' ? !mine || selecting || activating : true;
+  const owed = bingoRef?.refreshState(state.eventId) ?? 'none';
   const presentation = state.mode === 'declared' ? state.award?.presentation?.status : undefined;
   const before = bingoStatus.hidden ? '' : bingoStatus.message;
   bingoStatus.message = !mine ? '' : state.pending ? 'Comprobando el bingo' : bingoMessage(state.error) ?? (state.mode === 'declared' && state.award
-    ? bingoAwardSummary(state.award)
+    ? `${bingoAwardSummary(state.award)}${owed === 'failed' ? ` ${BINGO_REFRESH_FAILED_ES}` : ''}`
     : state.mode === 'setup' && bingoModal === null ? 'Hay una declaración de bingo abierta. Pulsa «Reanudar bingo» para continuar o cancelarla.' : '');
-  bingoStatus.tone = state.error ? 'error' : presentation === 'failed' || presentation === 'interrupted' ? 'warning' : 'info';
+  bingoStatus.tone = state.error ? 'error' : owed === 'failed' || presentation === 'failed' || presentation === 'interrupted' ? 'warning' : 'info';
   bingoStatus.hidden = bingoStatus.message === '';
   // Like the Line's, a new Bingo message must not stay clipped at the bottom of the rail.
   if (!bingoStatus.hidden && bingoStatus.message !== before) void bingoStatus.updateComplete.then(() => bingoStatus.scrollIntoView({ block: 'nearest' }));
@@ -320,6 +321,7 @@ const controller = createOperatorController(desktop, {
       void rereadLine();
       void bingo.reread();
       line.retryRefresh();
+      bingo.retryRefresh();
       void lotController.resync();
     };
     // The board only requests a call; it shows the number called once the acknowledged snapshot arrives.
