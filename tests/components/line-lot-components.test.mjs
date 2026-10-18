@@ -187,4 +187,13 @@ describe('bingo-line-lot', () => {
     await sendKeys({ press: 'Enter' });
     expect(m.events.map((e) => e.type)).to.deep.equal(['line-lot-draw']);
   });
+
+  it('renders no heading without a label and one with it (the two panel instances)', async () => {
+    const plain = await mount(actionable);
+    expect(plain.el.shadowRoot.querySelector('.lot-heading')).to.equal(null);
+    const labelled = await fixture(html`<bingo-line-lot .state=${actionable} label="Lote del bingo"></bingo-line-lot>`);
+    await labelled.updateComplete;
+    expect(labelled.shadowRoot.querySelector('.lot-heading').textContent).to.equal('Lote del bingo');
+    expect(labelled.shadowRoot.querySelector('[aria-label]')).to.equal(null, 'the heading names the panel; no label attribute');
+  });
 });

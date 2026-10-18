@@ -29,8 +29,8 @@ import { bindCueControls } from './cue-ui.mjs';
 import { createLineLotController } from './line-lot-controller.mjs';
 import { createTongoController, tongoPlayable } from './tongo.mjs';
 import { validPrizes } from './prize-format.mjs';
-import { bingoGuards, bingoLocks, createBingoBinding, createFactRefresh, lineResolved, manualAdmitted, pageClear,
-  parseWinners } from './bingo-ui.mjs';
+import { bingoGuards, bingoLocks, bingoLotBusy, bingoLotKey, bingoLotVisible, createBingoBinding, createFactRefresh,
+  lineResolved, manualAdmitted, pageClear, parseWinners } from './bingo-ui.mjs';
 
 function required(id, type) {
   const element = document.getElementById(id);
@@ -325,6 +325,33 @@ function syncLot() {
   // The panel's own display rule would otherwise override the hidden attribute.
   lotPanel.style.display = award === null ? 'none' : '';
 }
+
+// The Bingo lot panel mirrors the Line's, for the declared Bingo's pending or resolved lot. C2a wires rendering,
+// visibility and the read-once sync only: the panel already dispatches its draw and resync intents, but nothing
+// consumes them yet (C2b), so the adapted api stays read-only and `drawLineLot` is left undefined — a C2a draw
+// attempt fails closed inside the shared controller, never reaching the Line's draw channel.
+const bingoLotPanel = required('bingo-lot', HTMLElement);
+const bingoLotController = createLineLotController({ ...desktop, readLineLot: desktop.readBingoLot, drawLineLot: undefined },
+  { render: (state) => { bingoLotPanel.state = { ...state, message: operatorMessage(state.message) }; paintBingo(); } });
+// The page locks the dedicated panel needs: the same shared locks as ordinary drawing (see bingoLotBusy) minus the
+// declared Bingo draw lock, which would otherwise disable the lot draw forever.
+const bingoLotPage = () => ({ selecting, activating, tongoBusy, eventsPending, eventsStale,
+  eventPending: Boolean(gameState?.pending), eventStale: Boolean(gameState?.stale), eventError: Boolean(gameState?.error) });
+let bingoLotSeen = null;
+let bingoLotContext = null;
+// Reads happen only when the celebration of exactly this award completed (user decision 1, the key's completed flag)
+// and only when the key changes; the context itself never reads.
+function syncBingoLot() {
+  const visible = bingoLotVisible(bingoState, activeEventId);
+  const key = bingoLotKey(bingoState);
+  if (key !== bingoLotSeen) { bingoLotController.setContext(null); bingoLotContext = null; }
+  const next = visible ? JSON.stringify({ eventId: activeEventId, busy: bingoLotBusy(bingoLotPage(), bingoState, activeEventId) }) : null;
+  if (next !== bingoLotContext) { bingoLotContext = next; bingoLotController.setContext(visible && { eventId: activeEventId, busy: bingoLotBusy(bingoLotPage(), bingoState, activeEventId) }); }
+  if (key !== bingoLotSeen) { bingoLotSeen = key; if (visible && key?.endsWith('true')) void bingoLotController.start(); }
+  bingoLotPanel.hidden = !visible;
+  // The panel's own display rule would otherwise override the hidden attribute.
+  bingoLotPanel.style.display = visible ? '' : 'none';
+}
 // Bingo's event and fresh phase go first, then its three fresh guards; this never reads.
 function syncBingo() {
   bingoRef?.sync(activeEventId, activeEventId === null ? null : legacyPhase(), bingoGuards(lineState, tongoBusy));
@@ -353,6 +380,7 @@ function applyLocks() {
   paintLineActions();
   paintLegacy();
   syncLot();
+  syncBingoLot();
   paintBingo();
 }
 
