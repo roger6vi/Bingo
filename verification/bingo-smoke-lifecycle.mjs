@@ -16,6 +16,7 @@ export async function runIsolated(ports, body) {
   let app;
   let profile;
   let flightClosure;
+  let stepsClosure;
   let cancelled = false;
   // The flight's single closer: cancellation is decided when the handle arrives, so a late app is closed
   // exactly once and never receives windows, assertions or further actions. The returned promise settles
@@ -52,6 +53,16 @@ export async function runIsolated(ports, body) {
         return failures;
       }
     }
+    if (stepsClosure !== undefined) {
+      // The verify/body continuation waits under the same bound as the launch flight: steps that
+      // settle in time let cleanup proceed, and a hung step leaves the profile in place with the
+      // breach reported, so a live database is never deleted under a running step.
+      const steps = stepsClosure.then(() => undefined, () => undefined);
+      if (!(await settleWithinBound(steps))) {
+        failures.push(new Error(`the run steps did not settle within ${cleanupBoundMs} ms`));
+        return failures;
+      }
+    }
     try {
       await closeOwnedApp();
     } catch (error) {
@@ -72,18 +83,24 @@ export async function runIsolated(ports, body) {
     profile = allocateProfile();
     if (cancelled) return;
     flightClosure = startFlight(launch(profile));
-    const context = {
-      app: await flightClosure,
-      profile,
-      check: () => {
-        if (cancelled) throw new Error('the smoke run was cancelled');
-      },
-    };
-    // A launch that settled after cancellation is already closed: no verification and no body step run.
-    if (context.app !== undefined) {
-      Object.assign(context, await verify(context.app, profile));
-      await body(context);
-    }
+    // Post-launch steps are tracked as their own closure so cleanup waits for them before closing:
+    // a live database is never deleted under a running step. A hung step keeps the profile in place;
+    // the bounded wait reports the breach instead of racing a live run.
+    stepsClosure = (async () => {
+      const context = {
+        app: await flightClosure,
+        profile,
+        check: () => {
+          if (cancelled) throw new Error('the smoke run was cancelled');
+        },
+      };
+      // A launch that settled after cancellation is already closed: no verification and no body step run.
+      if (context.app !== undefined) {
+        Object.assign(context, await verify(context.app, profile));
+        await body(context);
+      }
+    })();
+    await stepsClosure;
   };
   const flight = run();
   // The timeout may reject first; contain the late body rejection so it can never become unhandled.

@@ -205,3 +205,27 @@ test('runIsolated closes the app exactly once and removes the profile once on su
   // precedes the single removal.
   assert.deepEqual(log, ['allocate', 'launch', 'verify', 'body', 'close', 'remove']);
 });
+
+test('a hung body step survives cleanup: the bounded wait reports the breach and keeps the profile', async () => {
+  const log: string[] = [];
+  let hang: () => void = () => {};
+  const hung = new Promise<void>((resolve) => { hang = resolve as never; });
+  const outcome = runIsolated({
+    timeoutMs: 1,
+    cleanupBoundMs: 20,
+    allocateProfile: () => { log.push('allocate'); return 'virtual-profile-8'; },
+    launch: async () => { log.push('launch'); return { name: 'app' }; },
+    verify: async () => { log.push('verify'); },
+    closeApp: async () => { log.push('close'); },
+    removeProfile: () => { log.push('remove'); },
+  }, async () => { log.push('body'); await hung; });
+  outcome.catch(() => {});
+  await assert.rejects(outcome, (error: Error & { cleanupFailures?: Error[] }) => {
+    assert.match(error.message, /timed out/);
+    assert.match(error.cleanupFailures?.[0]?.message ?? '', /the run steps did not settle within 20 ms/);
+    return true;
+  });
+  hang();
+  assert.equal(log.includes('close'), false, 'a live body step is never raced: the app stays open');
+  assert.equal(log.includes('remove'), false, 'a live body step is never raced: the profile survives');
+});
