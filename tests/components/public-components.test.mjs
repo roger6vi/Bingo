@@ -13,12 +13,12 @@ const states = (board) => items(board).map((item) => item.dataset.state);
 it('board is a fixed passive 1\u201390 grid whose cells only change state', async () => {
   const board = await fixture(html`<bingo-number-board></bingo-number-board>`);
   expect(board.loaded).to.equal(false);
-  expect(board.shadowRoot.textContent).to.include('Waiting for draw');
+  expect(board.shadowRoot.textContent).to.include('Esperando el primer número');
   expect(items(board).map((item) => parseInt(item.textContent, 10))).to.deep.equal(Array.from({ length: 90 }, (_, index) => index + 1));
   expect(states(board).every((state) => state === 'uncalled')).to.equal(true);
   board.loaded = true;
   await board.updateComplete;
-  expect(board.shadowRoot.textContent).to.include('No draws yet');
+  expect(board.shadowRoot.textContent).to.include('Sin números cantados');
   board.style.width = '900px';
   const place = () => items(board).map((item) => { const { left, top } = item.getBoundingClientRect(); return [left, top]; });
   const fixed = place();
@@ -69,7 +69,7 @@ it('panel, number, latest announcer and status respond to properties without dup
   await panel.updateComplete;
   expect(panel.shadowRoot.querySelector('h2').textContent).to.equal('Draws');
   const number = panel.querySelector('bingo-number');
-  expect(number.shadowRoot.textContent).to.include('Waiting for draw');
+  expect(number.shadowRoot.textContent).to.include('Esperando el primer número');
   number.value = 7;
   await number.updateComplete;
   expect(number.shadowRoot.querySelector('span').textContent).to.equal('7');
@@ -81,17 +81,17 @@ it('panel, number, latest announcer and status respond to properties without dup
   expect(live.textContent).to.equal('');
   latest.latest = 90;
   await latest.updateComplete;
-  expect(live.textContent).to.equal('Latest draw: 90');
+  expect(live.textContent).to.equal('Última bola: 90');
   const mutations = [];
   const observer = new MutationObserver((records) => mutations.push(...records));
   observer.observe(live, { childList: true, characterData: true, subtree: true });
   latest.latest = 90;
   await latest.updateComplete;
   expect(mutations).to.have.length(0);
-  expect(live.textContent).to.equal('Latest draw: 90');
+  expect(live.textContent).to.equal('Última bola: 90');
   latest.latest = 3;
   await latest.updateComplete;
-  expect(live.textContent).to.equal('Latest draw: 3');
+  expect(live.textContent).to.equal('Última bola: 3');
   expect(mutations).to.have.length(1);
   observer.disconnect();
   expect(latest.shadowRoot.querySelectorAll('[aria-live]')).to.have.length(1);
@@ -181,7 +181,7 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
     const phase = shell.querySelector('#phase-status');
     const status = shell.querySelector('#event-status');
     const error = shell.querySelector('#event-error');
-    expect(phase.message).to.equal('Current phase: waiting for event state');
+    expect(phase.message).to.equal('Fase: esperando el estado del evento');
     expect(document.documentElement.dataset.theme).to.equal(undefined);
     receiveTheme('high-contrast');
     expect(document.documentElement.dataset.theme).to.equal('high-contrast');
@@ -193,12 +193,12 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
     expect(document.documentElement.dataset.theme).to.equal('jules');
     const heading = shell.querySelector('h1');
     const details = shell.querySelector('#event-details');
-    expect([heading.textContent, details.hidden]).to.deep.equal(['Current event', true]);
+    expect([heading.textContent, details.hidden]).to.deep.equal(['Evento actual', true]);
     receiveMeta({ name: 'Verbena', date: '2026-08-15', place: 'Plaza Mayor' });
     expect([heading.textContent, details.textContent, details.hidden]).to.deep.equal(['Verbena', '2026-08-15 · Plaza Mayor', false]);
     for (const invalid of [null, { name: ' ', date: '2026-08-15', place: 'P' }, { name: 'N', date: 'x', place: 'P' }, 'Verbena']) {
       receiveMeta(invalid);
-      expect([heading.textContent, details.hidden]).to.deep.equal(['Current event', true]);
+      expect([heading.textContent, details.hidden]).to.deep.equal(['Evento actual', true]);
     }
     receiveMeta({ name: 'Verbena', date: '2026-08-15', place: 'Plaza Mayor' });
     // Committed prizes: an event switch or unreadable payload never leaves the previous event's prizes.
@@ -214,14 +214,14 @@ it('public wiring keeps a committed phase visible beside separate stale feedback
     receivePrizes(committed);
     receive({ ok: true, snapshot: { calledNumbers: [9], phase: 'line_declared',
       lastTransitionAt: '2026-01-01T00:00:00.000Z' } });
-    expect(phase.message).to.equal('Current phase: Line declared');
+    expect(phase.message).to.equal('Fase: Línea cantada');
     receive({ ok: true, snapshot: { calledNumbers: [9, 10], phase: 'unknown',
       lastTransitionAt: '2026-01-02T00:00:00.000Z' } });
-    expect(phase.message).to.equal('Current phase: Line declared');
-    expect(status.message).to.equal('Last confirmed history may be stale.');
+    expect(phase.message).to.equal('Fase: Línea cantada');
+    expect(status.message).to.equal('La última lectura confirmada puede estar desactualizada.');
     expect(error.hidden).to.equal(false);
     await phase.updateComplete;
-    expect(phase.shadowRoot.querySelector('[role="status"]').textContent).to.equal('Current phase: Line declared');
+    expect(phase.shadowRoot.querySelector('[role="status"]').textContent).to.equal('Fase: Línea cantada');
     await expect(phase).to.be.accessible();
     // Committed first-line award: static text only, never a celebration; invalid or cleared payloads remove it.
     const lineAward = shell.querySelector('#line-award');

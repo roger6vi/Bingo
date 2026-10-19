@@ -34,8 +34,8 @@ const remaining = required('remaining-count', HTMLOutputElement);
 const phaseStatus = required('phase-status', HTMLElement);
 const status = required('event-status', HTMLElement);
 const phaseLabels = {
-  drawing: 'Drawing', checking_line: 'Checking line', line_declared: 'Line declared',
-  checking_bingo: 'Checking bingo', bingo_declared: 'Bingo declared', finished: 'Finished',
+  drawing: 'Cantando números', checking_line: 'Comprobando línea', line_declared: 'Línea cantada',
+  checking_bingo: 'Comprobando bingo', bingo_declared: 'Bingo cantado', finished: 'Partida terminada',
 };
 const eventError = required('event-error', HTMLElement);
 const eventName = required('event-name', HTMLHeadingElement);
@@ -45,7 +45,7 @@ const prizes = required('prizes', HTMLElement);
 // An unreadable or invalid event description falls back to the generic heading, never a stale one.
 const unsubscribeMeta = bridges.meta.subscribe((meta) => {
   const valid = validEventMeta(meta);
-  eventName.textContent = valid ? meta.name : 'Current event';
+  eventName.textContent = valid ? meta.name : 'Evento actual';
   eventDetails.textContent = valid ? `${meta.date} · ${meta.place}` : '';
   eventDetails.hidden = !valid;
 });
@@ -106,16 +106,16 @@ const controller = createPublicController(bridges.event, {
     latest.latest = state.latest;
     latest.loaded = state.loaded;
     latestNumber.value = state.latest;
-    latestNumber.emptyLabel = state.loaded ? 'No draws yet' : 'Waiting for draw';
+    latestNumber.emptyLabel = state.loaded ? 'Sin números cantados' : 'Esperando el primer número';
     history.calledNumbers = state.calledNumbers;
     history.loaded = state.loaded;
     count.value = String(state.count);
     remaining.value = String(state.remaining);
-    phaseStatus.message = state.phase === null ? 'Current phase: waiting for event state'
-      : `Current phase: ${phaseLabels[state.phase]}`;
+    phaseStatus.message = state.phase === null ? 'Fase: esperando el estado del evento'
+      : `Fase: ${phaseLabels[state.phase]}`;
     phaseStatus.tone = 'info';
-    status.message = state.loaded ? (state.stale ? 'Last confirmed history may be stale.' : 'Event ready')
-      : (state.error ? '' : 'Waiting for event state');
+    status.message = state.loaded ? (state.stale ? 'La última lectura confirmada puede estar desactualizada.' : 'Evento listo')
+      : (state.error ? '' : 'Esperando el estado del evento');
     status.tone = state.stale ? 'warning' : 'info';
     status.hidden = Boolean(state.error && !state.loaded);
     eventError.message = state.error ?? '';

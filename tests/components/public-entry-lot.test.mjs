@@ -230,7 +230,7 @@ it('keeps ordinary declaration, draw, history and explicit celebration behaviour
   expect(document.getElementById('remaining-count').value).to.equal('88');
   expect(document.getElementById('latest-number').value).to.equal(12);
   expect(document.getElementById('called-numbers').calledNumbers).to.deep.equal([5, 12]);
-  expect(document.getElementById('phase-status').message).to.equal('Current phase: Line declared');
+  expect(document.getElementById('phase-status').message).to.equal('Fase: Línea cantada');
   expect(m.receipts).to.deep.equal([]);
   await play(m, 'ordinary');
   expect(celebration().facts).to.equal(text);

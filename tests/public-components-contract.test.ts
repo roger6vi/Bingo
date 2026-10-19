@@ -30,14 +30,14 @@ test('panel, number, latest draw and status expose semantic accessible contracts
   assert.match(panel, /<h2\b/);
   assert.match(panel, /<slot\s*\/?\s*>/);
   const number = source('src/components/bingo-number.mjs');
-  assert.match(number, /Waiting for draw/);
+  assert.match(number, /Esperando el primer número/);
   assert.match(number, /this\.value === null \? this\.emptyLabel : this\.value/);
   assert.match(number, /html`<span\b[^>]*>\$\{this\.value/);
   assert.doesNotMatch(number, /<output\b|role\s*=\s*["']?status\b|aria-live\s*=/i);
   const latest = source('src/components/bingo-latest-draw.mjs');
   assert.equal([...latest.matchAll(/aria-live="polite"/g)].length, 1);
   assert.match(latest, /changed\.has\('latest'\) && this\.latest !== null && this\.latest !== changed\.get\('latest'\)/);
-  assert.match(latest, /this\.announcement = `Latest draw: \$\{this\.latest\}`/);
+  assert.match(latest, /this\.announcement = `Última bola: \$\{this\.latest\}`/);
   assert.equal([...latest.matchAll(/this\.announcement\s*=/g)].length, 2, 'initial empty value and distinct latest update only');
   assert.match(latest, /<slot>/);
   assert.doesNotMatch(latest, /calledNumbers|history|<ol\b/);
@@ -82,11 +82,11 @@ test('public markup composes event identity, the fixed board and latest ball wit
   for (const name of names) assert.match(page, new RegExp(`<bingo-${name}\\b`));
   assert.equal([...page.matchAll(/<main\b/g)].length, 1);
   assert.equal([...page.matchAll(/<h1\b/g)].length, 1);
-  assert.match(page, /<h1 id="event-name">Current event<\/h1>/);
+  assert.match(page, /<h1 id="event-name">Evento actual<\/h1>/);
   assert.match(page, /<p id="event-details" class="event-details" hidden><\/p>/);
   for (const id of ['called-numbers', 'called-count', 'remaining-count', 'prizes']) assert.ok(page.includes(`id="${id}"`));
-  assert.match(page, /Called: <output id="called-count" aria-live="off">0<\/output>/);
-  assert.match(page, /Remaining: <output id="remaining-count" aria-live="off">90<\/output>/);
+  assert.match(page, /Cantados: <output id="called-count" aria-live="off">0<\/output>/);
+  assert.match(page, /Restantes: <output id="remaining-count" aria-live="off">90<\/output>/);
   assert.doesNotMatch(page, /aria-live="polite"/);
   assert.match(page, /<bingo-number-board id="called-numbers"><\/bingo-number-board>/);
   assert.match(page, /<bingo-prize-display id="prizes" lang="es"><\/bingo-prize-display>/);
@@ -108,7 +108,7 @@ test('public adapter maps controller fields to all display states without mutati
   assert.match(ui, /status\.hidden = Boolean\(state\.error && !state\.loaded\)/);
   assert.match(ui, /eventError\.hidden = !state\.error/);
   assert.match(ui, /state\.loaded\s*\?/);
-  assert.match(ui, /latestNumber\.emptyLabel = state\.loaded \? 'No draws yet' : 'Waiting for draw'/);
+  assert.match(ui, /latestNumber\.emptyLabel = state\.loaded \? 'Sin números cantados' : 'Esperando el primer número'/);
   assert.match(ui, /history\.calledNumbers = state\.calledNumbers/);
   assert.match(ui, /history\.loaded = state\.loaded/);
   assert.doesNotMatch(ui, /replaceChildren|HTMLOListElement|sample|\.mp4/i);
@@ -119,8 +119,8 @@ test('public adapter maps controller fields to all display states without mutati
 
 test('both windows display six committed phase labels through a separate accessible status', () => {
   const labels = {
-    public: ['Drawing', 'Checking line', 'Line declared', 'Checking bingo', 'Bingo declared', 'Finished'],
-    // The operator is Spanish; its labels live in the operator copy module.
+    // Both windows are Spanish now; the operator keeps its copy in the operator copy module.
+    public: ['Cantando números', 'Comprobando línea', 'Línea cantada', 'Comprobando bingo', 'Bingo cantado', 'Partida terminada'],
     operator: ['Cantando números', 'Comprobando línea', 'Línea cantada', 'Comprobando bingo', 'Bingo cantado', 'Partida terminada'],
   };
   for (const windowName of ['operator', 'public'] as const) {

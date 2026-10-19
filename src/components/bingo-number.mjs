@@ -33,7 +33,7 @@ class BingoNumber extends LitElement {
       overflow-wrap: anywhere;
     }
   `;
-  constructor() { super(); this.value = null; this.emptyLabel = 'Waiting for draw'; this.compact = false; this.latest = false; }
+  constructor() { super(); this.value = null; this.emptyLabel = 'Esperando el primer número'; this.compact = false; this.latest = false; }
   render() { return html`<span class=${this.value === null ? 'empty' : this.compact ? 'drawn compact' : 'drawn'}>${this.value === null ? this.emptyLabel : this.value}</span>`; }
 }
 
