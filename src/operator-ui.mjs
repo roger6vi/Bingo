@@ -23,7 +23,7 @@ import { createManualDrawHandler } from './manual-draw.mjs';
 import { createEventsController, today } from './events-controller.mjs';
 import { applyTheme, createThemeController, DEFAULT_THEME, revealAfter } from './theme-controller.mjs';
 import { operatorMessage, lineAwardSummary, linePrizeSummary, LEGACY_CHECK_ES, LINE_REFRESH_FAILED_ES, BINGO_LEGACY_ES, PHASE_LABELS_ES, THEME_NAMES_ES,
-  bingoAwardSummary, bingoMessage, bingoPrizeSummary, BINGO_REFRESH_FAILED_ES } from './operator-copy.mjs';
+  bingoAwardSummary, bingoMessage, bingoPrizeSummary, BINGO_REFRESH_FAILED_ES, BINGO_UNCERTAIN_LIVE_ES } from './operator-copy.mjs';
 import { bindSettings } from './settings-ui.mjs';
 import { bindCueControls } from './cue-ui.mjs';
 import { createLineLotController } from './line-lot-controller.mjs';
@@ -276,7 +276,13 @@ function paintBingo() {
     bingoLegacyDialogShown = false;
     bingoLegacyDialog.shadowRoot?.querySelector('dialog')?.close();
   }
-  bingoStatus.message = !mine ? '' : state.pending ? 'Comprobando el bingo' : bingoMessage(state.error) ??
+  // A held celebration that may still be running outranks the bare error: the operator has to learn why the page is
+  // locked, not only that a read failed. The branch needs BOTH facts, so an uncertain state whose held award is
+  // already terminal keeps the error wording it had before. The reason is assigned directly because bingoMessage
+  // translates an unregistered Spanish string to the generic fallback rather than leaving it as written.
+  bingoStatus.message = !mine ? '' : state.pending ? 'Comprobando el bingo'
+    : state.mode === 'uncertain' && state.celebrationRunning === true ? BINGO_UNCERTAIN_LIVE_ES
+      : bingoMessage(state.error) ??
     (legacy === 'available' ? BINGO_LEGACY_ES.available
       : legacy === 'uncertain' ? BINGO_LEGACY_ES.uncertain
         : state.mode === 'idle' && state.refresh === 'failed' ? BINGO_LEGACY_ES.refreshFailed

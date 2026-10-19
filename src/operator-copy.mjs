@@ -195,6 +195,12 @@ export function bingoAwardSummary(value) {
 // Shown when a declared Bingo could not be read again; the declaration itself is not repeated.
 export const BINGO_REFRESH_FAILED_ES = 'El bingo está cantado, pero no se pudo releer el evento. Pulsa «Recargar evento» para ver el estado.';
 
+// An uncertain Bingo that still holds a pending or started celebration may still be running main-side while the page
+// shows nothing, so the locks stay on until that celebration is accounted for. Either a push of the held id or a read
+// that confirms it settles the state, and a read that does not confirm it keeps the held award. This reason therefore
+// names the one control the operator has, the explicit read, without promising the page is freed.
+export const BINGO_UNCERTAIN_LIVE_ES = 'No se pudo confirmar el bingo y su celebración puede seguir en marcha. La página sigue bloqueada hasta confirmar el estado: pulsa «Comprobar bingo»; esta comprobación no se hace sola.';
+
 // Recovery of a legacy checking_line: cancelling returns to drawing without declaring any line or award.
 export const LEGACY_CHECK_ES = Object.freeze({
   action: 'Cancelar comprobación de línea',

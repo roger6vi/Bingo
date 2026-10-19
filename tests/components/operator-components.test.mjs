@@ -13,6 +13,7 @@ import '../../src/components/bingo-panel.mjs';
 import '../../src/components/bingo-operator-board.mjs';
 import { sendKeys, setViewport } from '@web/test-runner-commands';
 import { SIMULATOR_MESSAGE } from '../../src/public-bridge.mjs';
+import { BINGO_UNCERTAIN_LIVE_ES } from '../../src/operator-copy.mjs';
 
 const settle = async () => { for (let turn = 0; turn < 4; turn++) await new Promise((resolve) => setTimeout(resolve, 0)); };
 // ResizeObserver delivers on the next rendering frames.
@@ -3611,5 +3612,30 @@ it('a page hidden before the offered control paints never scrolls the disposed B
     window.dispatchEvent(new Event('pagehide'));
     await settle();
     expect(scrolls, 'no paint-time scroll after the pagehide').to.deep.equal([]);
+  } finally { op.cleanup(); }
+});
+
+// An uncertain Bingo that still holds a pending celebration keeps the page locked (S9's blast radius, visible) and
+// says why in the operator's own words. The reason is asserted as the exact exported constant, never a paraphrase,
+// so the page and the copy table can never drift apart.
+it('an uncertain Bingo holding a still-running celebration keeps locking, names the read that checks it, and frees the page when it is confirmed', async () => {
+  const op = await failedBingo({ bingo: { read: async () => ({ ok: true, state: 'declared', award: awardFor('pending', 'f1') }) } });
+  try {
+    const { main } = op;
+    const [status, claim, list] = ['#bingo-status', '#claim-bingo', '#event-list'].map((id) => main.querySelector(id));
+    expect(status.message, 'a pending celebration shown as declared reads its own summary').to.include('todavía no muestra la celebración');
+    expect(list.disabled, 'a running celebration already locks the event list').to.equal(true);
+    op.bingo.push(awardFor('completed', 'f2'));
+    await settle();
+    expect([status.message, status.tone], 'the held celebration keeps locking, so the reason replaces the bare error')
+      .to.deep.equal([BINGO_UNCERTAIN_LIVE_ES, 'error']);
+    expect([claim.ariaLabel, claim.disabled], 'the control the reason names is the one that reads the state')
+      .to.deep.equal(['Comprobar bingo', false]);
+    expect(list.disabled, 'event switching stays locked while the celebration is still held').to.equal(true);
+    op.bingo.read = async () => ({ ok: true, state: 'declared', award: awardFor('completed', 'f1') });
+    claim.click();
+    await settle();
+    expect([claim.ariaLabel, status.message === BINGO_UNCERTAIN_LIVE_ES, list.disabled], 'a confirmed end frees the page')
+      .to.deep.equal(['Bingo cantado', false, false]);
   } finally { op.cleanup(); }
 });
