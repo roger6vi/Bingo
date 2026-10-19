@@ -3085,6 +3085,9 @@ it('a Bingo retry reply converges through the controller: rotation, kept refusal
         expect([status.message.includes(text[shown]), retry.hidden, claim.ariaLabel], name).to.deep.equal([true, true, 'Bingo cantado']);
       } else {
         expect([claim.ariaLabel, claim.disabled, retry.hidden, status.tone], name).to.deep.equal(['Comprobar bingo', false, true, 'error']);
+        // Only a rotation whose held award is still running explains itself with the live-celebration reason. Every
+        // other uncertainty here holds a terminal award (or none), keeps its previous wording, and must not borrow it.
+        expect(status.message === BINGO_UNCERTAIN_LIVE_ES, name).to.equal(name === 'conflicting source');
         // Only the explicit read settles it; a completed answer is shown, never replayed, retried or declared again.
         op.bingo.read = async () => ({ ok: true, state: 'declared', award: awardFor('completed', 'f2') });
         claim.click();
