@@ -493,6 +493,24 @@ test('a declared bingo keeps its draw lock without making the bingo lot busy (de
   assert.equal(bingoLotBusy({ ...lotClearPage, eventsStale: true }, declared, 'e1'), true, 'every other lock still applies');
 });
 
+// The uncertain state the page sees after a conflicting push: no session, no award, only one published boolean.
+test('bingoLocks keeps live true while an uncertain controller still holds a running celebration', () => {
+  const held = (fact?: boolean) => ({ mode: 'uncertain', pending: false, session: null, award: null, eventId: 'e1',
+    legacy: { status: 'none' }, refresh: 'none', ...(fact === undefined ? {} : { celebrationRunning: fact }) });
+  assert.equal(bingoLocks(held(true), 'e1').live, true, 'a held pending or started celebration still locks the page');
+  assert.equal(bingoLocks(held(false), 'e1').live, false, 'a celebration the controller knows ended stops locking');
+  assert.equal(bingoLocks(held(), 'e1').live, false, 'a state without the fact behaves exactly as it did before');
+  assert.equal(bingoLocks(held(false), 'e1').draw, true, 'an uncertain page never unlocks the draw either way');
+});
+
+test('bingoLotBusy stays closed while an uncertain controller holds a running celebration', () => {
+  const held = { mode: 'uncertain', pending: false, session: null, award: null, eventId: 'e1',
+    legacy: { status: 'none' }, refresh: 'none', celebrationRunning: true };
+  assert.equal(bingoLotBusy(lotClearPage, held, 'e1'), true, 'a held celebration is still busy');
+  assert.equal(bingoLotBusy(lotClearPage, { ...held, celebrationRunning: false }, 'e1'), false,
+    'once it ended, the lot reads again');
+});
+
 test('bingoLotKey starts the read only once the celebration completed and repeats nothing for the same key', async () => {
   const at = (status: string) => ({ ...bingoTied('pending'),
     presentation: { id: 'b1', status, ...(status === 'pending' ? { startedAt: null, deadlineAt: null } : { startedAt: 1000, deadlineAt: 5000 }) } });

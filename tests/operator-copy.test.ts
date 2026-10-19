@@ -196,3 +196,16 @@ test('legacy Bingo recovery copy names its actions, returns to Línea cantada an
   assert.doesNotMatch(Object.values(text).join(' '), /Bingo cantado|bingo declarado|ganador|cantar números|seguir cantando/i);
   assert.notDeepEqual(Object.values(text), Object.values(copy.LEGACY_CHECK_ES));
 });
+
+// The reason the page shows when a Bingo is uncertain but still holds a running celebration. Its wording is a
+// contract with the operator: it must say why the page stays locked, name the read that confirms the state, and
+// never promise a release a non-confirming answer cannot give.
+test('the uncertain held-celebration reason explains the lock and names the confirming read without promising a release', () => {
+  assert.equal(typeof copy.BINGO_UNCERTAIN_LIVE_ES, 'string', 'the reason exists');
+  assert.match(copy.BINGO_UNCERTAIN_LIVE_ES, /celebraci[oó]n puede seguir en marcha/, 'it says the celebration may still run');
+  assert.match(copy.BINGO_UNCERTAIN_LIVE_ES, /bloqueada/, 'it says the page stays locked');
+  assert.match(copy.BINGO_UNCERTAIN_LIVE_ES, /«Comprobar bingo»/, 'it names the control that reads the state');
+  assert.doesNotMatch(copy.BINGO_UNCERTAIN_LIVE_ES, /l[ií]nea/i, 'a Bingo reason never sends the operator to the line');
+  assert.doesNotMatch(copy.BINGO_UNCERTAIN_LIVE_ES, /recarga|recargar/i, 'reload cannot clear a held award, so it is never offered');
+  assert.doesNotMatch(copy.BINGO_UNCERTAIN_LIVE_ES, /se libera|desbloquea|ya puedes/i, 'it never promises the page is freed');
+});

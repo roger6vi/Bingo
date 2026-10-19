@@ -134,9 +134,15 @@ export function createBingoController(api, view, { committed = () => {}, recover
   let recovery = null;
   const legacyView = () => (legacy.status === 'available' && legacy.check.eventId === context &&
     phase === 'checking_bingo' ? { status: 'available', check: { ...legacy.check } } : { status: legacy.status, check: null });
+  // Whether a celebration this controller still trusts may be running main-side, even while nothing is shown. The
+  // award itself stays hidden: this is the single fact the page needs to keep locking, and it ends on its own once a
+  // same-id push reports a terminal status, because the held award advances in every mode, uncertain included.
+  const heldRunning = () => anchor !== null &&
+    (anchor.presentation.status === 'pending' || anchor.presentation.status === 'started');
 
   const snapshot = () => ({ mode, pending, error, eventId: context, phase,
     session: session === null ? null : copySession(session), award: award === null ? null : copyAward(award),
+    celebrationRunning: heldRunning(),
     legacy: legacyView(), refresh: recovery === null ? 'none' : recovery.state === 'failed' ? 'failed' : 'pending' });
   function render() {
     if (!disposed) view.render(snapshot());
