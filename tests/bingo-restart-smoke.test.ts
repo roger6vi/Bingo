@@ -5,8 +5,13 @@
 // tests/bingo-smoke-lifecycle.test.ts and the guarded deletion path is covered by the S1 suite in
 // tests/bingo-award-smoke.test.ts; here only this harness's delegation to those paths is proven.
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import test from 'node:test';
 import * as harness from '../verification/bingo-restart-ports.mjs';
+
+// The harness builds the db path with path.join, so the separator is platform-dependent; the pinned
+// contract is the profile-relative db path, never one platform's spelling of it.
+const withForwardSlashes = (call: string) => call.split(path.sep).join('/');
 
 test('importing the restart ports completes and exports seeding, ports and projection', () => {
   assert.equal(typeof harness.seedRestartProfile, 'function');
@@ -21,7 +26,7 @@ test('seeding closes the caller-owned fixture store before returning and snapsho
     scenarios: { award: (dbPath: string) => { calls.push(`seed:${dbPath}`); return { store: { close: () => calls.push('close') }, bingo: {} }; } },
     readRows: (dbPath: string) => { calls.push(`rows:${dbPath}`); return rows; },
   } as never);
-  assert.deepEqual(calls, [
+  assert.deepEqual(calls.map(withForwardSlashes), [
     'seed:/virtual/profile/current-event.sqlite',
     'close',
     'rows:/virtual/profile/current-event.sqlite',
