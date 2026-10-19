@@ -72,7 +72,7 @@ try {
 
   const [publicWindow] = await Promise.all([app.waitForEvent('window'), operator.locator('#open-public button').click()]);
   await publicWindow.waitForFunction(() => document.querySelector('#called-count').value === '2');
-  assert.equal(await publicWindow.locator('#phase-status').evaluate((e) => e.message), 'Current phase: Bingo declared');
+  assert.equal(await publicWindow.locator('#phase-status').evaluate((e) => e.message), 'Fase: Bingo cantado');
   assert.deepEqual(await publicWindow.evaluate(() => ({ audio: document.querySelectorAll('audio').length,
     numbers: document.querySelector('#called-numbers').calledNumbers })), { audio: 0, numbers: [5, 17] });
   step('public window shows every called number and loads no cue audio');
