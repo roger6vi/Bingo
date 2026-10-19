@@ -23,7 +23,7 @@ function deferred() {
 }
 
 type State = { mode: string; pending: boolean; error: string | null; eventId: string | null; phase: string | null;
-  session: any; award: any; legacy: any; refresh: string };
+  session: any; award: any; legacy: any; refresh: string; celebrationRunning: boolean };
 function bingoFixture(overrides: Record<string, unknown> = {}, onRender: (state: State) => void = () => {},
   options?: { committed?: () => unknown; recovered?: () => unknown }) {
   const calls: string[] = [];
@@ -2276,4 +2276,71 @@ test('bingo recovery refresh stays pending and blocks legacy cancel until its ow
     await flush();
     assert.deepEqual([calls, g.last().refresh, g.last().legacy.status], [2, 'none', 'available'], change);
   }
+});
+
+// A conflicting push fails closed to uncertain and keeps the trusted award known internally (src/bingo-controller.mjs
+// :177-186). The page must keep locking while that held celebration may still be running main-side, without ever
+// showing the award it refused to trust. The lock is one published boolean, never the held award itself.
+test('bingo keeps a still-running celebration locking while uncertain, though it shows nothing', async () => {
+  const f = bingoFixture();
+  await declaredAt(f, at('pending'));
+  f.push(at('completed', 'p2'));
+  const state = f.last();
+  assert.deepEqual([state.mode, state.session, state.award], ['uncertain', null, null], 'nothing is shown while uncertain');
+  assert.equal(state.celebrationRunning, true, 'the held pending celebration keeps the page locked');
+  await flush();
+  assert.deepEqual(reads(f), ['read:0'], 'uncertainty never reads, retries or declares by itself');
+});
+
+test('bingo reports no running celebration for an idle or setup page: a push cannot create the held award', async () => {
+  for (const [phase, enter] of [['idle', idleAt], ['setup', setupAt]] as const) {
+    const f = bingoFixture();
+    await enter(f);
+    const seen = f.renders.length;
+    f.push(at('pending'));
+    assert.deepEqual([phase, f.renders.length, f.last().celebrationRunning], [phase, seen, false],
+      `${phase}: nothing was held, so a push is ignored and unlocks nothing`);
+  }
+});
+
+test('bingo drops the uncertain celebration lock by itself when the held id reaches a terminal status', async () => {
+  const f = bingoFixture();
+  await declaredAt(f, at('pending'));
+  f.push(at('completed', 'p2'));
+  assert.equal(f.last().celebrationRunning, true, 'the held pending celebration locks the page');
+  f.push(at('completed'));
+  const state = f.last();
+  assert.deepEqual([state.mode, state.award], ['uncertain', null], 'still uncertain, still showing no award');
+  assert.equal(state.celebrationRunning, false, 'a finished celebration stops locking without another read');
+  await flush();
+  assert.deepEqual(reads(f), ['read:0'], 'the release came from the push, not from a read');
+});
+
+// The reason the page shows names an explicit read as the way out, so both read outcomes are pinned here: a confirmed
+// award settles what no push could, and an answer that does not confirm one keeps locking on purpose.
+test('bingo settles the uncertain celebration lock when a read confirms the held celebration completed', async () => {
+  const f = bingoFixture();
+  await declaredAt(f, at('pending'));
+  f.push(at('completed', 'p2'));                    // a different id fails the read closed and keeps p1 held
+  const held = f.last();
+  assert.deepEqual([held.mode, held.award, held.celebrationRunning], ['uncertain', null, true],
+    'the conflict leaves the page locked while showing nothing');
+  f.reply(declared(at('completed')));
+  await f.controller.start();
+  const state = f.last();
+  assert.deepEqual([state.mode, state.award === null ? null : state.award.presentation.status, state.celebrationRunning],
+    ['declared', 'completed', false], 'the explicit read settles what no push could');
+  await flush();
+  assert.equal(reads(f).length, 2, 'the release came from the operator read, not from a push');
+});
+
+test('bingo keeps the uncertain celebration lock when a read answers none: only a confirmed award settles it', async () => {
+  const f = bingoFixture();
+  await declaredAt(f, at('pending'));
+  f.push(at('completed', 'p2'));
+  f.reply(none);
+  await f.controller.start();
+  const state = f.last();
+  assert.deepEqual([state.mode, state.award, state.celebrationRunning], ['uncertain', null, true],
+    'a none answer never unlocks a celebration still held, so the page keeps locking by design');
 });

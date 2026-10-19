@@ -7,11 +7,12 @@ import { createBingoController } from './bingo-controller.mjs';
 const NOT_NOW = 'The Bingo presentation cannot be started now.';
 const running = (award) => award !== null && (award.presentation.status === 'pending' || award.presentation.status === 'started');
 
-// Live: a Bingo read or action in flight, a setup main may hold (also while uncertain) or a public celebration in
-// progress. Drawing: anything but an idle, read state of the active event with no legacy check or owed refresh, so
-// a declared Bingo never unlocks it, a completed celebration included.
+// Live: a Bingo read or action in flight, a setup main may hold (also while uncertain), a public celebration in
+// progress, or the celebration this controller still trusts while it shows nothing. Uncertain therefore keeps
+// locking instead of releasing the page mid-celebration. Drawing: anything but an idle, read state of the active
+// event with no legacy check or owed refresh, so a declared Bingo never unlocks it, a completed celebration included.
 export function bingoLocks(state, eventId) {
-  const live = state.pending || state.session !== null || running(state.award);
+  const live = state.pending || state.session !== null || running(state.award) || state.celebrationRunning === true;
   return { live, draw: live || state.mode !== 'idle' || state.eventId !== eventId || state.legacy.status !== 'none' ||
     state.refresh !== 'none' };
 }
