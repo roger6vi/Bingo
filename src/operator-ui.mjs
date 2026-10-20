@@ -163,11 +163,28 @@ let legacyDialogShown = false;
 const legacyPhase = () => (gameState?.snapshot && !gameState.stale && gameState.error === null && !eventsStale ? gameState.phase : null);
 function syncLineContext() { lineRef?.setEvent(activeEventId, activeEventId === null ? null : legacyPhase()); }
 // Dispatch-time gate for the cancellation: every lock the page knows, for exactly the check held for the active event.
+// The audited line correction (#29): offered for the declared line of the active event while every page
+// lock is known and idle and no bingo is declared yet; the reason follows the store's own rule (trimmed,
+// 1–200) and the dialog owns its text.
+const lineCorrectable = () => lineEventId() !== null && lineEventId() === activeEventId &&
+  lineState.mode === 'declared' && lineState.award && !lineMismatch() && bingoState.mode !== 'declared' &&
+  !(selecting || activating || tongoBusy || eventsPending || lineState.pending);
+const lineCorrectionReasonValid = () => {
+  const reason = lineCorrectionReason.value;
+  return typeof reason === 'string' && reason.trim() !== '' && reason === reason.trim() && reason.length <= 200;
+};
 const legacyActionable = () => lineState.legacy?.status === 'available' && lineState.legacy.check.eventId === activeEventId &&
   activeEventId !== null && legacyPhase() === 'checking_line' && !lineMismatch() &&
   !(selecting || activating || tongoBusy || eventsPending || lineState.pending || gameState.pending || lineState.mode !== 'idle' ||
     bingoBusy());
 const lineRepeat = required('line-repeat', BingoButton);
+const lineCorrect = required('line-correct', BingoButton);
+const lineCorrectionDialog = required('line-correction-dialog', HTMLElement);
+const lineCorrectionReason = required('line-correction-reason', BingoTextField);
+const lineCorrectionActions = (disabled) => [{ action: 'cancel', label: 'Cancelar', signal: 'dismiss' },
+  { action: 'confirm', label: 'Corregir línea', signal: 'confirm', disabled }];
+lineCorrectionDialog.actions = lineCorrectionActions(true);
+let lineCorrectionOpen = false;
 // The claim buttons keep one short visible label (Línea/Bingo) so the fixed claims grid never wraps or
 // overflows; this map is the accessible action name per state, not the visible text, and the declared
 // claim additionally paints the success variant while the existing guards keep it disabled.
@@ -532,6 +549,20 @@ function paintLineActions() {
     button.hidden = presentation?.status !== status;
     button.disabled = busy;
   }
+  // The correction control (#29): offered while the declared award stands, no bingo is declared yet, and
+  // every lock is idle; a dialog that stopped being valid closes without writing anything.
+  // The correction control (#29): offered while the declared award stands, no bingo is declared yet, and
+  // every lock is idle; a dialog that stopped being valid closes without writing anything.
+  lineCorrect.hidden = !(lineState.mode === 'declared' && lineState.award && !lineMismatch());
+  lineCorrect.disabled = lineCorrect.hidden || busy || !lineCorrectable();
+  if (lineCorrectionOpen && !lineCorrectable()) {
+    lineCorrectionOpen = false;
+    lineCorrectionDialog.shadowRoot?.querySelector('dialog')?.close();
+  }
+  const correctionReady = lineCorrectionOpen && lineCorrectionReasonValid();
+  if (lineCorrectionDialog.actions[1].disabled !== !correctionReady) {
+    lineCorrectionDialog.actions = lineCorrectionActions(!correctionReady);
+  }
 }
 // An available check can be cancelled after confirmation; an uncertain one can only be read again.
 function paintLegacy() {
@@ -600,6 +631,29 @@ const presentationClick = (status, run) => () => {
 };
 lineRetry.addEventListener('click', presentationClick('failed', (id) => line.retry(id)));
 lineRepeat.addEventListener('click', presentationClick('interrupted', (id) => line.repeat(id)));
+// The correction control opens its dialog; the reason field re-gates on every keystroke and the dispatch
+// carries only the event and the reason, never draw data (#29 S5).
+lineCorrect.addEventListener('click', () => {
+  if (lineCorrect.hidden || lineCorrect.disabled || lineState.pending) return;
+  lineCorrectionOpen = true;
+  lineCorrectionReason.value = '';
+  paintLineActions();
+  paintLineStatus();
+  void lineCorrectionDialog.show();
+});
+lineCorrectionReason.addEventListener('input', () => { paintLineActions(); paintLineStatus(); });
+lineCorrectionDialog.addEventListener('confirm', () => {
+  const eventId = activeEventId;
+  const reason = lineCorrectionReason.value;
+  if (!lineCorrectionOpen || !lineCorrectionReasonValid() || !lineCorrectable()) {
+    paintLineActions(); paintLineStatus();
+    return;
+  }
+  lineCorrectionOpen = false;
+  lineCorrectionDialog.shadowRoot?.querySelector('dialog')?.close();
+  void line.correct(eventId, reason).then(() => applyLocks());
+});
+lineCorrectionDialog.addEventListener('dismiss', () => { lineCorrectionOpen = false; paintLineActions(); paintLineStatus(); });
 // The recovery needs two explicit steps: the button only opens the confirmation or rereads; only the dialog's
 // confirmation writes, and the controller revalidates the exact held check when it dispatches.
 lineRecover.addEventListener('click', () => {

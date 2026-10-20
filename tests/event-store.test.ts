@@ -3560,6 +3560,36 @@ test('a genuine v11 database opens and migrates to v12 with the correction evide
   } finally { reopened.close(); }
 });
 
+test('audit replay after restart proves both the original award and its correction, and the line is re-declarable', (t) => {
+  const { path, store, event } = openDrawing(t, { amount: 10, lot: ' Jamón ' });
+  let declared: ReturnType<typeof store.declareLineDirectly>;
+  try {
+    store.update((e) => drawManual(drawManual(e, 7), 42));
+    const baseline = store.loadLineDeclarationBaseline();
+    declared = store.declareLineDirectly(baseline, 2, T1);
+    store.correctLineDeclaration(baseline, 'winning line left by mistake', T2);
+  } finally { store.close(); }
+  const reopened = createEventStore(path);
+  try {
+    assert.deepEqual(reopened.load(), { calledNumbers: [7, 42], phase: 'drawing', lastTransitionAt: T2 });
+    assert.equal(reopened.loadLineAward(), null);
+    withDb(path, (db) => {
+      const row = db.prepare('SELECT event_id, sequence, transitionAt, reason, award FROM line_corrections').get() as
+        Record<string, unknown>;
+      assert.equal(row.event_id, event.id);
+      assert.equal(row.sequence, 2);
+      assert.equal(row.transitionAt, T2);
+      assert.equal(row.reason, 'winning line left by mistake');
+      assert.equal(row.award, JSON.stringify(declared.award));
+    });
+    const again = reopened.loadLineDeclarationBaseline();
+    assert.equal(again.auditSequence, 2);
+    const redeclared = reopened.declareLineDirectly(again, 1, T3);
+    assert.equal(redeclared.award.winnerCount, 1);
+    assert.equal(reopened.load()?.phase, 'line_declared');
+  } finally { reopened.close(); }
+});
+
 test('a genuine v12 database opens and migrates to v13 with the line correction evidence table', (t) => {
   const path = fixture(t);
   createEventStore(path).close();

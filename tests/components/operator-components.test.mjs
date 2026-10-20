@@ -94,6 +94,7 @@ async function loadOperator(options = {}) {
     beginLineSetup: async () => { requests.push('line:begin'); return line.begin(); },
     cancelLineSetup: async (id, eventId) => { requests.push(`line:cancel:${id}:${eventId}`); return line.cancel(); },
     confirmLine: async (id, eventId, count) => { requests.push(`line:confirm:${id}:${eventId}:${count}`); return line.confirm(count); },
+    correctLine: async (eventId, reason) => { requests.push(`line:correct:${eventId}:${reason}`); return line.correctLine ? line.correctLine(eventId, reason) : { ok: false, code: 'not_available', message: 'unexpected' }; },
     retryLinePresentation: async (id) => { requests.push(`line:retry:${id}`); return line.retry(id); },
     repeatLinePresentation: async (id) => { requests.push(`line:repeat:${id}`); return line.repeat(id); },
     readLegacyLineCheck: async () => { reads.legacy++; return legacy.read(); },
@@ -267,7 +268,7 @@ it('operator page is a Spanish three-tab application shell with shared panels an
     expect(page.querySelector(`footer[slot="status"] bingo-status#${id}`)).not.to.equal(null, `${id} in the status bar`);
   }
   for (const id of ['open-public', 'move-public']) expect(page.querySelector(`bingo-button#${id}`)).not.to.equal(null);
-  expect([...page.querySelectorAll('bingo-dialog')].map((dialog) => dialog.id)).to.deep.equal(['unsaved-dialog', 'line-dialog', 'legacy-dialog', 'bingo-dialog', 'bingo-legacy-dialog', 'bingo-correction-dialog']);
+  expect([...page.querySelectorAll('bingo-dialog')].map((dialog) => dialog.id)).to.deep.equal(['unsaved-dialog', 'line-dialog', 'line-correction-dialog', 'legacy-dialog', 'bingo-dialog', 'bingo-legacy-dialog', 'bingo-correction-dialog']);
   // No English operator copy remains in the page.
   const copy = [page.title, page.body.textContent, ...[...page.querySelectorAll('[label],[heading],[message],[title],[aria-label]')]
     .flatMap((element) => ['label', 'heading', 'message', 'title', 'aria-label'].map((name) => element.getAttribute(name) ?? ''))].join(' ');
@@ -3770,5 +3771,75 @@ it('a refused correction shows the translated reason and keeps the award', async
     expect([op.main.querySelector('#bingo-correct').hidden, declared.claim.ariaLabel],
       'the award stands after the refusal').to.deep.equal([false, 'Bingo cantado']);
     expect(c.status.message, 'the operator reads the reason in Spanish').to.include('Tongo');
+  } finally { op.cleanup(); }
+});
+
+// ---- Line correction (#29 T3): the rail offers the correction only for a declared line, the dialog
+// ---- validates the reason with the store's own rule, and the outcomes revert the rail to the drawing state.
+async function openLineCorrection(op) {
+  const correct = op.main.querySelector('#line-correct');
+  await correct.updateComplete;
+  correct.click();
+  await settle();
+  const dialog = op.main.querySelector('#line-correction-dialog');
+  await dialog.updateComplete;
+  const field = op.main.querySelector('#line-correction-reason');
+  const input = field.shadowRoot.querySelector('input');
+  const typed = (text) => { input.value = text; input.dispatchEvent(new Event('input', { bubbles: true, composed: true })); };
+  return { correct, dialog, field, type: typed, status: op.main.querySelector('#line-status'),
+    action: (name) => dialog.shadowRoot.querySelector(`[data-action="${name}"]`), open: () => dialog.shadowRoot.querySelector('dialog').open };
+}
+
+it('the line correction control is offered only for a declared line', async () => {
+  const op = await loadOperator();
+  try {
+    expect(op.main.querySelector('#line-correct').hidden, 'drawing hides the correction').to.equal(true);
+  } finally { op.cleanup(); }
+  const declared = await loadOperator({ line: { read: declaredAs('completed', 'p') } });
+  try {
+    const correct = declared.main.querySelector('#line-correct');
+    await correct.updateComplete;
+    expect([correct.hidden, correct.disabled], 'declared offers the correction').to.deep.equal([false, false]);
+  } finally { declared.cleanup(); }
+});
+
+it('the line correction dialog validates the reason with the store rule before enabling the confirm', async () => {
+  const op = await loadOperator({ line: { read: declaredAs('completed', 'p') } });
+  try {
+    const c = await openLineCorrection(op);
+    expect(c.open(), 'the dialog opens').to.equal(true);
+    expect(c.action('confirm').disabled, 'empty reason refuses').to.equal(true);
+    c.type('  bola equivocada  ');
+    await c.dialog.updateComplete;
+    expect(c.action('confirm').disabled, 'untrimmed reason refuses').to.equal(true);
+    c.type('x'.repeat(201));
+    await c.dialog.updateComplete;
+    expect(c.action('confirm').disabled, 'a 201-char reason refuses').to.equal(true);
+    c.type('Bola equivocada');
+    await c.dialog.updateComplete;
+    expect(c.action('confirm').disabled, 'a valid reason enables the confirm').to.equal(false);
+  } finally { op.cleanup(); }
+});
+
+it('the confirmed line correction commits, closes the dialog and reverts the rail to the drawing state', async () => {
+  const calls = [];
+  let reading = declaredAs('completed', 'p');
+  const op = await loadOperator({ line: { read: () => reading(), correctLine: async (eventId, reason) => {
+    calls.push({ eventId, reason });
+    reading = async () => ({ ok: true, state: 'none' });
+    return { ok: true, state: 'corrected' };
+  } } });
+  try {
+    const c = await openLineCorrection(op);
+    expect(c.open(), 'the correction dialog opened on click').to.equal(true);
+    c.type('Bola equivocada');
+    await c.dialog.updateComplete;
+    c.action('confirm').click();
+    await settle();
+    await settle();
+    expect(calls, 'the dispatch carries only the event and the reason').to.deep.equal([
+      { eventId: 'a', reason: 'Bola equivocada' }]);
+    expect(c.open(), 'the dialog closes on the committed correction').to.equal(false);
+    expect(op.main.querySelector('#line-correct').hidden, 'the control hides without a declared line').to.equal(true);
   } finally { op.cleanup(); }
 });

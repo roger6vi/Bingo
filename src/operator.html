@@ -141,6 +141,7 @@
                 <bingo-button id="line-retry" hidden>Reintentar celebración</bingo-button>
                 <bingo-button id="line-repeat" hidden>Repetir celebración completa</bingo-button>
                 <bingo-button id="line-recover" hidden>Cancelar comprobación de línea</bingo-button>
+                <bingo-button id="line-correct" hidden>Corregir línea</bingo-button>
                 <bingo-button id="bingo-retry" hidden>Reintentar celebración</bingo-button>
                 <bingo-button id="bingo-repeat" hidden>Repetir celebración completa</bingo-button>
                 <bingo-button id="bingo-recover" hidden>Cancelar comprobación de bingo</bingo-button>
@@ -169,6 +170,10 @@
           <p>Comprueba la línea con el cartón físico, fuera de esta aplicación. Aquí no se guardan nombres ni cartones.</p>
           <p id="line-prize" class="dialog-note"></p>
           <bingo-text-field id="line-winners" label="Número de ganadores" value="1" hint="Un número entero de 1 o más." autocomplete="off"></bingo-text-field>
+        </bingo-dialog>
+        <bingo-dialog id="line-correction-dialog" label="Corregir la línea">
+          <p>La corrección deja constancia en la auditoría con el motivo escrito. La línea vuelve al estado de espera de cantos y podrá declararse de nuevo tras la validación externa.</p>
+          <bingo-text-field id="line-correction-reason" label="Motivo de la corrección" hint="Describe brevemente por qué se corrige (entre 1 y 200 caracteres, sin espacios sobrantes)." autocomplete="off"></bingo-text-field>
         </bingo-dialog>
         <bingo-dialog id="legacy-dialog" label="Cancelar comprobación de línea"></bingo-dialog>
         <bingo-dialog id="bingo-dialog" label="Declarar el bingo">
