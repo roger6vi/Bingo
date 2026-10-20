@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld('desktop', Object.freeze({
   cancelBingoSetup: (sessionId: string, eventId: string) => ipcRenderer.invoke('bingo:cancel', sessionId, eventId),
   confirmBingo: (sessionId: string, winnerCount: number) =>
     ipcRenderer.invoke('bingo:confirm', sessionId, winnerCount),
+  correctBingo: (eventId: string, reason: string) => ipcRenderer.invoke('bingo:correct', eventId, reason),
   readLegacyBingoCheck: () => ipcRenderer.invoke('bingo:legacy-check:read'),
   cancelLegacyBingoCheck: (eventId: string, auditSequence: number, lastTransitionAt: string) =>
     ipcRenderer.invoke('bingo:legacy-check:cancel', eventId, auditSequence, lastTransitionAt),

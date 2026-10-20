@@ -105,7 +105,7 @@ async function loadOperator(options = {}) {
       bingo.push = callback;
       return () => { bingo.log.push('unsubscribe'); bingo.push = null; };
     },
-    ...Object.fromEntries(['beginBingoSetup', 'cancelBingoSetup', 'confirmBingo', 'readLegacyBingoCheck', 'cancelLegacyBingoCheck',
+    ...Object.fromEntries(['beginBingoSetup', 'cancelBingoSetup', 'confirmBingo', 'correctBingo', 'readLegacyBingoCheck', 'cancelLegacyBingoCheck',
       'retryBingoPresentation', 'repeatBingoPresentation'].map((name) => [name, async (...args) => {
       requests.push(`bingo:${name}:${args.join(':')}`);
       return bingo[name] ? bingo[name](...args) : { ok: false, code: 'not_available', message: 'unexpected' };
@@ -267,7 +267,7 @@ it('operator page is a Spanish three-tab application shell with shared panels an
     expect(page.querySelector(`footer[slot="status"] bingo-status#${id}`)).not.to.equal(null, `${id} in the status bar`);
   }
   for (const id of ['open-public', 'move-public']) expect(page.querySelector(`bingo-button#${id}`)).not.to.equal(null);
-  expect([...page.querySelectorAll('bingo-dialog')].map((dialog) => dialog.id)).to.deep.equal(['unsaved-dialog', 'line-dialog', 'legacy-dialog', 'bingo-dialog', 'bingo-legacy-dialog']);
+  expect([...page.querySelectorAll('bingo-dialog')].map((dialog) => dialog.id)).to.deep.equal(['unsaved-dialog', 'line-dialog', 'legacy-dialog', 'bingo-dialog', 'bingo-legacy-dialog', 'bingo-correction-dialog']);
   // No English operator copy remains in the page.
   const copy = [page.title, page.body.textContent, ...[...page.querySelectorAll('[label],[heading],[message],[title],[aria-label]')]
     .flatMap((element) => ['label', 'heading', 'message', 'title', 'aria-label'].map((name) => element.getAttribute(name) ?? ''))].join(' ');
@@ -3640,5 +3640,135 @@ it('an uncertain Bingo holding a still-running celebration keeps locking, names 
     await settle();
     expect([claim.ariaLabel, status.message === BINGO_UNCERTAIN_LIVE_ES, list.disabled], 'a confirmed end frees the page')
       .to.deep.equal(['Bingo cantado', false, false]);
+  } finally { op.cleanup(); }
+});
+
+// ---- Bingo correction (#33 T3): the rail offers the correction only for a declared bingo, the dialog
+// ---- validates the reason with the store's own rule, and the outcomes drive the rail back to the post-line state.
+
+const loadCorrection = (options = {}) => loadBingo({ ...options, bingo: {
+  correctBingo: async (eventId, reason) => ({ ok: true, state: 'corrected' }), ...options.bingo } });
+
+async function openCorrection(op) {
+  const correct = op.main.querySelector('#bingo-correct');
+  await correct.updateComplete;
+  correct.click();
+  await settle();
+  const dialog = op.main.querySelector('#bingo-correction-dialog');
+  await dialog.updateComplete;
+  const field = op.main.querySelector('#bingo-correction-reason');
+  const input = field.shadowRoot.querySelector('input');
+  const typed = (text) => { input.value = text; input.dispatchEvent(new Event('input', { bubbles: true, composed: true })); };
+  return { correct, dialog, field, type: typed, status: op.main.querySelector('#bingo-status'),
+    action: (name) => dialog.shadowRoot.querySelector(`[data-action="${name}"]`), open: () => dialog.shadowRoot.querySelector('dialog').open };
+}
+
+it('the correction control is offered only for a declared bingo', async () => {
+  const op = await loadCorrection();
+  try {
+    const declared = await openBingo(op);
+    expect(op.main.querySelector('#bingo-correct').hidden, 'line_declared hides the correction').to.equal(true);
+    declared.type('1');
+    await declared.dialog.updateComplete;
+    declared.action('confirm').click();
+    await settle();
+    await settle();
+    const correct = op.main.querySelector('#bingo-correct');
+    expect([correct.hidden, correct.disabled], 'declared offers the correction').to.deep.equal([false, false]);
+    expect(declared.claim.ariaLabel).to.equal('Bingo cantado');
+  } finally { op.cleanup(); }
+});
+
+it('the correction dialog validates the reason with the store rule before enabling the confirm', async () => {
+  const op = await loadCorrection();
+  try {
+    const declared = await openBingo(op);
+    declared.type('1');
+    await declared.dialog.updateComplete;
+    declared.action('confirm').click();
+    await settle();
+    await settle();
+    const c = await openCorrection(op);
+    expect(c.open(), 'the dialog opens').to.equal(true);
+    expect(c.action('confirm').disabled, 'empty reason refuses').to.equal(true);
+    c.type('  bola equivocada  ');
+    await c.dialog.updateComplete;
+    expect(c.action('confirm').disabled, 'untrimmed reason refuses').to.equal(true);
+    c.type('x'.repeat(201));
+    await c.dialog.updateComplete;
+    expect(c.action('confirm').disabled, 'a 201-char reason refuses').to.equal(true);
+    c.type('Bola equivocada');
+    await c.dialog.updateComplete;
+    expect(c.action('confirm').disabled, 'a valid reason enables the confirm').to.equal(false);
+  } finally { op.cleanup(); }
+});
+
+it('the confirmed correction commits, closes the dialog and reverts the rail to the post-line state', async () => {
+  const calls = [];
+  const op = await loadCorrection({ bingo: { correctBingo: async (eventId, reason) => {
+    calls.push({ eventId, reason });
+    return { ok: true, state: 'corrected' };
+  } } });
+  try {
+    const declared = await openBingo(op);
+    declared.type('1');
+    await declared.dialog.updateComplete;
+    declared.action('confirm').click();
+    await settle();
+    await settle();
+    const c = await openCorrection(op);
+    expect(c.open(), 'DIAGNOSTIC: the correction dialog opened on click').to.equal(true);
+    c.type('Bola equivocada');
+    await c.dialog.updateComplete;
+    c.action('confirm').click();
+    await settle();
+    await settle();
+    expect(calls, 'the dispatch carries only the event and the reason').to.deep.equal([
+      { eventId: 'a', reason: 'Bola equivocada' }]);
+    expect(c.open(), 'the dialog closes on the committed correction').to.equal(false);
+    expect(op.main.querySelector('#bingo-correct').hidden, 'the control hides without a declared bingo').to.equal(true);
+  } finally { op.cleanup(); }
+});
+
+it('a correction that did not commit keeps the declared award on the rail', async () => {
+  const op = await loadCorrection({ bingo: { correctBingo: async () => ({ ok: true, state: 'declared', award: bingoAward(1) }) } });
+  try {
+    const declared = await openBingo(op);
+    declared.type('1');
+    await declared.dialog.updateComplete;
+    declared.action('confirm').click();
+    await settle();
+    await settle();
+    const c = await openCorrection(op);
+    c.type('Duda del operador');
+    await c.dialog.updateComplete;
+    c.action('confirm').click();
+    await settle();
+    await settle();
+    expect(c.open(), 'the dialog closes either way').to.equal(false);
+    expect([op.main.querySelector('#bingo-correct').hidden, declared.claim.ariaLabel],
+      'the award stands and the control stays').to.deep.equal([false, 'Bingo cantado']);
+  } finally { op.cleanup(); }
+});
+
+it('a refused correction shows the translated reason and keeps the award', async () => {
+  const op = await loadCorrection({ bingo: { correctBingo: async () =>
+    ({ ok: false, code: 'tongo_active', message: 'Wait for Tongo to finish, then try again.' }) } });
+  try {
+    const declared = await openBingo(op);
+    declared.type('1');
+    await declared.dialog.updateComplete;
+    declared.action('confirm').click();
+    await settle();
+    await settle();
+    const c = await openCorrection(op);
+    c.type('Bola equivocada');
+    await c.dialog.updateComplete;
+    c.action('confirm').click();
+    await settle();
+    await settle();
+    expect([op.main.querySelector('#bingo-correct').hidden, declared.claim.ariaLabel],
+      'the award stands after the refusal').to.deep.equal([false, 'Bingo cantado']);
+    expect(c.status.message, 'the operator reads the reason in Spanish').to.include('Tongo');
   } finally { op.cleanup(); }
 });
