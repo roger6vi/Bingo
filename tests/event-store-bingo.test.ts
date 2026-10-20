@@ -617,3 +617,32 @@ test('correction without a committed bingo award is refused, and the generic tra
   assert.throws(() => store.transitionPhase('correct_bingo_declaration', '2025-01-01T00:00:05.000Z'), /correction path/i);
   assert.equal(state(store), before);
 });
+
+// R1-001 regression (#33 review): a legacy generic bingo history — generic declare_bingo followed by a
+// generic correction, zero direct declarations, zero award rows — must stay readable, baseline-eligible
+// and re-declarable across the v12 migration. This is the pre-#33 generic flow #14's compatibility
+// contract preserves; hand-written via raw SQL exactly the way stored histories exist.
+test('a legacy generic bingo history stays readable, baseline-eligible and re-declarable across v12', () => {
+  const path = fixture();
+  const { store, event } = resolvedLine(path);
+  store.close();
+  withDb(path, (db) => {
+    const rows: Array<[number, string, string, string, string]> = [
+      [2, '2025-01-01T00:00:01.500Z', 'begin_bingo_check', 'line_declared', 'checking_bingo'],
+      [3, '2025-01-01T00:00:02.000Z', 'declare_bingo', 'checking_bingo', 'bingo_declared'],
+      [4, '2025-01-01T00:00:02.500Z', 'correct_bingo_declaration', 'bingo_declared', 'line_declared'],
+    ];
+    for (const [sequence, transitionAt, kind, from, to] of rows) {
+      db.prepare(`INSERT INTO phase_audit (event_id, sequence, transitionAt, kind, from_phase, to_phase)
+        VALUES (?, ?, ?, ?, ?, ?)`).run(event.id, sequence, transitionAt, kind, from, to);
+    }
+    db.prepare("UPDATE events SET phase = 'line_declared', lastTransitionAt = '2025-01-01T00:00:02.500Z' WHERE id = ?")
+      .run(event.id);
+  });
+  const reopened = open(path);
+  assert.equal(reopened.load().phase, 'line_declared');
+  assert.equal(reopened.loadBingoAward(), null);
+  const fresh = reopened.loadBingoDeclarationBaseline();
+  assert.equal(fresh.eventId, event.id);
+  assert.equal(reopened.declareBingoDirectly(fresh, 1, '2025-01-01T00:00:04.000Z').award.winnerCount, 1);
+});

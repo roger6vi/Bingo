@@ -940,17 +940,28 @@ function readBingoAward(db: DatabaseSync, eventId: string, audit: PhaseAuditEntr
 
 // Every load validates the bingo award against the audit: a direct bingo audit entry without exactly its award, or
 // an award elsewhere, is corrupt. Legacy declare_bingo entries never have an award.
+// Direct-award ledger over the audit: each correction pairs one preceding unmatched declare_bingo_directly.
+// A correction with nothing to pair belongs to the legacy generic checking flow (pre-#33 transitionPhase
+// accepted it; migrations preserve those histories) and never enters the direct-award consistency checks.
+function directAwardLedger(audit: PhaseAuditEntry[]): {
+  declared: number; corrected: number; lastSequence: number | null;
+} {
+  let declared = 0;
+  let corrected = 0;
+  let lastSequence: number | null = null;
+  for (const entry of audit) {
+    if (entry.kind === 'declare_bingo_directly') { declared += 1; lastSequence = entry.sequence; }
+    else if (entry.kind === 'correct_bingo_declaration' && declared > corrected) corrected += 1;
+  }
+  return { declared, corrected, lastSequence };
+}
+
 function checkBingoAward(db: DatabaseSync, eventId: string, audit: PhaseAuditEntry[]): void {
   const award = readBingoAward(db, eventId, audit);
-  const direct = audit.filter((entry) => entry.kind === 'declare_bingo_directly');
   const sequence = db.prepare('SELECT audit_sequence FROM bingo_awards WHERE event_id = ?').get(eventId)?.audit_sequence;
-  const corrected = audit.filter((entry) => entry.kind === 'correct_bingo_declaration');
-  // Corrections never outnumber declarations; an absent award row means every declaration was corrected; a
-  // present row must carry the latest declaration's sequence. A crafted legacy state may keep a live row
-  // behind a recorded correction: it still classifies coherently by its row linkage.
-  if (corrected.length > direct.length ||
-      (award === null ? direct.length !== corrected.length
-        : (direct.length === 0 || direct[direct.length - 1].sequence !== sequence))) {
+  const ledger = directAwardLedger(audit);
+  if (award === null ? ledger.declared !== ledger.corrected
+      : (ledger.declared === 0 || ledger.lastSequence !== sequence)) {
     throw new Error('Invalid stored bingo award: audit and award do not match');
   }
 }
@@ -989,10 +1000,10 @@ function readBingoDeclarationBaseline(db: DatabaseSync): BingoDeclarationBaselin
   if (id === null || event === null) throw notEligibleBingo('no current event');
   const audit = replayAudit(db, id);
   const line = readLineAwardRecord(db, id, audit);
+  const ledger = directAwardLedger(audit);
   if (event.phase !== 'line_declared' || event.lastTransitionAt === null || line === null ||
       readBingoAward(db, id, audit) !== null ||
-      audit.filter((entry) => entry.kind === 'declare_bingo_directly').length !==
-      audit.filter((entry) => entry.kind === 'correct_bingo_declaration').length) {
+      ledger.declared !== ledger.corrected) {
     throw notEligibleBingo('needs a line declaration with a persisted award and no bingo');
   }
   if (!isLineDeliveryResolved(line.stored.award, { status: line.stored.presentation.status })) {
