@@ -586,7 +586,10 @@ for (const reason of BAD_REASONS) {
     const baseline = store.loadBingoDeclarationBaseline();
     store.declareBingoDirectly(baseline, 1, BINGO_AT);
     const before = state(store);
-    assert.throws(() => store.correctBingoDeclaration(baseline, reason as unknown as string, BINGO_AT));
+    // A future clock keeps the reason check the ONLY rejection: with at === the declaration head the
+    // timestamp guard would throw first and the assertion would be vacuous (review finding 5c).
+    assert.throws(() => store.correctBingoDeclaration(baseline, reason as unknown as string,
+      '2025-01-01T00:00:04.000Z'));
     assert.equal(state(store), before);
   });
 }

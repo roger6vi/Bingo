@@ -1248,7 +1248,7 @@ export function createEventStore(path: string) {
     db.exec('BEGIN');
     try {
       const observed = db.prepare('PRAGMA user_version').get()?.user_version;
-      if (observed !== 1 && observed !== 2 && observed !== 3 && observed !== 4 && observed !== 5 && observed !== 6 && observed !== 7 && observed !== 8 && observed !== 9 && observed !== 10 && observed !== VERSION) {
+      if (observed !== 1 && observed !== 2 && observed !== 3 && observed !== 4 && observed !== 5 && observed !== 6 && observed !== 7 && observed !== 8 && observed !== 9 && observed !== 10 && observed !== 11 && observed !== VERSION) {
         throw new Error(`Unsupported event schema version: ${String(observed)}`);
       }
       if (observed === VERSION) {

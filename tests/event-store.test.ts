@@ -3397,3 +3397,25 @@ test('loadLegacyLineCheck never reports corrupt phase, audit or award data as no
     assert.throws(() => store.loadLegacyLineCheck(), (e) => codeOf(e) !== NOT_ELIGIBLE && /./.test(String(e)), 'award');
   } finally { store.close(); }
 });
+
+// Review finding (slice 1 verifier): the outer observed-version gate must keep admitting every version the
+// ladder can migrate from. A genuine v11 database — current tables minus the v12 evidence objects — opens,
+// migrates to v12, and gains bingo_corrections with its guards.
+test('a genuine v11 database opens and migrates to v12 with the correction evidence table', (t) => {
+  const path = fixture(t);
+  createEventStore(path).close();
+  withDb(path, (db) => {
+    db.exec('DROP TABLE bingo_corrections');
+    db.exec('PRAGMA user_version = 11');
+  });
+  const reopened = createEventStore(path);
+  try {
+    withDb(path, (db) => {
+      assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, EVENT_SCHEMA_VERSION);
+      assert.equal(db.prepare("SELECT count(*) AS n FROM sqlite_schema WHERE type = 'table' AND name = 'bingo_corrections'").get()?.n, 1);
+      for (const name of ['bingo_corrections_no_update', 'bingo_corrections_no_delete']) {
+        assert.equal(db.prepare("SELECT count(*) AS n FROM sqlite_schema WHERE type = 'trigger' AND name = ?").get(name)?.n, 1, name);
+      }
+    });
+  } finally { reopened.close(); }
+});
