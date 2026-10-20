@@ -1,13 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import type { EventSnapshot } from './event-core';
 import type { GamePhase } from './game-phase';
-import type { LegacyLineCheck, LineDeclarationBaseline, StoredLineAward } from './event-store';
+import type { LegacyLineCheck, LineCorrection, LineDeclarationBaseline, StoredLineAward } from './event-store';
 
 export const LINE_CHANNELS = Object.freeze({
   begin: 'line:begin',
   read: 'line:read',
   cancel: 'line:cancel',
   confirm: 'line:confirm',
+  correct: 'line:correct',
   retryPresentation: 'line:retry-presentation',
   repeatPresentation: 'line:repeat-presentation',
   readLegacyCheck: 'line:legacy-check:read',
@@ -28,6 +29,7 @@ export type LineResult =
   | { ok: true; session: LineSetupView }
   | { ok: true; state: 'setup'; session: LineSetupView }
   | { ok: true; state: 'declared'; award: StoredLineAward }
+  | { ok: true; state: 'corrected' }
   | { ok: true; state: 'none' }
   | { ok: true; state: 'legacy_check'; check: LegacyLineCheck }
   | { ok: true; state: 'recovered' }
@@ -43,6 +45,8 @@ type LineStore = {
   loadLineAward(): StoredLineAward | null;
   loadLineDeclarationBaseline(): LineDeclarationBaseline;
   declareLineDirectly(expected: unknown, winnerCount: unknown, transitionAt: unknown): StoredLineAward;
+  loadLineCorrectionBaseline(): LineDeclarationBaseline;
+  correctLineDeclaration(expected: unknown, reason: unknown, at: unknown): LineCorrection;
   loadLegacyLineCheck(): LegacyLineCheck;
   cancelLegacyLineCheck(expected: unknown, transitionAt: unknown): unknown;
   confirmLegacyLineCancel(expected: unknown, transitionAt: unknown): 'recovered' | 'unchanged' | 'stale';
@@ -57,6 +61,8 @@ type Ports = {
   publish?(snapshot: PhaseSnapshot): void;
   // Called once per committed award, after publish; the owner starts the public celebration. Never undoes it.
   committed?(award: StoredLineAward): void;
+  // Called once per committed correction: refresh both windows without any celebration; best effort.
+  corrected?(): void;
   // Manual presentation steps (they throw on a refusal) and whether one is already running.
   retry?(id: string): void;
   repeat?(id: string): void;
@@ -178,6 +184,48 @@ export function registerLineIpc(registrar: Registrar, store: LineStore, ports: P
       return failure('storage_failure',
         'Could not declare the line. Reopen the setup and check the state before trying again.');
     } finally { confirming = false; }
+  });
+
+  // Audited line correction (#29): the committed identity is derived in main from the store itself; the
+  // renderer only names the event and the constrained reason. An uncertain write resolves by re-reading
+  // the committed award — still present means the correction did not commit; absent means it did.
+  const resolveCorrection = (): LineResult => {
+    try {
+      const standing = store.loadLineAward();
+      if (standing !== null) return { ok: true, state: 'declared', award: awardCopy(standing) };
+    } catch { return failure('storage_failure', 'Could not read the first-line state. Try again.'); }
+    return { ok: true, state: 'corrected' };
+  };
+  const notCorrectable = () => failure('not_available', 'No committed line is available to correct.');
+  handle(LINE_CHANNELS.correct, (_event, ...args) => {
+    const [id, reason] = args;
+    if (args.length !== 2 || !text(id) || typeof reason !== 'string' ||
+        reason.length === 0 || reason.length > 200 || reason !== reason.trim()) return invalid();
+    if (ports.tongoPlaying?.()) return tongoActive();
+    if (ports.busy?.()) return failure('presentation_busy', 'Wait for the line celebration to finish first.');
+    let expected: LineDeclarationBaseline;
+    let award: StoredLineAward | null;
+    let head: string;
+    try {
+      expected = store.loadLineCorrectionBaseline();
+      award = store.loadLineAward();
+      const current = store.load();
+      if (current === null || current.lastTransitionAt === null) return notCorrectable();
+      head = current.lastTransitionAt;
+    } catch { return notCorrectable(); }
+    if (award === null || award.eventId !== id) return stale();
+    let at: string;
+    try {
+      const now = ports.now().getTime();
+      const declare = Date.parse(head);
+      if (!Number.isFinite(now) || !Number.isFinite(declare)) throw new Error('Invalid clock');
+      at = new Date(now <= declare ? declare + 1 : now).toISOString();
+    } catch { return failure('storage_failure', 'Could not read the clock. Try again.'); }
+    try { store.correctLineDeclaration(expected, reason, at); }
+    catch { return resolveCorrection(); }
+    try { ports.corrected?.(); }
+    catch { /* A notification failure cannot undo a durable correction. */ }
+    return { ok: true, state: 'corrected' };
   });
 
   // Manual retry/repeat of the current award's presentation. The coordinator owns the transition; main only maps
