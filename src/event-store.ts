@@ -14,7 +14,7 @@ import { MAX_PRIZE_AMOUNT, MAX_PRIZE_LOT, NO_PRIZES, normalizePrizes, validAmoun
 // v6 adds prizes, v7 adds first-line awards, v8 adds interrupted presentations, v9 adds
 // numbered lot provenance, v10 adds direct Bingo awards and v11 gives them the same numbered lot provenance. Keep each
 // historical definition and migration step independent.
-const VERSION = 11;
+const VERSION = 12;
 export const EVENT_SCHEMA_VERSION = VERSION;
 const phases = ['drawing', 'checking_line', 'line_declared', 'checking_bingo', 'bingo_declared', 'finished'];
 const phaseCheck = `CHECK (phase IN (${phases.map((phase) => `'${phase}'`).join(', ')}))`;
@@ -159,6 +159,23 @@ const awardGuards = (table: string) => [
 ];
 const lineAwardGuards = awardGuards('line_awards');
 const bingoAwardGuards = awardGuards('bingo_awards');
+// Append-only correction evidence (#33): one row per correction, keyed by the audit entry it justifies. The
+// original award payload is snapshotted here because clearing the settled state deletes the award row.
+const bingoCorrectionsTable = `CREATE TABLE bingo_corrections (
+  event_id TEXT NOT NULL REFERENCES events(id),
+  sequence INTEGER NOT NULL,
+  transitionAt TEXT NOT NULL,
+  reason TEXT NOT NULL CHECK (typeof(reason) = 'text' AND reason = trim(reason) AND length(reason) BETWEEN 1 AND 200),
+  award TEXT NOT NULL CHECK (json_valid(award)),
+  PRIMARY KEY (event_id, sequence),
+  FOREIGN KEY (event_id, sequence) REFERENCES phase_audit(event_id, sequence)
+)`;
+const bingoCorrectionsGuards = [
+  `CREATE TRIGGER bingo_corrections_no_update BEFORE UPDATE ON bingo_corrections
+    BEGIN SELECT RAISE(ABORT, 'bingo correction evidence is immutable'); END`,
+  `CREATE TRIGGER bingo_corrections_no_delete BEFORE DELETE ON bingo_corrections
+    BEGIN SELECT RAISE(ABORT, 'bingo correction evidence is immutable'); END`,
+];
 // Optional direct Bingo award, one per event, written with its audit row. Same money, lot, presentation and provenance
 // columns and checks as a first-line award; never any claimant identity. v10 files carry the award without provenance
 // (bingoAwardsTableV10) and migrate to this guarded shape exactly like line_awards did.
@@ -629,6 +646,20 @@ function migrateBingoAwards(db: DatabaseSync): void {
 // v10 → v11: give bingo_awards the same lot provenance as line_awards. Preserve every old field, label only old
 // resolved rows and invent no winner. Install guards after the copy; all DDL, data and user_version are in the
 // caller's transaction.
+function migrateBingoCorrections(db: DatabaseSync): void {
+  // Conditional create: a genuine v11 database lacks the table, while a downgraded-from-fresh fixture may
+  // already carry both table and guards (identical SQL). Validate compares against the same consts.
+  const tablePresent = db.prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'bingo_corrections'")
+    .get() !== undefined;
+  if (!tablePresent) db.exec(bingoCorrectionsTable);
+  for (const guard of bingoCorrectionsGuards) {
+    const name = guard.split(' ')[2];
+    const triggerPresent = db.prepare("SELECT 1 FROM sqlite_schema WHERE type = 'trigger' AND name = ?")
+      .get(name) !== undefined;
+    if (!triggerPresent) db.exec(guard);
+  }
+}
+
 function migrateBingoLotProvenance(db: DatabaseSync): void {
   db.exec('CREATE TEMP TABLE bingo_awards_migration AS SELECT * FROM bingo_awards');
   db.exec('DROP TABLE bingo_awards');
@@ -653,6 +684,21 @@ function validateBingoAwardsSchema(db: DatabaseSync, expected = bingoAwardsTable
       if (typeof stored !== 'string' || normalize(stored) !== normalize(guard)) {
         throw new Error('Invalid event schema: bingo_awards provenance guard missing or malformed');
       }
+    }
+  }
+}
+
+function validateBingoCorrectionsSchema(db: DatabaseSync): void {
+  const normalize = (sql: string) => sql.replace(/[\s"`\[\]]/g, '').toUpperCase();
+  const sql = db.prepare("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'bingo_corrections'").get()?.sql;
+  if (typeof sql !== 'string' || normalize(sql) !== normalize(bingoCorrectionsTable)) {
+    throw new Error('Invalid event schema: bingo_corrections table missing or malformed');
+  }
+  for (const guard of bingoCorrectionsGuards) {
+    const name = guard.split(' ')[2];
+    const stored = db.prepare("SELECT sql FROM sqlite_schema WHERE name = ? AND type = 'trigger'").get(name)?.sql;
+    if (typeof stored !== 'string' || normalize(stored) !== normalize(guard)) {
+      throw new Error('Invalid event schema: bingo_corrections guard missing or malformed');
     }
   }
 }
@@ -894,15 +940,39 @@ function readBingoAward(db: DatabaseSync, eventId: string, audit: PhaseAuditEntr
 
 // Every load validates the bingo award against the audit: a direct bingo audit entry without exactly its award, or
 // an award elsewhere, is corrupt. Legacy declare_bingo entries never have an award.
+// Direct-award ledger over the audit: each correction pairs one preceding unmatched declare_bingo_directly.
+// A correction with nothing to pair belongs to the legacy generic checking flow (pre-#33 transitionPhase
+// accepted it; migrations preserve those histories) and never enters the direct-award consistency checks.
+function directAwardLedger(audit: PhaseAuditEntry[]): {
+  declared: number; corrected: number; lastSequence: number | null;
+} {
+  let declared = 0;
+  let corrected = 0;
+  let lastSequence: number | null = null;
+  for (const entry of audit) {
+    if (entry.kind === 'declare_bingo_directly') { declared += 1; lastSequence = entry.sequence; }
+    else if (entry.kind === 'correct_bingo_declaration' && declared > corrected) corrected += 1;
+  }
+  return { declared, corrected, lastSequence };
+}
+
 function checkBingoAward(db: DatabaseSync, eventId: string, audit: PhaseAuditEntry[]): void {
   const award = readBingoAward(db, eventId, audit);
-  const direct = audit.filter((entry) => entry.kind === 'declare_bingo_directly');
   const sequence = db.prepare('SELECT audit_sequence FROM bingo_awards WHERE event_id = ?').get(eventId)?.audit_sequence;
-  if (direct.length > 1 || (direct.length === 1) !== (award !== null) ||
-      (direct.length === 1 && direct[0].sequence !== sequence)) {
+  const ledger = directAwardLedger(audit);
+  if (award === null ? ledger.declared !== ledger.corrected
+      : (ledger.declared === 0 || ledger.lastSequence !== sequence)) {
     throw new Error('Invalid stored bingo award: audit and award do not match');
   }
 }
+
+export type BingoCorrection = {
+  readonly eventId: string;
+  readonly auditSequence: number;
+  readonly transitionAt: string;
+  readonly reason: string;
+  readonly award: StoredBingoAward['award'];
+};
 
 export type BingoDeclarationBaseline = {
   readonly eventId: string;
@@ -930,8 +1000,10 @@ function readBingoDeclarationBaseline(db: DatabaseSync): BingoDeclarationBaselin
   if (id === null || event === null) throw notEligibleBingo('no current event');
   const audit = replayAudit(db, id);
   const line = readLineAwardRecord(db, id, audit);
+  const ledger = directAwardLedger(audit);
   if (event.phase !== 'line_declared' || event.lastTransitionAt === null || line === null ||
-      readBingoAward(db, id, audit) !== null || audit.some((entry) => entry.kind === 'declare_bingo_directly')) {
+      readBingoAward(db, id, audit) !== null ||
+      ledger.declared !== ledger.corrected) {
     throw notEligibleBingo('needs a line declaration with a persisted award and no bingo');
   }
   if (!isLineDeliveryResolved(line.stored.award, { status: line.stored.presentation.status })) {
@@ -1152,6 +1224,8 @@ export function createEventStore(path: string) {
           candidate.exec(lineAwardGuards.join(';'));
           candidate.exec(bingoAwardsTable);
           candidate.exec(bingoAwardGuards.join(';'));
+          candidate.exec(bingoCorrectionsTable);
+          candidate.exec(bingoCorrectionsGuards.join(';'));
           candidate.exec(`PRAGMA user_version = ${VERSION}; COMMIT`);
         } catch (error) {
           try { candidate.exec('ROLLBACK'); } catch { /* Preserve the original error. */ }
@@ -1174,7 +1248,7 @@ export function createEventStore(path: string) {
     db.exec('BEGIN');
     try {
       const observed = db.prepare('PRAGMA user_version').get()?.user_version;
-      if (observed !== 1 && observed !== 2 && observed !== 3 && observed !== 4 && observed !== 5 && observed !== 6 && observed !== 7 && observed !== 8 && observed !== 9 && observed !== 10 && observed !== VERSION) {
+      if (observed !== 1 && observed !== 2 && observed !== 3 && observed !== 4 && observed !== 5 && observed !== 6 && observed !== 7 && observed !== 8 && observed !== 9 && observed !== 10 && observed !== 11 && observed !== VERSION) {
         throw new Error(`Unsupported event schema version: ${String(observed)}`);
       }
       if (observed === VERSION) {
@@ -1214,7 +1288,7 @@ export function createEventStore(path: string) {
           validateV3(db);
           migrateV3ToV4(db);
           db.exec('PRAGMA user_version = 4');
-        } else if (version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== 10 && version !== VERSION) {
+        } else if (version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== 10 && version !== 11 && version !== VERSION) {
           throw new Error(`Unsupported event schema version: ${String(version)}`);
         }
         if (version === 1 || version === 2 || version === 3 || version === 4) {
@@ -1225,34 +1299,40 @@ export function createEventStore(path: string) {
           migratePrizes(db);
           db.exec('PRAGMA user_version = 6');
         }
-        if (version !== 7 && version !== 8 && version !== 9 && version !== 10 && version !== VERSION) {
+        if (version !== 7 && version !== 8 && version !== 9 && version !== 10 && version !== 11 && version !== VERSION) {
           migrateLineAwards(db);
           db.exec('PRAGMA user_version = 7');
         }
-        if (version !== 8 && version !== 9 && version !== 10 && version !== VERSION) {
+        if (version !== 8 && version !== 9 && version !== 10 && version !== 11 && version !== VERSION) {
           validateLineAwardsSchema(db, lineAwardsTableV7);
           migrateInterruptedPresentation(db);
           db.exec('PRAGMA user_version = 8');
         }
-        if (version !== 9 && version !== 10 && version !== VERSION) {
+        if (version !== 9 && version !== 10 && version !== 11 && version !== VERSION) {
           validateLineAwardsSchema(db, lineAwardsTableV8);
           migrateLotProvenance(db);
           db.exec('PRAGMA user_version = 9');
         }
-        if (version !== 10 && version !== VERSION) {
+        if (version !== 10 && version !== 11 && version !== VERSION) {
           validateLineAwardsSchema(db);
           migrateBingoAwards(db);
           db.exec('PRAGMA user_version = 10');
         }
-        if (version !== VERSION) {
+        if (version !== 11 && version !== VERSION) {
           validateBingoAwardsSchema(db, bingoAwardsTableV10);
           migrateBingoLotProvenance(db);
+          db.exec('PRAGMA user_version = 11');
+        }
+        if (version !== VERSION) {
+          validateBingoAwardsSchema(db);
+          migrateBingoCorrections(db);
           db.exec(`PRAGMA user_version = ${VERSION}`);
         }
         validateV4(db);
         validatePrizesSchema(db);
         validateLineAwardsSchema(db);
         validateBingoAwardsSchema(db);
+        validateBingoCorrectionsSchema(db);
         readEvent(db);
         db.exec('COMMIT');
       }
@@ -1391,6 +1471,57 @@ export function createEventStore(path: string) {
         return id === null ? [] : replayAudit(db, id);
       });
     },
+    // Audited bingo correction (#33): one transaction reverts the committed declaration, deletes the award row
+    // (its lot delivery goes with it), appends the correction audit evidence with the operator's reason and the
+    // original award snapshot, and re-validates the re-declarable baseline before COMMIT. Every rejection leaves
+    // the stored state untouched.
+    correctBingoDeclaration(expected: unknown, reason: unknown, at: unknown): BingoCorrection {
+      const baseline = parseBingoBaseline(expected);
+      if (typeof reason !== 'string' || reason !== reason.trim() || reason.length < 1 || reason.length > 200) {
+        throw new Error('Invalid bingo correction reason');
+      }
+      if (!canonicalTime(at)) throw new Error('Invalid phase transition timestamp');
+      return transaction(() => {
+        const id = readActiveEventId(db);
+        if (id === null) throw new Error('Current event does not exist');
+        const current = readEvent(db);
+        if (current === null || current.phase !== 'bingo_declared' || current.lastTransitionAt === null) {
+          throw new Error('Bingo correction requires a declared bingo');
+        }
+        if (at <= current.lastTransitionAt) throw new Error('Invalid phase transition timestamp');
+        const audit = replayAudit(db, id);
+        const declaration = audit[audit.length - 1];
+        const preDeclaration = audit[baseline.auditSequence - 1];
+        if (declaration === undefined || declaration.kind !== 'declare_bingo_directly' ||
+            preDeclaration === undefined || preDeclaration.transitionAt !== baseline.lastTransitionAt ||
+            baseline.eventId !== id || baseline.auditSequence !== audit.length - 1 ||
+            JSON.stringify([...current.calledNumbers]) !== JSON.stringify([...baseline.calledNumbers])) {
+          throw new Error('Stale bingo correction snapshot');
+        }
+        const record = readBingoAwardRecord(db, id, audit);
+        if (record === null || record.auditSequence !== declaration.sequence) {
+          throw new Error('Stale bingo correction snapshot');
+        }
+        const moved = db.prepare(`UPDATE events SET phase = 'line_declared', lastTransitionAt = ?
+          WHERE id = ? AND phase = 'bingo_declared' AND lastTransitionAt = ?`)
+          .run(at, id, current.lastTransitionAt);
+        if (moved.changes !== 1) throw new Error('Bingo correction changed concurrently');
+        db.prepare(`INSERT INTO phase_audit (event_id, sequence, transitionAt, kind, from_phase, to_phase)
+          VALUES (?, ?, ?, 'correct_bingo_declaration', 'bingo_declared', 'line_declared')`)
+          .run(id, audit.length + 1, at);
+        db.prepare('DELETE FROM bingo_awards WHERE event_id = ?').run(id);
+        db.prepare(`INSERT INTO bingo_corrections (event_id, sequence, transitionAt, reason, award)
+          VALUES (?, ?, ?, ?, ?)`)
+          .run(id, audit.length + 1, at, reason, JSON.stringify(record.stored.award));
+        if (readBingoDeclarationBaseline(db).eventId !== id) {
+          throw new Error('Invalid stored bingo correction: mismatch after write');
+        }
+        return Object.freeze({
+          eventId: id, auditSequence: audit.length + 1, transitionAt: at, reason,
+          award: record.stored.award,
+        });
+      });
+    },
     transitionPhase(intent: PhaseTransitionIntent, transitionAt: string): StoredEvent {
       // Direct declarations need the atomic award path; old ones still replay from the audit.
       if (intent === 'declare_line_directly') {
@@ -1398,6 +1529,9 @@ export function createEventStore(path: string) {
       }
       if (intent === 'declare_bingo_directly') {
         throw new Error('Direct bingo declaration requires the atomic award path');
+      }
+      if (intent === 'correct_bingo_declaration') {
+        throw new Error('Bingo correction requires the audited correction path');
       }
       return transaction(() => {
         const id = readActiveEventId(db);
