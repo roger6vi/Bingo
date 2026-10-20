@@ -144,6 +144,7 @@
                 <bingo-button id="bingo-retry" hidden>Reintentar celebración</bingo-button>
                 <bingo-button id="bingo-repeat" hidden>Repetir celebración completa</bingo-button>
                 <bingo-button id="bingo-recover" hidden>Cancelar comprobación de bingo</bingo-button>
+                <bingo-button id="bingo-correct" hidden>Corregir bingo</bingo-button>
                 <bingo-button id="bingo-refresh" hidden>Reintentar lectura del evento</bingo-button>
               </div>
               <bingo-line-lot id="line-lot" hidden></bingo-line-lot>
@@ -176,6 +177,10 @@
           <bingo-text-field id="bingo-winners" label="Número de ganadores" value="1" hint="Un número entero de 1 o más." autocomplete="off"></bingo-text-field>
         </bingo-dialog>
         <bingo-dialog id="bingo-legacy-dialog" label="Cancelar comprobación de bingo"></bingo-dialog>
+        <bingo-dialog id="bingo-correction-dialog" label="Corregir el bingo">
+          <p>La corrección deja constancia en la auditoría con el motivo escrito. El bingo vuelve al estado posterior a la línea y podrá declararse de nuevo tras la validación externa.</p>
+          <bingo-text-field id="bingo-correction-reason" label="Motivo de la corrección" hint="Describe brevemente por qué se corrige (entre 1 y 200 caracteres, sin espacios sobrantes)." autocomplete="off"></bingo-text-field>
+        </bingo-dialog>
       </bingo-tab-panel>
     </main>
 

@@ -193,11 +193,18 @@ bingoLegacyDialog.textContent = BINGO_LEGACY_ES.dialog;
 let bingoLegacyDialogShown = false;
 const bingoWinners = required('bingo-winners', BingoTextField);
 const bingoPrize = required('bingo-prize', HTMLElement);
+const bingoCorrect = required('bingo-correct', BingoButton);
+const bingoCorrectionDialog = required('bingo-correction-dialog', HTMLElement);
+const bingoCorrectionReason = required('bingo-correction-reason', BingoTextField);
 const BINGO_LABELS = { setup: 'Reanudar bingo', uncertain: 'Comprobar bingo', declared: 'Bingo cantado' };
 const BINGO_COUNT_ERROR = bingoMessage('Choose how many players share the Bingo (a whole number of at least 1).');
 const bingoActions = (disabled) => [{ action: 'cancel', label: 'Cancelar', signal: 'dismiss' },
   { action: 'confirm', label: 'Declarar bingo', signal: 'confirm', disabled }];
 bingoDialog.actions = bingoActions(true);
+const bingoCorrectionActions = (disabled) => [{ action: 'cancel', label: 'Cancelar', signal: 'dismiss' },
+  { action: 'confirm', label: 'Corregir bingo', signal: 'confirm', disabled }];
+bingoCorrectionDialog.actions = bingoCorrectionActions(true);
+let bingoCorrectionOpen = false;
 // The Bingo dialog belongs to one event and, once main opened it, one setup: { eventId, session, sent }. It is reserved
 // before the begin is dispatched, so nothing rendered from its callbacks opens a second one.
 let bingoModal = null;
@@ -213,6 +220,15 @@ const bingoClear = () => pageClear(bingoPage());
 // A retry needs all of that for exactly the failed award shown under `expected`, and no Bingo request of its own yet;
 // the repeat (H4b) reuses the same admission for the interrupted award.
 const bingoRetryReady = (expected) => manualAdmitted(bingoPage(), bingoState, expected);
+// The audited correction (#33): offered for the declared bingo of the active event while every page lock is
+// known and idle; the reason follows the store's own rule (trimmed, 1–200) and the dialog owns its text.
+const bingoCorrectable = () => bingoState.eventId !== null && bingoState.eventId === activeEventId &&
+  bingoState.mode === 'declared' && bingoState.award && !lineMismatch() &&
+  !(selecting || activating || tongoBusy || eventsPending || bingoState.pending) && bingoModal === null;
+const correctionReasonValid = () => {
+  const reason = bingoCorrectionReason.value;
+  return typeof reason === 'string' && reason.trim() !== '' && reason === reason.trim() && reason.length <= 200;
+};
 // Dispatch-time gate for the Bingo cancellation: every lock the page knows, for exactly the check held for the active
 // event, mirroring the Line's legacyActionable. The controller revalidates the identity again when it dispatches.
 const bingoLegacyActionable = () => bingoState.legacy?.status === 'available' &&
@@ -275,6 +291,18 @@ function paintBingo() {
   if (bingoLegacyDialogShown && !bingoLegacyActionable()) {
     bingoLegacyDialogShown = false;
     bingoLegacyDialog.shadowRoot?.querySelector('dialog')?.close();
+  }
+  // The correction control (#33): offered while the declared award stands and every lock is idle; a dialog
+  // that stopped being valid closes without writing anything, like the legacy confirmation above.
+  bingoCorrect.hidden = !(mine && state.mode === 'declared' && state.award);
+  bingoCorrect.disabled = bingoCorrect.hidden || state.pending || !bingoCorrectable();
+  if (bingoCorrectionOpen && !bingoCorrectable()) {
+    bingoCorrectionOpen = false;
+    bingoCorrectionDialog.shadowRoot?.querySelector('dialog')?.close();
+  }
+  const correctionReady = bingoCorrectionOpen && correctionReasonValid();
+  if (bingoCorrectionDialog.actions[1].disabled !== !correctionReady) {
+    bingoCorrectionDialog.actions = bingoCorrectionActions(!correctionReady);
   }
   // A held celebration that may still be running outranks the bare error: the operator has to learn why the page is
   // locked, not only that a read failed. The branch needs BOTH facts, so an uncertain state whose held award is
@@ -678,6 +706,25 @@ bingoDialog.addEventListener('confirm', () => {
     if (bingoModal === own) { bingoModal = null; applyLocks(); }
   });
 });
+// The correction control opens its dialog; the reason field re-gates on every keystroke and the dispatch
+// carries only the event and the reason, never draw data (#33 S5).
+bingoCorrect.addEventListener('click', () => {
+  if (bingoCorrect.hidden || bingoCorrect.disabled || bingoState.pending) return;
+  bingoCorrectionOpen = true;
+  bingoCorrectionReason.value = '';
+  paintBingo();
+  void bingoCorrectionDialog.show();
+});
+bingoCorrectionReason.addEventListener('input', () => paintBingo());
+bingoCorrectionDialog.addEventListener('confirm', () => {
+  const eventId = activeEventId;
+  const reason = bingoCorrectionReason.value;
+  if (!bingoCorrectionOpen || !correctionReasonValid() || !bingoCorrectable()) { paintBingo(); return; }
+  bingoCorrectionOpen = false;
+  bingoCorrectionDialog.shadowRoot?.querySelector('dialog')?.close();
+  void bingo.correct(eventId, reason).then(() => applyLocks());
+});
+bingoCorrectionDialog.addEventListener('dismiss', () => { bingoCorrectionOpen = false; paintBingo(); });
 // Cancel and Escape cancel only the dialog's own setup, whatever else is locked; a stale dialog cancels nothing.
 bingoDialog.addEventListener('dismiss', () => {
   const own = bingoModal;

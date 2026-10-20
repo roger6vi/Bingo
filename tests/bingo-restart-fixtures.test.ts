@@ -6,6 +6,7 @@
 // with the bingo-fixture- prefix and only those directories are removed.
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { after } from 'node:test';
@@ -130,4 +131,34 @@ test('a legacy Bingo award inside checking_bingo refuses recovery without changi
   assert.throws(() => held.store.cancelLegacyBingoCheck(forged, TIMES.legacyCancelAt), refused);
   assert.throws(() => held.store.confirmLegacyBingoCancel(forged, TIMES.legacyCancelAt), refused);
   assert.deepEqual(readRawRows(path), before);
+});
+
+// #33 S9 restart evidence: audit replay proves both the original award and its correction after restart.
+// The corrected history reopens at the post-line settled state with nothing to celebrate, the evidence row
+// carries the operator's reason and the original award snapshot, and the history is re-declarable through
+// the normal external-validation flow.
+test('a corrected bingo history reopens at the post-line state, the evidence row survives, and nothing replays', () => {
+  const path = fixture();
+  const { store, event, bingo } = declaredBingoWithLot(path);
+  const correction = store.correctBingoDeclaration(store.loadBingoCorrectionBaseline(), 'Wrong ball reported',
+    '2025-01-01T00:00:03.000Z');
+  store.close();
+  const reopened = createEventStore(path);
+  try {
+    assert.equal(reopened.load()?.phase, 'line_declared');
+    assert.equal(reopened.loadBingoAward(), null, 'nothing is left to celebrate');
+    assert.equal(reopened.readAudit().at(-1).kind, 'correct_bingo_declaration');
+    const db = new DatabaseSync(path);
+    try {
+      const evidence = db.prepare('SELECT * FROM bingo_corrections').all();
+      assert.equal(evidence.length, 1);
+      assert.equal(evidence[0].reason, 'Wrong ball reported');
+      assert.deepEqual(JSON.parse(evidence[0].award), bingo.award, 'the original award snapshot survives');
+    } finally { db.close(); }
+    const fresh = reopened.loadBingoDeclarationBaseline();
+    assert.equal(fresh.eventId, event.id);
+    const again = reopened.declareBingoDirectly(fresh, 1, '2025-01-01T00:00:04.000Z');
+    assert.equal(again.award.winnerCount, 1);
+    assert.equal(correction.reason, 'Wrong ball reported');
+  } finally { reopened.close(); }
 });

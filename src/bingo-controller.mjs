@@ -611,6 +611,27 @@ export function createBingoController(api, view, { committed = () => {}, recover
     render();
     deliverRecovery();
   }
-  return { start, begin, cancel, confirm, retry, repeat, checkLegacy, cancelLegacy, retryRefresh, setGuards, setEvent,
+  // The audited correction (#33): main derives the identity, the page supplies only the reason, and the three
+  // answers drive the rail — corrected reverts to the post-line state, declared keeps the award standing, and
+  // every refusal lands in the status with the translated copy. Mirrors the confirm's admission and settling.
+  function correct(eventId, reason) {
+    // Own admission (the sibling gates are method-local): the declared mode is authoritative — it arises only
+    // from the committed declaration or its exact push — and the correction must target the controller's event.
+    const allowed = () => mode === 'declared' && context !== null && context === eventId;
+    return fly(() => allowed() && typeof api.correctBingo === 'function',
+      () => api.correctBingo(eventId, reason), (result, stage) => {
+        if (result?.ok === true && result.state === 'corrected') {
+          award = null; anchor = null; session = null; refreshDue = generation; mode = 'idle'; error = null;
+        } else if (result?.ok === true && result.state === 'declared' && result.award) {
+          award = copyAward(result.award); mode = 'declared'; error = null;
+        } else if (knownRefusal(result) && result.code !== 'storage_failure') error = result.message;
+        else {
+          keepSeen(stage);
+          uncertain(result?.ok === false ? refusal(result) : result === null ? connectionError : invalidUpdate);
+        }
+      }, 'dispatch');
+  }
+
+  return { start, begin, cancel, confirm, correct, retry, repeat, checkLegacy, cancelLegacy, retryRefresh, setGuards, setEvent,
     dispose, getState: snapshot };
 }

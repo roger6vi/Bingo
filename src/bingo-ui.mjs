@@ -161,6 +161,7 @@ export function createBingoBinding(api, { render, refresh }) {
     begin: () => controller.begin(),
     cancel: () => controller.cancel(),
     confirm: (count) => controller.confirm(count),
+    correct: (eventId, reason) => controller.correct(eventId, reason),
     // The explicit retry of exactly `id`, admitted by the page's `ready` once more right before the bridge. A call
     // reentering from the pending render joins that flight and restores the outer check.
     retry(id, ready) {

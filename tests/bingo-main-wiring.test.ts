@@ -26,11 +26,11 @@ function harness() {
   const sender = {};
   const frame = { url: 'file:///operator.html' };
   const state = { award: null as ReturnType<typeof award> | null, line: false, tongo: false, busy: false,
-    uncertain: false, resolved: false, loadFail: false, publicFail: false, privateFail: false,
+    uncertain: false, resolved: false, loadFail: false, publicFail: false, privateFail: false, corrected: false,
     hook: undefined as (() => void) | undefined,
     publicSink: undefined as ((snapshot: unknown) => void) | undefined };
   const store = {
-    load: () => { calls.push('phase'); return { calledNumbers: [7], phase: 'bingo_declared', lastTransitionAt: null }; },
+    load: () => { calls.push('phase'); return { calledNumbers: [7], phase: state.corrected ? 'line_declared' : 'bingo_declared', lastTransitionAt: '2026-10-01T09:00:00.000Z' }; },
     loadBingoAward: () => {
       calls.push('award');
       if (state.loadFail) throw new Error('unreadable');
@@ -45,6 +45,14 @@ function harness() {
     confirmBingoDeclaration: () => {
       if (!state.resolved) throw new Error('unknown');
       return { state: 'declared', award: state.award = award() };
+    },
+    loadBingoCorrectionBaseline: base,
+    correctBingoDeclaration: (expected: unknown, reason: string, at: string) => {
+      calls.push('write');
+      state.award = null;
+      state.corrected = true;
+      return { eventId: 'a', auditSequence: 4, transitionAt: at, reason,
+        award: { winnerCount: 1, totalCents: 2000, shareCents: 2000, remainderCents: 0, lot: '', lotResolution: 'not_required' } };
     },
     loadLegacyBingoCheck: legacy,
     cancelLegacyBingoCheck: () => { calls.push('recover'); state.award = null; },
@@ -372,4 +380,25 @@ test('confirmation reaches the existing coordinator once; reads never publish or
   assert.equal(published.length, 1);
   assert.equal(clockReads, afterConfirm);
   assert.equal(h.calls.includes('begin'), false); // No synthetic store transition or extra dispatch.
+});
+
+// #33 slice 2: the committed correction refreshes both windows from the post-line snapshot and never
+// begins playback — the operator rail reverts, the public window learns the award is gone, and the
+// presentation coordinator stays idle (corrections do not celebrate).
+test('committed correction refreshes both windows with the post-line snapshot and never begins playback', () => {
+  const h = harness();
+  const begun: unknown[] = [];
+  h.ports.begin = (value) => { h.calls.push('begin'); begun.push(value); };
+  const published: Array<{ phase: string }> = [];
+  h.state.publicSink = (snapshot) => published.push(snapshot as { phase: string });
+  const id = h.begin();
+  assert.equal(h.invoke(BINGO_CHANNELS.confirm, [id, 1]).state, 'declared');
+  h.calls.length = 0;
+  begun.length = 0;
+  const result = h.invoke(BINGO_CHANNELS.correct, ['a', 'Wrong ball reported']);
+  assert.deepEqual(result, { ok: true, state: 'corrected' });
+  assert.deepEqual(h.calls, ['award', 'phase', 'write', 'phase', 'public', 'award', 'private']);
+  assert.equal(h.privateValues.at(-1), null, 'both windows learn the award is gone');
+  assert.deepEqual(begun, [], 'no playback begins after a correction');
+  assert.equal(published.at(-1)?.phase, 'line_declared', 'the public window reverts to the post-line state');
 });
