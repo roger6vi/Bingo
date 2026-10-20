@@ -4,8 +4,10 @@
 // through the operator's reason dialog (the rail reverts to the drawing state, the public window learns
 // the award is gone without any celebration, and the board re-opens for drawing while the called numbers
 // are preserved), the line declared AGAIN through the normal external-validation flow (a corrected
-// history is re-declarable), and the post-re-declaration state: the board locked again with both drawing
-// modes refusing and the correction control offered once more (a corrected line is re-correctable). The
+// history is re-declarable), and the post-re-declaration state: drawing STAYS OPEN, because a line award
+// does not end the game (src/game-phase.ts assertDrawAllowed allows 'drawing' and 'line_declared'), the
+// next draw commits once its celebration has completed, a preserved call still refuses as a duplicate,
+// and the correction control is offered once more (a corrected line is re-correctable). The
 // operator's reason is stored in the audit with the original award snapshot; the correction never touches
 // the called numbers. Launch ownership, timeout cancellation and guarded cleanup are owned by the shared
 // lifecycle core in bingo-smoke-lifecycle.mjs. Every launch uses the existing temporary-profile guard
@@ -29,6 +31,8 @@ const require = createRequire(import.meta.url);
 const stepTimeout = 15_000;
 const totalTimeout = 240_000;
 const DRAWN = [42, 7, 13];
+const EXTRA_DRAWN = 50; // drawn AFTER the re-declared line: a line award does not end the game
+const ALREADY_CALLED = 13; // a preserved call: drawing it again must refuse as a duplicate
 const PRIZES = { line: { amount: 150, lot: 'Jamón ibérico' }, bingo: { amount: 1500, lot: 'Cesta navideña' } };
 const REASON = 'Line claimed on the wrong card before the physical check finished';
 
@@ -179,15 +183,26 @@ async function smoke() {
           true, 'the re-declared line reaches the public page');
       });
 
-      await step('the board is locked again, both draws refuse and the correction control is offered once more', async () => {
-        await operator.evaluate(() => document.querySelector('#draw-controls').manualDisabled).then((disabled) =>
-          assert.equal(disabled, true, 'manual drawing is locked after the re-declared line'));
-        const refusals = await operator.evaluate((n) =>
-          Promise.all([window.desktop.drawManual(n), window.desktop.drawDigital()])
-            .then((results) => results.map((result) => result.code)), 50);
-        assert.deepEqual(refusals, ['invalid_draw', 'invalid_draw'], 'main refuses both drawing modes after the re-declared line');
-        assert.deepEqual(await operator.evaluate(() => [...document.querySelector('#called-numbers').calledNumbers]), DRAWN,
-          'the called numbers are preserved');
+      await step('drawing stays open after the re-declared line and the correction control is offered once more', async () => {
+        // A LINE award does not end the game: assertDrawAllowed (src/game-phase.ts:41-45) accepts 'drawing' AND
+        // 'line_declared', so the board stays open and the next draw must commit. It is the BINGO that locks it
+        // ('bingo_declared' is not in that set) — which is why the #33 harness asserts a lock there and this one
+        // must assert the opposite. The draw is driven through the board exactly like the earlier drawing step:
+        // the operator paints its rail from its OWN controller render (src/operator-ui.mjs:494-495) and
+        // onPublicStatus carries only the pause hint, so a raw desktop.drawManual() call would commit in the
+        // store while leaving the rail stale — that is not the operator's path and must not be the smoke's.
+        await operator.waitForFunction(() => document.querySelector('#draw-controls').manualDisabled === false);
+        await operator.locator(`#operator-board [data-number="${EXTRA_DRAWN}"]`).click();
+        await operator.waitForFunction((n) => document.querySelector('#called-numbers').calledNumbers.includes(n),
+          EXTRA_DRAWN, { timeout: stepTimeout });
+        assert.deepEqual(await operator.evaluate(() => [...document.querySelector('#called-numbers').calledNumbers]),
+          [...DRAWN, EXTRA_DRAWN], 'the correction preserved the earlier calls and the new draw appends to them');
+        // The preserved history stays authoritative in the store as well as on screen: a number already called
+        // before the correction still refuses as a duplicate (src/event-ipc.ts:77).
+        const duplicate = await operator.evaluate((n) => window.desktop.drawManual(n), ALREADY_CALLED);
+        assert.equal(duplicate.ok, false, 'a preserved call cannot be drawn twice after the correction');
+        assert.equal(duplicate.code, 'duplicate', 'the preserved called numbers stay authoritative after the correction');
+        // A corrected line is re-declarable AND re-correctable: the control comes back with the new award.
         await operator.waitForFunction(() => {
           const control = document.querySelector('#line-correct');
           return control !== null && control.hidden === false;
