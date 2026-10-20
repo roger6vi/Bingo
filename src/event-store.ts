@@ -1471,6 +1471,34 @@ export function createEventStore(path: string) {
         return id === null ? [] : replayAudit(db, id);
       });
     },
+    // Rebuilds the pre-declaration identity for the committed bingo: the exact token correctBingoDeclaration
+    // binds to. Read-only; refuses when no committed declaration stands (also the duplicate and post-finish
+    // rejections, since the audit head or the phase can no longer qualify).
+    loadBingoCorrectionBaseline(): BingoDeclarationBaseline {
+      return readSnapshot(() => {
+        const id = readActiveEventId(db);
+        const event = id === null ? null : readEvent(db);
+        if (id === null || event === null || event.phase !== 'bingo_declared' || event.lastTransitionAt === null) {
+          throw notEligibleBingo('no committed bingo declaration');
+        }
+        const audit = replayAudit(db, id);
+        const head = audit[audit.length - 1];
+        const pre = audit[audit.length - 2];
+        const record = readBingoAwardRecord(db, id, audit);
+        if (head === undefined || head.kind !== 'declare_bingo_directly' || pre === undefined || record === null ||
+            record.auditSequence !== head.sequence) throw notEligibleBingo('no committed bingo declaration');
+        const line = readLineAwardRecord(db, id, audit);
+        if (line === null) throw notEligibleBingo('no committed bingo declaration');
+        const { bingo } = readPrizes(db, id);
+        return Object.freeze({
+          eventId: id, calledNumbers: Object.freeze([...event.calledNumbers]), phase: 'line_declared' as const,
+          lastTransitionAt: pre.transitionAt, auditSequence: audit.length - 1,
+          bingoPrize: Object.freeze({ amount: bingo.amount, lot: bingo.lot }),
+          line: Object.freeze({ auditSequence: line.auditSequence, presentationId: line.stored.presentation.id,
+            lotResolution: line.stored.award.lotResolution as 'not_required' | 'resolved' }),
+        });
+      });
+    },
     // Audited bingo correction (#33): one transaction reverts the committed declaration, deletes the award row
     // (its lot delivery goes with it), appends the correction audit evidence with the operator's reason and the
     // original award snapshot, and re-validates the re-declarable baseline before COMMIT. Every rejection leaves
