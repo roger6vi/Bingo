@@ -1562,10 +1562,36 @@ export function createEventStore(path: string) {
         });
       });
     },
-    // Audited bingo correction (#33): one transaction reverts the committed declaration, deletes the award row
-    // (its lot delivery goes with it), appends the correction audit evidence with the operator's reason and the
-    // original award snapshot, and re-validates the re-declarable baseline before COMMIT. Every rejection leaves
-    // the stored state untouched.
+    // Audited line correction (#29): rebuilds the pre-declaration identity for the committed line, the exact
+    // token correctLineDeclaration accepts: the head is the direct declare; the pre-declare head is the entry
+    // before it (null when the declare is the first audit row). Read-only snapshot, never a write.
+    loadLineCorrectionBaseline(): LineDeclarationBaseline {
+      return readSnapshot(() => {
+        const id = readActiveEventId(db);
+        const event = id === null ? null : readEvent(db);
+        if (id === null || event === null || event.phase !== 'line_declared' || event.lastTransitionAt === null) {
+          throw new Error('Line correction not eligible: no committed line declaration');
+        }
+        const audit = replayAudit(db, id);
+        const head = audit[audit.length - 1];
+        const pre = audit[audit.length - 2];
+        const record = readLineAwardRecord(db, id, audit);
+        if (head === undefined || head.kind !== 'declare_line_directly' || record === null ||
+            record.auditSequence !== head.sequence) {
+          throw new Error('Line correction not eligible: no committed line declaration');
+        }
+        const { line } = readPrizes(db, id);
+        return Object.freeze({
+          eventId: id, calledNumbers: Object.freeze([...event.calledNumbers]), phase: 'drawing' as const,
+          lastTransitionAt: pre === undefined ? null : pre.transitionAt, auditSequence: audit.length - 1,
+          linePrize: Object.freeze({ amount: line.amount, lot: line.lot }),
+        });
+      });
+    },
+    // Audited line correction (#29): one transaction reverts the committed declaration to drawing, deletes
+    // the award row (its lot delivery goes with it), appends the correction audit evidence with the
+    // operator's reason and the original award snapshot, and re-validates the re-declarable baseline before
+    // COMMIT. Every rejection leaves the stored state untouched.
     correctLineDeclaration(expected: unknown, reason: unknown, at: unknown): LineCorrection {
       const baseline = parseBaseline(expected);
       if (typeof reason !== 'string' || reason !== reason.trim() || reason.length < 1 || reason.length > 200) {
@@ -1615,6 +1641,9 @@ export function createEventStore(path: string) {
       });
     },
     correctBingoDeclaration(expected: unknown, reason: unknown, at: unknown): BingoCorrection {
+      // Audited bingo correction (#33): one transaction reverts the committed declaration, deletes the award
+      // row (its lot delivery goes with it), appends the correction audit evidence with the operator's reason
+      // and the original award snapshot, and re-validates the re-declarable baseline before COMMIT.
       const baseline = parseBingoBaseline(expected);
       if (typeof reason !== 'string' || reason !== reason.trim() || reason.length < 1 || reason.length > 200) {
         throw new Error('Invalid bingo correction reason');

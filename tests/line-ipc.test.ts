@@ -78,7 +78,7 @@ function fixture(options: { head?: string | null; now?: () => Date; ports?: Reco
 type Session = { sessionId: string; eventId: string; calledNumbers: number[]; linePrize: { amount: number; lot: string } };
 const begin = (f: ReturnType<typeof fixture>) => (f.invoke(LINE_CHANNELS.begin) as { ok: true; session: Session }).session;
 
-test('registers exactly eight operator-only channels and rejects bad senders before any store access', () => {
+test('registers exactly nine operator-only channels and rejects bad senders before any store access', () => {
   const f = fixture();
   assert.deepEqual([...f.handlers.keys()], Object.values(LINE_CHANNELS));
   for (const channel of Object.values(LINE_CHANNELS)) {
@@ -696,4 +696,98 @@ test('throwing gates and failed dispatch release processing without losing an op
     assert.equal(f.line.active(), false);
     assert.deepEqual(f.invoke(LINE_CHANNELS.read), { ok: true, state: 'none' });
   }
+});
+
+// Audited line correction (#29): main derives the committed-line identity from the store itself; the
+// renderer only names the event and the constrained reason. An uncertain write resolves by re-reading
+// the committed award — still present means the correction did not commit; absent means it did.
+const CORRECT_BASELINE = { eventId: 'a', calledNumbers: [7, 42], phase: 'drawing' as const,
+  lastTransitionAt: null, auditSequence: 0, linePrize: { amount: 10, lot: 'Lote' } };
+const HEAD = '2026-10-01T10:00:00.000Z';
+
+test('line:correct derives the identity in main, passes the reason through and advances the clock past the declare head', () => {
+  const corrections: unknown[][] = [];
+  const corrected: number[] = [];
+  const f = fixture({ storeExtra: {
+    loadLineCorrectionBaseline() {
+      return Object.freeze({ ...CORRECT_BASELINE, calledNumbers: Object.freeze([7, 42]) });
+    },
+    correctLineDeclaration(expected: unknown, reason: unknown, at: unknown) {
+      corrections.push([expected, reason, at]);
+      return { eventId: 'a', auditSequence: 2, transitionAt: at, reason, award: storedAward().award };
+    },
+    loadLineAward() { return storedAward(); },
+    load() { return { calledNumbers: [7, 42], phase: 'line_declared' as const, lastTransitionAt: HEAD }; },
+  }, ports: { corrected: () => { corrected.push(1); } } });
+  const reason = 'The line was declared before the second call reached the board';
+  assert.deepEqual(f.invoke(LINE_CHANNELS.correct, ['a', reason]), { ok: true, state: 'corrected' });
+  assert.deepEqual(corrections, [[CORRECT_BASELINE, reason, '2026-10-01T10:00:00.001Z']]);
+  assert.deepEqual(corrected, [1]);
+});
+
+test('line:correct rejects malformed requests without touching the store', () => {
+  const touched: string[] = [];
+  const f = fixture({ storeExtra: {
+    loadLineCorrectionBaseline() { touched.push('read'); return Object.freeze({ ...CORRECT_BASELINE }); },
+    correctLineDeclaration() { touched.push('write'); },
+  } });
+  for (const args of [['a'], ['a', 'x', 'extra'], [7, 'reason'], ['a', 7], ['a', ' padded '], ['a', ''],
+    ['a', 'x'.repeat(201)]]) {
+    assert.deepEqual(f.invoke(LINE_CHANNELS.correct, args as unknown[]),
+      { ok: false, code: 'invalid_request', message: 'Invalid line request.' });
+  }
+  assert.deepEqual(touched, []);
+});
+
+test('line:correct answers not_available without a committed line and stale for a foreign event', () => {
+  const touched: string[] = [];
+  const f = fixture({ storeExtra: {
+    loadLineCorrectionBaseline() { throw new Error('ineligible'); },
+    correctLineDeclaration() { touched.push('write'); },
+  } });
+  assert.deepEqual(f.invoke(LINE_CHANNELS.correct, ['a', 'reason']),
+    { ok: false, code: 'not_available', message: 'No committed line is available to correct.' });
+  assert.deepEqual(touched, []);
+  const g = fixture({ storeExtra: {
+    loadLineCorrectionBaseline() { return Object.freeze({ ...CORRECT_BASELINE }); },
+    loadLineAward() { return storedAward(); },
+    load() { return { calledNumbers: [7, 42], phase: 'line_declared' as const, lastTransitionAt: HEAD }; },
+  } });
+  assert.deepEqual(g.invoke(LINE_CHANNELS.correct, ['b', 'reason']),
+    { ok: false, code: 'stale_session', message: 'This setup is no longer current. Reopen it.' });
+});
+
+test('line:correct waits for Tongo and for a running presentation before writing', () => {
+  const touched: string[] = [];
+  const f = fixture({ ports: { tongoPlaying: () => true }, storeExtra: {
+    loadLineCorrectionBaseline() { touched.push('read'); return Object.freeze({ ...CORRECT_BASELINE }); },
+  } });
+  assert.deepEqual(f.invoke(LINE_CHANNELS.correct, ['a', 'reason']),
+    { ok: false, code: 'tongo_active', message: 'Wait for Tongo to finish, then try again.' });
+  assert.deepEqual(touched, []);
+  const g = fixture({ ports: { busy: () => true }, storeExtra: {
+    loadLineCorrectionBaseline() { touched.push('read2'); return Object.freeze({ ...CORRECT_BASELINE }); },
+  } });
+  assert.deepEqual(g.invoke(LINE_CHANNELS.correct, ['a', 'reason']),
+    { ok: false, code: 'presentation_busy', message: 'Wait for the line celebration to finish first.' });
+  assert.equal(touched.includes('read2'), false);
+});
+
+test('line:correct resolves an uncertain write by re-reading the committed award', () => {
+  let written = false;
+  const f = fixture({ storeExtra: {
+    loadLineCorrectionBaseline() { return Object.freeze({ ...CORRECT_BASELINE }); },
+    correctLineDeclaration() { written = true; throw new Error('lost acknowledgement'); },
+    loadLineAward() { return written ? null : storedAward(); },
+    load() { return { calledNumbers: [7, 42], phase: 'line_declared' as const, lastTransitionAt: HEAD }; },
+  } });
+  assert.deepEqual(f.invoke(LINE_CHANNELS.correct, ['a', 'reason']), { ok: true, state: 'corrected' });
+  const g = fixture({ storeExtra: {
+    loadLineCorrectionBaseline() { return Object.freeze({ ...CORRECT_BASELINE }); },
+    correctLineDeclaration() { throw new Error('lost acknowledgement'); },
+    loadLineAward() { return storedAward(); },
+    load() { return { calledNumbers: [7, 42], phase: 'line_declared' as const, lastTransitionAt: HEAD }; },
+  } });
+  assert.deepEqual(g.invoke(LINE_CHANNELS.correct, ['a', 'reason']),
+    { ok: true, state: 'declared', award: storedAward() });
 });
