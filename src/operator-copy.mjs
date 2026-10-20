@@ -90,6 +90,8 @@ export const MESSAGES_ES = Object.freeze({
   'This Bingo setup is no longer current. Reopen it.':
     'Esta declaración de bingo ya no está vigente. Vuelve a leer el estado del bingo antes de seguir.',
   'Could not read the Bingo state. Try again.': 'No se pudo leer el estado del bingo. Inténtalo de nuevo.',
+  'No committed Bingo is available to correct.':
+    'No hay un bingo confirmado disponible para corregir. Vuelve a leer el estado del bingo.',
   'Could not confirm legacy Bingo recovery. Check the state later.':
     'No se pudo confirmar el estado de la comprobación de bingo. Pulsa «Releer comprobación de bingo» para leerlo; no se repite sola.',
   'Could not confirm the Bingo declaration. Keep this setup open and check the state later.':

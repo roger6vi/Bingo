@@ -28,10 +28,16 @@ function fixture(ports: Record<string, unknown> = {}) {
   const handlers = new Map<string, Handler>();
   const calls: string[] = [];
   const state: { base: ReturnType<typeof baseline> | null; returned: ReturnType<typeof baseline> | null; award: unknown;
-    fail: string | null; confirmation: 'declared' | 'unchanged' | 'stale' | 'throw'; onConfirmation?: () => void
-  } = { base: baseline(), returned: null, award: null, fail: null, confirmation: 'throw' };
+    fail: string | null; confirmation: 'declared' | 'unchanged' | 'stale' | 'throw'; onConfirmation?: () => void;
+    event: { calledNumbers: number[]; phase: 'line_declared' | 'bingo_declared'; lastTransitionAt: string };
+    correctionBase: ReturnType<typeof baseline> | 'ineligible' | null;
+    correctionOutcome: 'ok' | 'throw' | 'throwCommitted';
+  } = { base: baseline(), returned: null, award: null, fail: null, confirmation: 'throw',
+    event: { calledNumbers: [7, 42], phase: 'bingo_declared', lastTransitionAt: '2026-10-01T10:00:00.000Z' },
+    correctionBase: null, correctionOutcome: 'ok' };
   const attempts: Array<{ expected: unknown; count: number; at: string }> = [];
   const confirmations: typeof attempts = [];
+  const corrections: Array<{ expected: unknown; reason: string; at: string }> = [];
   const legacy = { value: { ...legacyCheck(), privateField: 'main only' }, error: null as Error | null,
     onLoad: undefined as (() => void) | undefined };
   const legacyWrites: Array<{ expected: ReturnType<typeof legacyCheck>; at: string }> = [];
@@ -91,6 +97,25 @@ function fixture(ports: Record<string, unknown> = {}) {
       }
       return { state: state.confirmation };
     },
+    load() {
+      calls.push('load');
+      if (state.fail === 'load') throw new Error('secret load');
+      return { calledNumbers: [...state.event.calledNumbers], phase: state.event.phase,
+        lastTransitionAt: state.event.lastTransitionAt };
+    },
+    loadBingoCorrectionBaseline() {
+      calls.push('CORRECTION_CONTEXT');
+      if (state.correctionBase === 'ineligible' || state.base === null) throw notEligible();
+      return structuredClone(state.correctionBase ?? state.base);
+    },
+    correctBingoDeclaration(expected: unknown, reason: string, at: string) {
+      calls.push('CORRECTION_WRITE');
+      corrections.push({ expected, reason, at });
+      if (state.correctionOutcome === 'throwCommitted') { state.award = null; throw new Error('secret committed'); }
+      if (state.correctionOutcome === 'throw') throw new Error('secret refused');
+      state.award = null;
+      return { eventId: 'a', auditSequence: 4, transitionAt: at, reason, award: {} };
+    },
     update() { calls.push('WRITE'); throw new Error('no writes'); },
   };
   const playback: string[] = [];
@@ -108,7 +133,7 @@ function fixture(ports: Record<string, unknown> = {}) {
   const invoke = (channel: string, args: unknown[] = [], fromFrame: object | null = frame, from: object = sender) =>
     handlers.get(channel)!({ sender: from, senderFrame: fromFrame }, ...args) as Record<string, unknown>;
   return { invoke, handlers, calls, attempts, confirmations, bingo, sender, state, legacy, playback, mutablePorts, store,
-    legacyWrites, legacyConfirmations, recovery, committedArgs,
+    legacyWrites, legacyConfirmations, recovery, committedArgs, corrections,
     get frame() { return frame; }, reload() { frame = { url }; return frame; },
     restoreFrame(original: Frame) { frame = original; } };
 }
@@ -120,9 +145,9 @@ const begin = (f: ReturnType<typeof fixture>) => {
 const code = (result: Record<string, unknown>) => [result.ok, result.code];
 const STALE = { ok: false, code: 'stale_session', message: 'This Bingo setup is no longer current. Reopen it.' };
 
-test('registers only the eight Bingo channels and rejects wrong sender, frame or URL before any store access', () => {
+test('registers only the nine Bingo channels and rejects wrong sender, frame or URL before any store access', () => {
   const f = fixture();
-  assert.deepEqual(Object.values(BINGO_CHANNELS), ['bingo:begin', 'bingo:read', 'bingo:legacy-check:read', 'bingo:legacy-check:cancel', 'bingo:cancel', 'bingo:confirm',
+  assert.deepEqual(Object.values(BINGO_CHANNELS), ['bingo:begin', 'bingo:read', 'bingo:legacy-check:read', 'bingo:legacy-check:cancel', 'bingo:cancel', 'bingo:confirm', 'bingo:correct',
     'bingo:retry-presentation', 'bingo:repeat-presentation']);
   assert.deepEqual([...f.handlers.keys()], Object.values(BINGO_CHANNELS));
   for (const channel of Object.values(BINGO_CHANNELS)) {
@@ -1109,4 +1134,64 @@ test('with the real store: begin needs a delivered line, then reads and cancels 
   const reopened = createEventStore(path);
   stores.push(reopened);
   assert.deepEqual(reopened.loadBingoAward(), result.award, 'atomic declaration survives reopening');
+});
+
+// ---- audited bingo correction (#33): main derives the pre-declaration identity; the renderer only names
+// ---- the event and the constrained reason; uncertain writes resolve by re-reading the committed award ----
+
+const CORRECTED = { ok: true, state: 'corrected' };
+
+test('bingo:correct derives the identity in main, passes the reason through and advances the clock past the declare head', () => {
+  const f = fixture();
+  f.state.award = storedAward();
+  const reason = 'Wrong ball reported near the end of the run before the public confirmation arrived';
+  assert.deepEqual(f.invoke(BINGO_CHANNELS.correct, ['a', reason]), CORRECTED);
+  assert.deepEqual(f.corrections, [{ expected: baseline(), reason, at: '2026-10-01T10:00:00.001Z' }]);
+  assert.deepEqual(f.committedArgs.at(-1), ['correct']);
+});
+
+test('bingo:correct rejects malformed requests without touching the store', () => {
+  const f = fixture();
+  f.state.award = storedAward();
+  for (const args of [['a'], ['a', 'x', 'extra'], [7, 'reason'], ['a', 7], ['a', ' padded '], ['a', ''],
+    ['a', 'x'.repeat(201)]]) {
+    assert.deepEqual(code(f.invoke(BINGO_CHANNELS.correct, args as unknown[])), [false, 'invalid_request']);
+  }
+  assert.equal(f.calls.includes('CORRECTION_CONTEXT'), false);
+  assert.equal(f.calls.includes('CORRECTION_WRITE'), false);
+});
+
+test('bingo:correct answers not_available without a committed bingo and stale for a foreign event', () => {
+  const f = fixture();
+  f.state.correctionBase = 'ineligible';
+  f.state.award = storedAward();
+  assert.deepEqual(code(f.invoke(BINGO_CHANNELS.correct, ['a', 'reason'])), [false, 'not_available']);
+  assert.equal(f.calls.includes('CORRECTION_WRITE'), false);
+  const g = fixture();
+  g.state.award = storedAward();
+  assert.deepEqual(code(g.invoke(BINGO_CHANNELS.correct, ['b', 'reason'])), [false, 'stale_session']);
+  assert.equal(g.calls.includes('CORRECTION_WRITE'), false);
+});
+
+test('bingo:correct resolves an uncertain write by re-reading the committed award', () => {
+  const f = fixture();
+  f.state.award = storedAward();
+  f.state.correctionOutcome = 'throw';
+  assert.deepEqual(f.invoke(BINGO_CHANNELS.correct, ['a', 'late']),
+    { ok: true, state: 'declared', award: storedAward() });
+  const g = fixture();
+  g.state.award = storedAward();
+  g.state.correctionOutcome = 'throwCommitted';
+  assert.deepEqual(g.invoke(BINGO_CHANNELS.correct, ['a', 'late']), CORRECTED);
+});
+
+test('bingo:correct shares the tongo and presentation guards and refuses before the store', () => {
+  const f = fixture({ tongoPlaying: () => true });
+  f.state.award = storedAward();
+  assert.deepEqual(code(f.invoke(BINGO_CHANNELS.correct, ['a', 'reason'])), [false, 'tongo_active']);
+  assert.equal(f.calls.includes('CORRECTION_WRITE'), false);
+  const g = fixture({ presentationBusy: () => true });
+  g.state.award = storedAward();
+  assert.deepEqual(code(g.invoke(BINGO_CHANNELS.correct, ['a', 'reason'])), [false, 'presentation_busy']);
+  assert.equal(g.calls.includes('CORRECTION_WRITE'), false);
 });

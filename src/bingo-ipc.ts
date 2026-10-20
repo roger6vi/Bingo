@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import type { BingoDeclarationBaseline, LegacyBingoCheck, StoredBingoAward } from './event-store';
+import type { BingoCorrection, BingoDeclarationBaseline, LegacyBingoCheck, StoredBingoAward } from './event-store';
+import type { GamePhase } from './game-phase';
 
 // Main-owned setup, declaration, bound recovery and explicit manual presentation actions.
 export const BINGO_CHANNELS = Object.freeze({
@@ -9,6 +10,7 @@ export const BINGO_CHANNELS = Object.freeze({
   legacyCancel: 'bingo:legacy-check:cancel',
   cancel: 'bingo:cancel',
   confirm: 'bingo:confirm',
+  correct: 'bingo:correct',
   retryPresentation: 'bingo:retry-presentation',
   repeatPresentation: 'bingo:repeat-presentation',
 });
@@ -29,6 +31,7 @@ export type BingoResult =
   | { ok: true; state: 'none' }
   | { ok: true; state: 'cancelled' }
   | { ok: true; state: 'recovered' }
+  | { ok: true; state: 'corrected' }
   | { ok: false; code: 'invalid_request' | 'not_available' | 'setup_active' | 'stale_session' | 'storage_failure'
     | 'tongo_active' | 'presentation_busy' | 'presentation_refused'; message: string };
 
@@ -42,6 +45,9 @@ type BingoStore = {
   declareBingoDirectly(expected: BingoDeclarationBaseline, count: number, at: string): StoredBingoAward;
   confirmBingoDeclaration(expected: BingoDeclarationBaseline, count: number, at: string):
     { state: 'declared'; award: StoredBingoAward } | { state: 'unchanged' | 'stale' };
+  load(): { calledNumbers: readonly number[]; phase: GamePhase; lastTransitionAt: string | null } | null;
+  loadBingoCorrectionBaseline(): BingoDeclarationBaseline;
+  correctBingoDeclaration(expected: BingoDeclarationBaseline, reason: string, at: string): BingoCorrection;
 };
 type Registrar = {
   handle(channel: string, handler: (event: BingoRequest, ...args: unknown[]) => BingoResult): void;
@@ -49,7 +55,7 @@ type Registrar = {
 type Ports = {
   authorize(event: BingoRequest): void;
   now?(): Date;
-  committed?(origin: 'confirm' | 'read'): void;
+  committed?(origin: 'confirm' | 'read' | 'correct'): void;
   recovered?(): void;
   retry?(presentationId: string): void | boolean;
   repeat?(presentationId: string): void | boolean;
@@ -65,6 +71,7 @@ const failure = (code: Exclude<BingoResult, { ok: true }>['code'], message: stri
 const invalid = () => failure('invalid_request', 'Invalid Bingo request.');
 const stale = () => failure('stale_session', 'This Bingo setup is no longer current. Reopen it.');
 const unreadable = () => failure('storage_failure', 'Could not read the Bingo state. Try again.');
+const notAvailable = () => failure('not_available', 'No committed Bingo is available to correct.');
 const text = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 64;
 const notEligible = (error: unknown) => (error as { code?: unknown } | null)?.code === 'bingo_not_eligible';
 const canonicalTime = (value: unknown): value is string => {
@@ -294,6 +301,51 @@ export function registerBingoIpc(registrar: Registrar, store: BingoStore, ports:
     try { award = store.declareBingoDirectly(attempt.baseline, attempt.count, attempt.at); }
     catch { return resolveAttempt(); }
     return finish(award, 'confirm');
+  });
+
+  // The committed declaration identity is derived in main from the store itself: the renderer only names the
+  // event and the constrained reason. An uncertain write resolves by re-reading the committed award — still
+  // present means the correction did not commit; absent means it did. No speculative state is ever returned.
+  const resolveCorrection = (): BingoResult => {
+    try {
+      const standing = store.loadBingoAward();
+      if (standing !== null) return { ok: true, state: 'declared', award: structuredClone(standing) };
+    } catch { return unreadable(); }
+    return { ok: true, state: 'corrected' };
+  };
+  handle(BINGO_CHANNELS.correct, (_event, ...args) => {
+    const [id, reason] = args;
+    if (args.length !== 2 || !text(id) || typeof reason !== 'string' ||
+        reason.length === 0 || reason.length > 200 || reason !== reason.trim()) return invalid();
+    if (ports.tongoPlaying?.()) return failure('tongo_active', 'Wait for Tongo to finish, then try again.');
+    if (ports.presentationBusy?.()) {
+      return failure('presentation_busy', 'Wait for the celebration to finish first.');
+    }
+    let expected: BingoDeclarationBaseline;
+    let award: StoredBingoAward | null;
+    let head: string;
+    try {
+      expected = store.loadBingoCorrectionBaseline();
+      award = store.loadBingoAward();
+      const current = store.load();
+      if (current === null || current.lastTransitionAt === null) return notAvailable();
+      head = current.lastTransitionAt;
+    } catch (error) {
+      return notEligible(error) ? notAvailable() : unreadable();
+    }
+    if (award === null || award.eventId !== id) return stale();
+    let at: string;
+    try {
+      const now = (ports.now?.() ?? new Date()).getTime();
+      const declare = Date.parse(head);
+      if (!Number.isFinite(now) || !Number.isFinite(declare)) throw new Error('Invalid clock');
+      at = new Date(now <= declare ? declare + 1 : now).toISOString();
+    } catch { return failure('storage_failure', 'Could not read the clock. Try again.'); }
+    try { store.correctBingoDeclaration(expected, reason, at); }
+    catch { return resolveCorrection(); }
+    try { ports.committed?.('correct'); }
+    catch { /* A notification failure cannot undo a durable correction or authorize another write. */ }
+    return { ok: true, state: 'corrected' };
   });
 
   // The coordinator owns status validation, ID rotation, notification and fresh playback. IPC only dispatches
