@@ -38,6 +38,7 @@ type Bingo = Store & {
   declareBingoDirectly(expected: unknown, winnerCount: unknown, at: unknown): any;
   loadBingoAward(): any;
   confirmBingoDeclaration(expected: unknown, winnerCount: unknown, at: unknown): any;
+  correctBingoDeclaration(expected: unknown, reason: unknown, at: unknown): any;
 };
 const LINE_AT = '2025-01-01T00:00:01.000Z';
 const BINGO_AT = '2025-01-01T00:00:02.000Z';
@@ -520,4 +521,99 @@ test('a stored pending bingo lot later resolved reads back and is still acknowle
   assert.equal(confirmed.state, 'declared');
   assert.equal(confirmed.award.award.lotResolution, 'resolved');
   assert.equal(JSON.stringify(store.readAudit()), audit);
+});
+
+// ---- audited bingo correction (#33): one transaction reverts the phase, clears the award and its lot
+// delivery, appends immutable evidence with the operator's reason, and keeps the line and every call ----
+
+test('correction commits atomically: the phase reverts, the award and its lot delivery are cleared, line and calls are preserved', () => {
+  const path = fixture();
+  const { store, event } = resolvedLine(path);
+  const baseline = store.loadBingoDeclarationBaseline();
+  const award = store.declareBingoDirectly(baseline, 3, BINGO_AT);
+  const before = state(store);
+  const corrected = store.correctBingoDeclaration(baseline, 'Wrong ball reported', '2025-01-01T00:00:03.000Z');
+  assert.equal(store.load().phase, 'line_declared');
+  assert.equal(store.loadBingoAward(), null);
+  assert.equal(bingoRow(path).length, 0);
+  assert.notEqual(store.loadLineAward(), null);
+  assert.deepEqual(store.load().calledNumbers, [7, 3]);
+  assert.equal(store.loadBingoDeclarationBaseline().eventId, baseline.eventId);
+  assert.deepEqual(corrected.award, award.award);
+  assert.equal(corrected.reason, 'Wrong ball reported');
+  assert.notEqual(state(store), before);
+});
+
+test('correction evidence is append-only, carries the reason and the original award, and replays after reopen', () => {
+  const path = fixture();
+  const { store } = resolvedLine(path);
+  const baseline = store.loadBingoDeclarationBaseline();
+  const award = store.declareBingoDirectly(baseline, 2, BINGO_AT);
+  store.correctBingoDeclaration(baseline, 'Operator error', '2025-01-01T00:00:03.000Z');
+  assert.equal(store.readAudit().at(-1).kind, 'correct_bingo_declaration');
+  withDb(path, (db) => {
+    assert.throws(() => db.exec("UPDATE bingo_corrections SET reason = 'tampered'"), /audit|immutable|update/i);
+    assert.throws(() => db.exec('DELETE FROM bingo_corrections'), /audit|immutable|delete/i);
+  });
+  const reopened = open(path);
+  const corrections = withDb(path, (db) => db.prepare('SELECT * FROM bingo_corrections').all());
+  assert.equal(corrections.length, 1);
+  assert.deepEqual(JSON.parse(corrections[0].award), award.award);
+  assert.equal(corrections[0].reason, 'Operator error');
+  assert.equal(reopened.load().phase, 'line_declared');
+  assert.equal(reopened.loadBingoAward(), null);
+});
+
+test('a corrected bingo can be declared again through the normal external-validation flow', () => {
+  const path = fixture();
+  const { store } = resolvedLine(path);
+  const baseline = store.loadBingoDeclarationBaseline();
+  store.declareBingoDirectly(baseline, 1, BINGO_AT);
+  store.correctBingoDeclaration(baseline, 'False claim', '2025-01-01T00:00:03.000Z');
+  const fresh = store.loadBingoDeclarationBaseline();
+  assert.equal(fresh.phase, 'line_declared');
+  assert.equal(fresh.eventId, baseline.eventId);
+  const again = store.declareBingoDirectly(fresh, 3, '2025-01-01T00:00:04.000Z');
+  assert.equal(again.award.winnerCount, 3);
+  assert.equal(bingoRow(path).length, 1);
+});
+
+const BAD_REASONS = ['', '   ', 7, null, undefined, 'x'.repeat(201)];
+for (const reason of BAD_REASONS) {
+  test(`correction rejects the malformed reason ${JSON.stringify(String(reason).slice(0, 12))} without changing settled state`, () => {
+    const path = fixture();
+    const { store } = resolvedLine(path);
+    const baseline = store.loadBingoDeclarationBaseline();
+    store.declareBingoDirectly(baseline, 1, BINGO_AT);
+    const before = state(store);
+    assert.throws(() => store.correctBingoDeclaration(baseline, reason as unknown as string, BINGO_AT));
+    assert.equal(state(store), before);
+  });
+}
+
+test('correction rejects a stale expected snapshot without changing settled state', () => {
+  const path = fixture();
+  const { store, event } = resolvedLine(path);
+  const baseline = store.loadBingoDeclarationBaseline();
+  store.declareBingoDirectly(baseline, 1, BINGO_AT);
+  const stale = { ...baseline, lastTransitionAt: '2024-01-01T00:00:00.000Z' };
+  const before = state(store);
+  assert.throws(() => store.correctBingoDeclaration(stale, 'Late reason', '2025-01-01T00:00:03.000Z'));
+  assert.equal(state(store), before);
+  assert.throws(() => store.correctBingoDeclaration(baseline, 'Old clock', '2025-01-01T00:00:02.000Z'));
+  assert.equal(state(store), before);
+  assert.equal(store.load().phase, 'bingo_declared');
+});
+
+test('correction without a committed bingo award is refused, and the generic transition cannot create the zombie', () => {
+  const path = fixture();
+  const { store } = resolvedLine(path);
+  const baseline = store.loadBingoDeclarationBaseline();
+  store.declareBingoDirectly(baseline, 1, BINGO_AT);
+  store.correctBingoDeclaration(baseline, 'Once', '2025-01-01T00:00:03.000Z');
+  const before = state(store);
+  assert.throws(() => store.correctBingoDeclaration(baseline, 'Duplicate', '2025-01-01T00:00:04.000Z'));
+  assert.equal(state(store), before);
+  assert.throws(() => store.transitionPhase('correct_bingo_declaration', '2025-01-01T00:00:05.000Z'), /correction path/i);
+  assert.equal(state(store), before);
 });

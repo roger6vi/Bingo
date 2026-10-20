@@ -685,12 +685,13 @@ test('legal intent transitions append one ordered audit row each and draws prese
   const store = createEventStore(path);
   try {
     store.create();
+    // correct_bingo_declaration is no longer a legal generic store intent (#33): it requires the audited
+    // correction path, so the walk pins its refusal below instead of stepping through it.
     const steps = [
       ['begin_line_check', 'checking_line'], ['reject_line_claim', 'drawing'],
       ['begin_line_check', 'checking_line'], ['declare_line', 'line_declared'],
       ['begin_bingo_check', 'checking_bingo'], ['reject_bingo_claim', 'line_declared'],
-      ['begin_bingo_check', 'checking_bingo'], ['declare_bingo', 'bingo_declared'],
-      ['correct_bingo_declaration', 'line_declared'], ['correct_line_declaration', 'drawing'],
+      ['correct_line_declaration', 'drawing'],
       ['begin_line_check', 'checking_line'], ['declare_line', 'line_declared'],
       ['begin_bingo_check', 'checking_bingo'], ['declare_bingo', 'bingo_declared'],
       ['finish', 'finished'],
@@ -709,13 +710,17 @@ test('legal intent transitions append one ordered audit row each and draws prese
         assert.equal(store.readAudit().length, count);
       }
     }
-    assert.equal(store.load()?.lastTransitionAt, new Date(Date.UTC(2025, 0, 1, 0, 0, 14)).toISOString());
+    const correctionAt = '2025-01-01T00:01:00.000Z';
+    const auditLength = store.readAudit().length;
+    assert.throws(() => store.transitionPhase('correct_bingo_declaration', correctionAt), /correction path/i);
+    assert.equal(store.readAudit().length, auditLength);
+    assert.equal(store.load()?.lastTransitionAt, new Date(Date.UTC(2025, 0, 1, 0, 0, 11)).toISOString());
     assert.throws(() => store.transitionPhase('finish', '2025-01-01T00:01:00.000Z'), /invalid phase transition/i);
   } finally { store.close(); }
   const reopened = createEventStore(path);
   try {
     assert.equal(reopened.load()?.phase, 'finished');
-    assert.equal(reopened.readAudit().length, 15);
+    assert.equal(reopened.readAudit().length, 12);
   } finally { reopened.close(); }
 });
 
@@ -1507,10 +1512,10 @@ function v6(path: string) {
 
 const lineAwards = (db: DatabaseSync) => db.prepare('SELECT count(*) AS count FROM line_awards').get()?.count;
 
-test('a fresh database is schema v11 with an empty line_awards table', (t) => {
+test('a fresh database is schema v12 with an empty line_awards table', (t) => {
   const path = fixture(t);
   createEventStore(path).close();
-  assert.equal(EVENT_SCHEMA_VERSION, 11);
+  assert.equal(EVENT_SCHEMA_VERSION, 12);
   withDb(path, (db) => {
     assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, EVENT_SCHEMA_VERSION);
     assert.equal(lineAwards(db), 0);
