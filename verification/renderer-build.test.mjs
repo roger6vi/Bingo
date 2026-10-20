@@ -356,7 +356,7 @@ test('main reconciles line presentations once at startup (interrupt, then fail p
   assert.ok(failAt > at, 'pending is failed only after started is interrupted');
   assert.ok(failAt < main.indexOf('new electron_1.BrowserWindow'), 'before any window');
   assert.ok(at > main.indexOf('initializeCurrentEvent)('), 'after the store opens');
-  for (const later of ['new electron_1.BrowserWindow', 'createPublicEventDelivery)(', 'registerLineIpc)(', 'registerEventIpc)(', 'ipcMain.on(']) {
+  for (const later of ['new electron_1.BrowserWindow', 'createPublicEventDelivery)(', 'registerLineMainWiring)(', 'registerEventIpc)(', 'ipcMain.on(']) {
     assert.ok(main.indexOf(later) > at, `${later} comes after the reconciliation`);
   }
   // The only presentation steps main may name are the two startup reconciliations; every other transition stays
@@ -391,8 +391,10 @@ test('line presentation wiring: coordinator ports, commit-only start, receipt gu
   assert.match(wiring, /lineReceipt: \(event, id\) => typeof id === 'string' && ports\.acceptLineReceipt\(event, id\) && line\.receiptStarted\(id\)/);
   assert.match(wiring, /bingoReceipt: \(event, id\) => typeof id === 'string' && ports\.acceptBingoReceipt\(event, id\) && bingo\.receiptStarted\(id\)/);
   assert.match(wiring, /busy: \(\) => line\.busy\(\) \|\| bingo\.busy\(\)/);
-  // Line's committed begin/retry/repeat stay exact, now guarded by the shared busy.
-  assert.match(main, /committed: presentation\.begin, retry: presentation\.retry,\s*repeat: presentation\.repeat, busy: presentations\.busy, tongoPlaying: tongo\.playing/);
+  // Line's committed begin/retry/repeat stay exact, now guarded by the shared busy; the registration runs
+  // through the line main wiring whose corrected port refreshes the public window without celebration (#29).
+  assert.match(main, /registerLineMainWiring\)\(/);
+  assert.match(main, /begin: presentation\.begin, retry: presentation\.retry,\s*repeat: presentation\.repeat, busy: presentations\.busy, tongoPlaying: tongo\.playing/);
   // A main-frame (not subframe, not same-document) navigation voids pending receipt authority at its start; the
   // finished load only re-attaches static state.
   assert.match(main, /contents\.on\('did-start-navigation', \(details\) => \{\s*if \(details\.isMainFrame && !details\.isSameDocument\)\s*publicDelivery\.navigationStarted\(contents\);\s*\}\);/);

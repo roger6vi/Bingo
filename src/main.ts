@@ -9,7 +9,7 @@ import { registerEventCatalogIpc } from './event-catalog-ipc';
 import { registerThemeIpc } from './theme-ipc';
 import { registerTongoIpc } from './tongo-ipc';
 import { registerPrizeIpc } from './prize-ipc';
-import { registerLineIpc } from './line-ipc';
+import { registerLineMainWiring } from './line-main-wiring';
 import { recoverBingoPresentations, registerBingoMainWiring, sharedSetupActive } from './bingo-main-wiring';
 import type { StoredBingoAward } from './event-store';
 import { registerLineLotPresentation } from './line-lot-presentation';
@@ -107,8 +107,8 @@ if (!app.requestSingleInstanceLock()) {
   const presentation = presentations.line;
   const tongo = registerTongoIpc(ipcMain, store, { authorize: operatorOnly, publish: publicDelivery.publishPresentation,
     lineBusy: presentations.busy });
-  const line = registerLineIpc(ipcMain, store, { authorize: operatorOnly, now: () => new Date(),
-    publish: publicDelivery.publishCommitted, committed: presentation.begin, retry: presentation.retry,
+  const line = registerLineMainWiring(ipcMain, store, { authorize: operatorOnly, now: () => new Date(),
+    publishCommitted: publicDelivery.publishCommitted, begin: presentation.begin, retry: presentation.retry,
     repeat: presentation.repeat, busy: presentations.busy, tongoPlaying: tongo.playing,
     otherSetupActive: () => bingo.active() });
   const bingo = registerBingoMainWiring(ipcMain, store, { authorize: operatorOnly, now: () => new Date(),
