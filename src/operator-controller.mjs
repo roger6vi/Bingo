@@ -539,7 +539,33 @@ export function createLineController(api, view, { committed = () => {} } = {}) {
     if (typeof release === 'function') release();
   }
 
+  // The audited correction (#29): main derives the identity, the page supplies only the reason, and the
+  // answers drive the rail — corrected reverts to the drawing state, declared keeps the award standing,
+  // and every refusal lands in the status with the translated copy. Mirrors the confirm's settling.
+  function correct(eventId, reason) {
+    // Own admission (the sibling gates are method-local): the declared mode is authoritative — it arises
+    // only from the committed declaration or its exact push — and the correction must target the event.
+    const allowed = () => mode === 'declared' && context !== null && context === eventId;
+    if (pending || !allowed() || typeof api.correctLine !== 'function') return inFlight;
+    return guarded(async () => {
+      const result = await ask(() => api.correctLine(eventId, reason));
+      if (result === STALE) return;
+      if (result?.ok === true && result.state === 'corrected') {
+        award = null; session = null; dialogOpen = false;
+        mode = 'idle';
+        needRefresh = true;
+        return;
+      }
+      if (result?.ok === true && result.state === 'declared' && result.award) {
+        if (declared(result.award, true) === undefined && mode === 'declared') needRefresh = true;
+        return;
+      }
+      // An uncertain acknowledgement is never corrected again: the operator must read the state first.
+      uncertain(result === null ? lineConnectionError : result.ok === true ? lineInvalidUpdate : refusal(result));
+    });
+  }
+
   render();
-  return { start, open, cancel, confirm, setEvent, retryRefresh, dispose, checkLegacy, cancelLegacy,
+  return { start, open, cancel, confirm, correct, setEvent, retryRefresh, dispose, checkLegacy, cancelLegacy,
     retry: (id) => present('retry', id), repeat: (id) => present('repeat', id) };
 }

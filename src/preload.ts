@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('desktop', Object.freeze({
   cancelLineSetup: (sessionId: string, eventId: string) => ipcRenderer.invoke('line:cancel', sessionId, eventId),
   confirmLine: (sessionId: string, eventId: string, winnerCount: number) =>
     ipcRenderer.invoke('line:confirm', sessionId, eventId, winnerCount),
+  correctLine: (eventId: string, reason: string) => ipcRenderer.invoke('line:correct', eventId, reason),
   readLegacyLineCheck: () => ipcRenderer.invoke('line:legacy-check:read'),
   cancelLegacyLineCheck: (eventId: string, auditSequence: number, lastTransitionAt: string) =>
     ipcRenderer.invoke('line:legacy-check:cancel', eventId, auditSequence, lastTransitionAt),
