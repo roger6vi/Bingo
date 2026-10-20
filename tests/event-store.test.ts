@@ -1512,10 +1512,10 @@ function v6(path: string) {
 
 const lineAwards = (db: DatabaseSync) => db.prepare('SELECT count(*) AS count FROM line_awards').get()?.count;
 
-test('a fresh database is schema v12 with an empty line_awards table', (t) => {
+test('a fresh database is schema v13 with an empty line_awards table', (t) => {
   const path = fixture(t);
   createEventStore(path).close();
-  assert.equal(EVENT_SCHEMA_VERSION, 12);
+  assert.equal(EVENT_SCHEMA_VERSION, 13);
   withDb(path, (db) => {
     assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, EVENT_SCHEMA_VERSION);
     assert.equal(lineAwards(db), 0);
@@ -2288,11 +2288,25 @@ test('a legacy declaration corrected back to drawing without an award stays elig
   } finally { store.close(); }
 });
 
-test('a prior direct declaration audit is ineligible even when corrected back to drawing without an award', (t) => {
+// Review teaching (#29): the ledger pairs each audited correct_line_declaration with the preceding
+// unmatched direct declare, so a corrected direct history is re-declarable instead of permanently
+// ineligible. An unpaired direct declare stays ineligible.
+test('a prior direct declaration corrected back to drawing is re-declarable through the ledger', (t) => {
   const { path, store, event } = openDrawing(t);
   try {
     rawDirect(path, event.id, T1);
     assert.equal(store.transitionPhase('correct_line_declaration', T2).phase, 'drawing');
+    const again = store.loadLineDeclarationBaseline();
+    assert.deepEqual([again.phase, again.auditSequence], ['drawing', 2]);
+    const stored = store.declareLineDirectly(again, 2, T3);
+    assert.equal(stored.award.winnerCount, 2);
+  } finally { store.close(); }
+});
+
+test('an unpaired direct declaration audit stays ineligible for re-declaration', (t) => {
+  const { path, store, event } = openDrawing(t);
+  try {
+    rawDirect(path, event.id, T1);
     assert.throws(() => store.loadLineDeclarationBaseline(), /not eligible/i);
   } finally { store.close(); }
 });
@@ -2545,6 +2559,132 @@ test('declareLineDirectly rejects a stale or different baseline without writing'
     const before = dump(path);
     assert.throws(() => store.declareLineDirectly(baseline, 1, '2025-01-01T00:00:09.000Z'), /stale|baseline|mismatch/i);
     assert.deepEqual(dump(path), before);
+  } finally { store.close(); }
+});
+
+test('correctLineDeclaration commits atomically: the phase reverts to drawing, the award and its lot delivery are cleared, the calls survive', (t) => {
+  const { path, store, event } = openDrawing(t, { amount: 10, lot: ' Jamón ' });
+  try {
+    store.update((e) => drawManual(drawManual(e, 7), 42));
+    const baseline = store.loadLineDeclarationBaseline();
+    const declared = store.declareLineDirectly(baseline, 3, T1);
+    const corrected = store.correctLineDeclaration(baseline, 'lot left on the table', T2);
+    assert.deepEqual(corrected, { eventId: event.id, auditSequence: 2, transitionAt: T2,
+      reason: 'lot left on the table', award: declared.award });
+    assert.deepEqual(store.load(), { calledNumbers: [7, 42], phase: 'drawing', lastTransitionAt: T2 });
+    assert.equal(store.loadLineAward(), null);
+    assert.deepEqual(store.readAudit(), [
+      { sequence: 1, transitionAt: T1, kind: 'declare_line_directly', from_phase: 'drawing', to_phase: 'line_declared' },
+      { sequence: 2, transitionAt: T2, kind: 'correct_line_declaration', from_phase: 'line_declared', to_phase: 'drawing' },
+    ]);
+  } finally { store.close(); }
+  const reopened = createEventStore(path);
+  try {
+    assert.deepEqual(reopened.load(), { calledNumbers: [7, 42], phase: 'drawing', lastTransitionAt: T2 });
+    assert.equal(reopened.loadLineAward(), null);
+  } finally { reopened.close(); }
+});
+
+test('line correction evidence is append-only, carries the reason and the original award, and replays after reopen', (t) => {
+  const { path, store, event } = openDrawing(t);
+  try {
+    store.update((e) => drawManual(drawManual(e, 7), 42));
+    const baseline = store.loadLineDeclarationBaseline();
+    const declared = store.declareLineDirectly(baseline, 2, T1);
+    store.correctLineDeclaration(baseline, 'called in error', T2);
+    withDb(path, (db) => {
+      assert.throws(() => db.exec("UPDATE line_corrections SET reason = 'tampered'"), /immutable/);
+      assert.throws(() => db.exec('DELETE FROM line_corrections'), /immutable/);
+      const rows = db.prepare('SELECT event_id, sequence, transitionAt, reason, award FROM line_corrections').all();
+      // Field-by-field: node:sqlite rows carry a null prototype and never deepStrictEqual a literal.
+      assert.equal(rows.length, 1);
+      const row = rows[0] as Record<string, unknown>;
+      assert.equal(row.event_id, event.id);
+      assert.equal(row.sequence, 2);
+      assert.equal(row.transitionAt, T2);
+      assert.equal(row.reason, 'called in error');
+      assert.equal(row.award, JSON.stringify(declared.award));
+    });
+  } finally { store.close(); }
+  const reopened = createEventStore(path);
+  try {
+    assert.equal(reopened.loadLineDeclarationBaseline().auditSequence, 2);
+  } finally { reopened.close(); }
+});
+
+test('a corrected line can be declared again through the normal external-validation flow', (t) => {
+  const { store } = openDrawing(t);
+  try {
+    store.update((e) => drawManual(drawManual(e, 7), 42));
+    const first = store.loadLineDeclarationBaseline();
+    store.declareLineDirectly(first, 3, T1);
+    store.correctLineDeclaration(first, 'winning line left by mistake', T2);
+    const again = store.loadLineDeclarationBaseline();
+    assert.deepEqual(again.calledNumbers, [7, 42]);
+    assert.equal(again.auditSequence, 2);
+    assert.equal(again.lastTransitionAt, T2);
+    const stored = store.declareLineDirectly(again, 1, T3);
+    assert.equal(stored.award.winnerCount, 1);
+    assert.equal(store.load()?.phase, 'line_declared');
+  } finally { store.close(); }
+});
+
+test('line correction rejects a stale expected snapshot without changing settled state', (t) => {
+  const { path, store } = openDrawing(t);
+  try {
+    const early = store.loadLineDeclarationBaseline();
+    store.update((e) => drawManual(drawManual(e, 7), 42));
+    const baseline = store.loadLineDeclarationBaseline();
+    store.declareLineDirectly(baseline, 3, T1);
+    const before = dump(path);
+    assert.throws(() => store.correctLineDeclaration(early, 'ok', T2), /stale/i);
+    assert.deepEqual(dump(path), before);
+    store.correctLineDeclaration(baseline, 'ok', T2);
+    const after = dump(path);
+    assert.throws(() => store.correctLineDeclaration(baseline, 'again', T3), /stale|declared line/i);
+    assert.deepEqual(dump(path), after);
+  } finally { store.close(); }
+});
+
+test('line correction validates the reason and the timestamp without writing', (t) => {
+  const { path, store } = openDrawing(t);
+  try {
+    store.update((e) => drawManual(drawManual(e, 7), 42));
+    const baseline = store.loadLineDeclarationBaseline();
+    store.declareLineDirectly(baseline, 2, T1);
+    const before = dump(path);
+    for (const bad of ['', '   ', ' x ', 'x'.repeat(201), 42, null, undefined, {}]) {
+      assert.throws(() => store.correctLineDeclaration(baseline, bad as never, T2), /reason/i,
+        JSON.stringify(bad === undefined ? 'undefined' : String(bad)).slice(0, 14));
+    }
+    assert.throws(() => store.correctLineDeclaration(baseline, 'ok', T1), /timestamp/i);
+    assert.throws(() => store.correctLineDeclaration(baseline, 'ok', 'not-a-time'), /timestamp/i);
+    assert.deepEqual(dump(path), before);
+  } finally { store.close(); }
+});
+
+test('the generic line correction refuses a committed award; only the audited path corrects it', (t) => {
+  const { store } = openDrawing(t);
+  try {
+    store.update((e) => drawManual(drawManual(e, 7), 42));
+    const baseline = store.loadLineDeclarationBaseline();
+    store.declareLineDirectly(baseline, 3, T1);
+    assert.throws(() => store.transitionPhase('correct_line_declaration', T2), /attached award|not supported/i);
+  } finally { store.close(); }
+});
+
+test('a legacy generic line history stays baseline-eligible and re-declarable across v13', (t) => {
+  const { store } = openDrawing(t);
+  try {
+    store.update((e) => drawManual(drawManual(e, 7), 42));
+    store.transitionPhase('begin_line_check', T1);
+    store.transitionPhase('declare_line', T2);
+    store.transitionPhase('correct_line_declaration', T3);
+    assert.equal(store.load()?.phase, 'drawing');
+    const again = store.loadLineDeclarationBaseline();
+    assert.deepEqual(again.calledNumbers, [7, 42]);
+    store.declareLineDirectly(again, 2, '2025-01-01T00:00:04.000Z');
+    assert.equal(store.load()?.phase, 'line_declared');
   } finally { store.close(); }
 });
 
@@ -3414,6 +3554,25 @@ test('a genuine v11 database opens and migrates to v12 with the correction evide
       assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, EVENT_SCHEMA_VERSION);
       assert.equal(db.prepare("SELECT count(*) AS n FROM sqlite_schema WHERE type = 'table' AND name = 'bingo_corrections'").get()?.n, 1);
       for (const name of ['bingo_corrections_no_update', 'bingo_corrections_no_delete']) {
+        assert.equal(db.prepare("SELECT count(*) AS n FROM sqlite_schema WHERE type = 'trigger' AND name = ?").get(name)?.n, 1, name);
+      }
+    });
+  } finally { reopened.close(); }
+});
+
+test('a genuine v12 database opens and migrates to v13 with the line correction evidence table', (t) => {
+  const path = fixture(t);
+  createEventStore(path).close();
+  withDb(path, (db) => {
+    db.exec('DROP TABLE line_corrections');
+    db.exec('PRAGMA user_version = 12');
+  });
+  const reopened = createEventStore(path);
+  try {
+    withDb(path, (db) => {
+      assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, EVENT_SCHEMA_VERSION);
+      assert.equal(db.prepare("SELECT count(*) AS n FROM sqlite_schema WHERE type = 'table' AND name = 'line_corrections'").get()?.n, 1);
+      for (const name of ['line_corrections_no_update', 'line_corrections_no_delete']) {
         assert.equal(db.prepare("SELECT count(*) AS n FROM sqlite_schema WHERE type = 'trigger' AND name = ?").get(name)?.n, 1, name);
       }
     });
