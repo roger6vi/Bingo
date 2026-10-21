@@ -231,6 +231,9 @@ async function smoke() {
         const settled = await publicWindow.locator('#bingo-award').evaluate((award) => award.textContent);
         assert.ok(settled.includes('2 ganadores'), `the winners survive the draw: ${settled}`);
         assert.ok(settled.includes('750 \u20ac cada uno'), `the split survives the draw: ${settled}`);
+        // The positive fact only a committed numbered draw produces: settlement is not merely the absence of
+        // "pending", it names the drawn winner, which is what this step claims to settle.
+        assert.ok(settled.includes('Ganador del lote: n\u00ba'), `the drawn winner is named: ${settled}`);
         assert.ok(!settled.includes('pendiente de desempate'), `the lot is settled: ${settled}`);
       });
     });
