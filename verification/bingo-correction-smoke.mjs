@@ -4,8 +4,11 @@
 // celebrated publicly, the committed bingo CORRECTED through the operator's reason dialog (the rail
 // reverts to the post-line state and the public window learns the award is gone without any
 // celebration), the Bingo declared AGAIN through the normal external-validation flow (a corrected
-// history is re-declarable), and the refusal of both drawing modes after the re-declared bingo
-// commits. The operator's reason is stored in the audit with the original award snapshot; the
+// history is re-declarable), the refusal of both drawing modes after the re-declared bingo commits,
+// a THIRD declaration with two winners (a correction is the only route back, so the shared split is
+// exercised for the first time) whose public text states the per-winner share and marks the shared
+// lot pending, and finally that lot DRAWN through its own panel until the public page settles the
+// winner. The operator's reason is stored in the audit with the original award snapshot; the
 // correction never touches the called numbers. Launch ownership, timeout cancellation and guarded
 // cleanup are owned by the shared lifecycle core in bingo-smoke-lifecycle.mjs. Every launch uses
 // the existing temporary-profile guard from electron-smoke.mjs (`--user-data-dir` directly inside
@@ -193,6 +196,42 @@ async function smoke() {
         assert.deepEqual(refusals, ['invalid_draw', 'invalid_draw'], 'main refuses both drawing modes after the re-declared bingo');
         assert.deepEqual(await operator.evaluate(() => [...document.querySelector('#called-numbers').calledNumbers]), DRAWN,
           'the called numbers are preserved');
+      });
+
+      await step('the bingo is corrected and declared again with two winners so the split text is real', async () => {
+        // A correction is the only way back to line_declared, so the two-winner game is a fresh declaration.
+        await operator.locator('#bingo-correct').click();
+        await operator.locator('#bingo-correction-dialog dialog').waitFor({ state: 'visible' });
+        await operator.fill('#bingo-correction-reason input', REASON);
+        await operator.locator('#bingo-correction-dialog [data-action="confirm"] button').click();
+        await operator.waitForFunction(() => !document.querySelector('#claim-bingo').disabled);
+        await operator.locator('#claim-bingo').click();
+        await operator.locator('#bingo-dialog dialog').waitFor({ state: 'visible' });
+        await operator.fill('#bingo-winners input', '2');
+        await operator.locator('#bingo-dialog [data-action="confirm"] button').click();
+        await celebrate('bingo');
+        // The split is derived from the configured prize, never copied from the Line leg: the bingo pays 1500 EUR
+        // and two winners divide it exactly, so the page states the per-winner share and says nothing about a rest.
+        const text = await publicWindow.locator('#bingo-award').evaluate((award) => award.textContent);
+        assert.ok(text.includes('2 ganadores'), `two winners are named: ${text}`);
+        assert.ok(text.includes('750 \u20ac cada uno'), `the per-winner share is stated: ${text}`);
+        assert.ok(!text.includes('sin repartir'), `an exact split leaves nothing undistributed: ${text}`);
+        assert.ok(text.includes('pendiente de desempate'), `a shared lot still pending is stated as such: ${text}`);
+      });
+
+      await step('the bingo lot is drawn through its own panel and the public page settles the winner', async () => {
+        // The lot is the only remaining pending fact, so its draw is what the operator does next.
+        const panel = operator.locator('#bingo-lot');
+        await panel.waitFor({ state: 'visible' });
+        await panel.locator('[data-intent="draw"]').click();
+        await publicWindow.waitForFunction(() => {
+          const award = document.querySelector('#bingo-award');
+          return award !== null && award.textContent !== '' && !award.textContent.includes('pendiente de desempate');
+        }, null, { timeout: 30_000 });
+        const settled = await publicWindow.locator('#bingo-award').evaluate((award) => award.textContent);
+        assert.ok(settled.includes('2 ganadores'), `the winners survive the draw: ${settled}`);
+        assert.ok(settled.includes('750 \u20ac cada uno'), `the split survives the draw: ${settled}`);
+        assert.ok(!settled.includes('pendiente de desempate'), `the lot is settled: ${settled}`);
       });
     });
     console.log('Bingo correction smoke passed');
