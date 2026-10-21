@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { BINGO_CHANNELS } from '../src/bingo-ipc.ts';
 import { createOperatorGuard } from '../src/event-ipc.ts';
@@ -426,4 +427,29 @@ test('committed finalize refreshes both windows with the finished snapshot and n
     'one store write, then the observed phase is published through the ordinary refresh');
   assert.deepEqual(begun, [], 'no playback begins from finalize');
   assert.equal(published.at(-1)?.phase, 'finished', 'the public window moves to its finished state');
+});
+
+// #32 slice 6 (S12, the PATH half): `game-phase.test.ts` proves `finish` is the only intent into `finished`
+// and that nothing leaves it, but a table cannot see WHO issues the intent. This does. Finalization is
+// operator-explicit, so the intent may be issued from exactly one production file — the channel the
+// operator's own control reaches — and a future refresh, lot-resolution or startup path that finalizes on
+// its own fails here instead of shipping quietly.
+// The population is EVERY module under src/, walked recursively, not a curated list: the first version of
+// this pin listed nine files by hand and missed `bingo-lot-ipc.ts` and `bingo-lot-presentation.ts`, which are
+// the lot-resolution path this property most needs to cover. A hand-maintained list of "places that might do
+// this" is the defect it is meant to catch.
+test('the finish intent is issued from the operator channel and nowhere else', () => {
+  const sourceFiles = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const full = `${dir}/${entry.name}`;
+    if (entry.isDirectory()) return sourceFiles(full);
+    return /\.(ts|mjs)$/.test(entry.name) ? [full] : [];
+  });
+  // No trailing separator: `slice(root.length)` below must leave a bare repository-relative path.
+  const root = fileURLToPath(new URL('../src', import.meta.url));
+  const issuers = sourceFiles(root)
+    .filter((file) => /transitionPhase\(\s*['"]finish['"]/.test(readFileSync(file, 'utf8')))
+    .map((file) => file.slice(root.length + 1))
+    .sort();
+  assert.deepEqual(issuers, ['bingo-ipc.ts'],
+    'finalization is operator-explicit: no automatic path may issue the finish transition');
 });
