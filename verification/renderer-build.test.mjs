@@ -410,6 +410,13 @@ test('line presentation wiring: coordinator ports, commit-only start, receipt gu
   assert.match(text('dist/line-ipc.js'), /repeatPresentation: 'line:repeat-presentation'/);
 });
 
+// #32: the explicit finalization is an operator-only invoke bound to its bingo-family channel map entry;
+// the public window only ever learns the finished phase through the committed state delivery.
+test('the explicit Bingo finalization stays an operator-only invoke through the bingo channel map', () => {
+  assert.match(text('dist/preload.js'), /invoke\('event:finalize', eventId\)/);
+  assert.match(text('dist/bingo-ipc.js'), /finalize: 'event:finalize'/);
+});
+
 // The JavaScript the public page actually loads: its entry script, modulepreloads and their static imports. The
 // operator bundle is deliberately excluded: it legitimately exposes the manual line actions the public one must never.
 function publicBundleFiles() {

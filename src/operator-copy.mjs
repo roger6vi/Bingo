@@ -92,6 +92,12 @@ export const MESSAGES_ES = Object.freeze({
   'Could not read the Bingo state. Try again.': 'No se pudo leer el estado del bingo. Inténtalo de nuevo.',
   'No committed Bingo is available to correct.':
     'No hay un bingo confirmado disponible para corregir. Vuelve a leer el estado del bingo.',
+  // Explicit event finalization (src/bingo-ipc.ts). The refusal says nothing about a Line: #32's gate is the bingo
+  // delivery, and the second message states S16's one-way door, so the operator learns the bingo cannot be corrected.
+  'The Bingo cannot be finalized now.':
+    'El bingo todavía no se puede finalizar. Espera a que termine la celebración y quede asentado el premio compartido.',
+  'The Bingo is already finished.':
+    'La partida ya está terminada. El bingo ya no se puede corregir.',
   'No committed line is available to correct.':
     'No hay una línea confirmada disponible para corregir. Vuelve a leer el estado de la línea.',
   'Could not confirm legacy Bingo recovery. Check the state later.':

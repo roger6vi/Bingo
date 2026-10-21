@@ -11,6 +11,9 @@ export const BINGO_CHANNELS = Object.freeze({
   cancel: 'bingo:cancel',
   confirm: 'bingo:confirm',
   correct: 'bingo:correct',
+  // The one-way door lives in the bingo family: only its Ports carry the shared guards and its wiring
+  // publishes committed state, while the channel name stays in the event family (it finalizes the event).
+  finalize: 'event:finalize',
   retryPresentation: 'bingo:retry-presentation',
   repeatPresentation: 'bingo:repeat-presentation',
 });
@@ -32,6 +35,7 @@ export type BingoResult =
   | { ok: true; state: 'cancelled' }
   | { ok: true; state: 'recovered' }
   | { ok: true; state: 'corrected' }
+  | { ok: true; state: 'finalized'; phase: GamePhase; lastTransitionAt: string | null }
   | { ok: false; code: 'invalid_request' | 'not_available' | 'setup_active' | 'stale_session' | 'storage_failure'
     | 'tongo_active' | 'presentation_busy' | 'presentation_refused'; message: string };
 
@@ -46,6 +50,9 @@ type BingoStore = {
   confirmBingoDeclaration(expected: BingoDeclarationBaseline, count: number, at: string):
     { state: 'declared'; award: StoredBingoAward } | { state: 'unchanged' | 'stale' };
   load(): { calledNumbers: readonly number[]; phase: GamePhase; lastTransitionAt: string | null } | null;
+  // The store is the single authority for finishing: one gated call, never re-implemented or widened here.
+  transitionPhase(intent: 'finish', transitionAt: string):
+    { calledNumbers: readonly number[]; phase: GamePhase; lastTransitionAt: string | null };
   loadBingoCorrectionBaseline(): BingoDeclarationBaseline;
   correctBingoDeclaration(expected: BingoDeclarationBaseline, reason: string, at: string): BingoCorrection;
 };
@@ -55,7 +62,7 @@ type Registrar = {
 type Ports = {
   authorize(event: BingoRequest): void;
   now?(): Date;
-  committed?(origin: 'confirm' | 'read' | 'correct'): void;
+  committed?(origin: 'confirm' | 'read' | 'correct' | 'finalize'): void;
   recovered?(): void;
   retry?(presentationId: string): void | boolean;
   repeat?(presentationId: string): void | boolean;
@@ -73,7 +80,10 @@ const stale = () => failure('stale_session', 'This Bingo setup is no longer curr
 const unreadable = () => failure('storage_failure', 'Could not read the Bingo state. Try again.');
 const notAvailable = () => failure('not_available', 'No committed Bingo is available to correct.');
 const text = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 64;
-const notEligible = (error: unknown) => (error as { code?: unknown } | null)?.code === 'bingo_not_eligible';
+const notEligible = (error: unknown) => {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === 'bingo_not_eligible' || code === 'finalize_not_eligible';
+};
 const canonicalTime = (value: unknown): value is string => {
   if (!text(value)) return false;
   const time = Date.parse(value);
@@ -346,6 +356,61 @@ export function registerBingoIpc(registrar: Registrar, store: BingoStore, ports:
     try { ports.committed?.('correct'); }
     catch { /* A notification failure cannot undo a durable correction or authorize another write. */ }
     return { ok: true, state: 'corrected' };
+  });
+
+  // Explicit event finalization (#32): the renderer only names the event; the store alone decides whether the
+  // committed bingo was delivered (celebration completed, lot settled). The committed identity is read from the
+  // store, the clock is derived main-side strictly after the phase head, and the outcome is resolved by
+  // re-reading the committed phase — never by trusting the write acknowledgement, and the write is never retried.
+  const notFinalizable = () => failure('not_available', 'The Bingo cannot be finalized now.');
+  const alreadyFinished = () => failure('not_available', 'The Bingo is already finished.');
+  const resolveFinalize = (): BingoResult | null => {
+    try {
+      const snapshot = store.load();
+      if (snapshot !== null && snapshot.phase === 'finished') {
+        try { ports.committed?.('finalize'); }
+        catch { /* A notification failure cannot undo a durable finish or authorize another write. */ }
+        return { ok: true, state: 'finalized', phase: snapshot.phase, lastTransitionAt: snapshot.lastTransitionAt };
+      }
+    } catch { return unreadable(); }
+    return null;
+  };
+  handle(BINGO_CHANNELS.finalize, (_event, ...args) => {
+    const [id] = args;
+    if (args.length !== 1 || !text(id)) return invalid();
+    // The family's two shared guards, in bingo:correct's order and with its exact messages. They are not decoration:
+    // `delivered` can already be true while a repeat plays, so the store alone would commit a finish over the
+    // celebration, and a finalize must never interrupt a Tongo that is running.
+    if (ports.tongoPlaying?.()) return failure('tongo_active', 'Wait for Tongo to finish, then try again.');
+    if (ports.presentationBusy?.()) {
+      return failure('presentation_busy', 'Wait for the celebration to finish first.');
+    }
+    let award: StoredBingoAward | null;
+    let current: ReturnType<BingoStore['load']>;
+    try {
+      award = store.loadBingoAward();
+      current = store.load();
+    } catch (error) {
+      return notEligible(error) ? notFinalizable() : unreadable();
+    }
+    if (award === null || award.eventId !== id) return stale();
+    if (current === null || current.lastTransitionAt === null) return notFinalizable();
+    if (current.phase === 'finished') return alreadyFinished();
+    let at: string;
+    try {
+      const now = (ports.now?.() ?? new Date()).getTime();
+      const head = Date.parse(current.lastTransitionAt);
+      if (!Number.isFinite(now) || !Number.isFinite(head)) throw new Error('Invalid clock');
+      at = new Date(now <= head ? head + 1 : now).toISOString();
+    } catch { return failure('storage_failure', 'Could not read the clock. Try again.'); }
+    try { store.transitionPhase('finish', at); }
+    catch (error) {
+      // One store call, one re-read: a typed finalize refusal is ordinary; anything else never looks like one.
+      const resolved = resolveFinalize();
+      if (resolved !== null) return resolved;
+      return notEligible(error) ? notFinalizable() : unreadable();
+    }
+    return resolveFinalize() ?? unreadable();
   });
 
   // The coordinator owns status validation, ID rotation, notification and fresh playback. IPC only dispatches

@@ -29,12 +29,13 @@ function fixture(ports: Record<string, unknown> = {}) {
   const calls: string[] = [];
   const state: { base: ReturnType<typeof baseline> | null; returned: ReturnType<typeof baseline> | null; award: unknown;
     fail: string | null; confirmation: 'declared' | 'unchanged' | 'stale' | 'throw'; onConfirmation?: () => void;
-    event: { calledNumbers: number[]; phase: 'line_declared' | 'bingo_declared'; lastTransitionAt: string };
+    event: { calledNumbers: number[]; phase: 'line_declared' | 'bingo_declared' | 'finished'; lastTransitionAt: string };
     correctionBase: ReturnType<typeof baseline> | 'ineligible' | null;
     correctionOutcome: 'ok' | 'throw' | 'throwCommitted';
+    finalizeOutcome: 'ok' | 'refused' | 'uncertain' | 'committed-then-throw'; onFinish?: () => void;
   } = { base: baseline(), returned: null, award: null, fail: null, confirmation: 'throw',
     event: { calledNumbers: [7, 42], phase: 'bingo_declared', lastTransitionAt: '2026-10-01T10:00:00.000Z' },
-    correctionBase: null, correctionOutcome: 'ok' };
+    correctionBase: null, correctionOutcome: 'ok', finalizeOutcome: 'ok' };
   const attempts: Array<{ expected: unknown; count: number; at: string }> = [];
   const confirmations: typeof attempts = [];
   const corrections: Array<{ expected: unknown; reason: string; at: string }> = [];
@@ -45,6 +46,7 @@ function fixture(ports: Record<string, unknown> = {}) {
   const recovery = { failWrite: false, outcome: 'throw' as 'recovered' | 'unchanged' | 'stale' | 'throw',
     selected: 'a', onWrite: undefined as (() => void) | undefined,
     onConfirm: undefined as (() => void) | undefined };
+  const finalizeWrites: Array<{ intent: string; at: string }> = [];
   const store = {
     cancelLegacyBingoCheck(expected: ReturnType<typeof legacyCheck>, at: string) {
       calls.push('LEGACY_WRITE');
@@ -117,6 +119,20 @@ function fixture(ports: Record<string, unknown> = {}) {
       return { eventId: 'a', auditSequence: 4, transitionAt: at, reason, award: {} };
     },
     update() { calls.push('WRITE'); throw new Error('no writes'); },
+    transitionPhase(intent: 'finish', at: string) {
+      calls.push('FINISH');
+      finalizeWrites.push({ intent, at });
+      state.onFinish?.();
+      if (state.finalizeOutcome === 'refused') {
+        throw Object.assign(new Error('secret eligibility'), { code: 'finalize_not_eligible' });
+      }
+      if (state.finalizeOutcome === 'uncertain') throw new Error('secret uncertain');
+      const acknowledged = { ...state.event };
+      state.event = { ...state.event, phase: 'finished' as const, lastTransitionAt: at };
+      if (state.finalizeOutcome === 'committed-then-throw') throw new Error('secret after commit');
+      // A deliberately stale acknowledgement: the handler's answer must come from a re-read, never from this.
+      return acknowledged;
+    },
   };
   const playback: string[] = [];
   const committedArgs: unknown[][] = [];
@@ -133,7 +149,7 @@ function fixture(ports: Record<string, unknown> = {}) {
   const invoke = (channel: string, args: unknown[] = [], fromFrame: object | null = frame, from: object = sender) =>
     handlers.get(channel)!({ sender: from, senderFrame: fromFrame }, ...args) as Record<string, unknown>;
   return { invoke, handlers, calls, attempts, confirmations, bingo, sender, state, legacy, playback, mutablePorts, store,
-    legacyWrites, legacyConfirmations, recovery, committedArgs, corrections,
+    legacyWrites, legacyConfirmations, recovery, committedArgs, corrections, finalizeWrites,
     get frame() { return frame; }, reload() { frame = { url }; return frame; },
     restoreFrame(original: Frame) { frame = original; } };
 }
@@ -145,9 +161,9 @@ const begin = (f: ReturnType<typeof fixture>) => {
 const code = (result: Record<string, unknown>) => [result.ok, result.code];
 const STALE = { ok: false, code: 'stale_session', message: 'This Bingo setup is no longer current. Reopen it.' };
 
-test('registers only the nine Bingo channels and rejects wrong sender, frame or URL before any store access', () => {
+test('registers only the ten Bingo channels and rejects wrong sender, frame or URL before any store access', () => {
   const f = fixture();
-  assert.deepEqual(Object.values(BINGO_CHANNELS), ['bingo:begin', 'bingo:read', 'bingo:legacy-check:read', 'bingo:legacy-check:cancel', 'bingo:cancel', 'bingo:confirm', 'bingo:correct',
+  assert.deepEqual(Object.values(BINGO_CHANNELS), ['bingo:begin', 'bingo:read', 'bingo:legacy-check:read', 'bingo:legacy-check:cancel', 'bingo:cancel', 'bingo:confirm', 'bingo:correct', 'event:finalize',
     'bingo:retry-presentation', 'bingo:repeat-presentation']);
   assert.deepEqual([...f.handlers.keys()], Object.values(BINGO_CHANNELS));
   for (const channel of Object.values(BINGO_CHANNELS)) {
@@ -1194,4 +1210,127 @@ test('bingo:correct shares the tongo and presentation guards and refuses before 
   g.state.award = storedAward();
   assert.deepEqual(code(g.invoke(BINGO_CHANNELS.correct, ['a', 'reason'])), [false, 'presentation_busy']);
   assert.equal(g.calls.includes('CORRECTION_WRITE'), false);
+});
+
+// ---- explicit event finalization (#32): the renderer only names the event, the store alone decides
+// ---- eligibility, the clock is derived main-side, and the outcome is resolved by re-reading the phase ----
+
+const FINALIZED = { ok: true, state: 'finalized', phase: 'finished', lastTransitionAt: '2026-10-01T10:00:00.001Z' };
+
+test('bingo:finalize validates one bounded event id before any store access', () => {
+  const f = fixture();
+  for (const args of [[], ['a', 'extra'], [7], [undefined], [null], [{}], [''], ['x'.repeat(65)], [new String('a')]]) {
+    assert.deepEqual(code(f.invoke(BINGO_CHANNELS.finalize, args as unknown[])), [false, 'invalid_request'],
+      JSON.stringify(args));
+  }
+  assert.deepEqual(f.calls, [], 'no store read or write behind a malformed request');
+  assert.deepEqual(f.playback, []);
+});
+
+test('bingo:finalize commits one finish transition with a clock strictly later than the phase head', () => {
+  const f = fixture();
+  f.state.award = storedAward();
+  assert.deepEqual(f.invoke(BINGO_CHANNELS.finalize, ['a']), FINALIZED);
+  assert.deepEqual(f.finalizeWrites, [{ intent: 'finish', at: '2026-10-01T10:00:00.001Z' }]);
+  assert.deepEqual(f.committedArgs, [['finalize']]);
+  assert.deepEqual(f.playback, ['committed']);
+  assert.equal(f.bingo.active(), false);
+});
+
+test('bingo:finalize advances a clock at or behind the head and resolves from the observed phase, not the ack', () => {
+  const f = fixture({ now: () => new Date('2026-10-01T09:00:00.000Z') });
+  f.state.award = storedAward();
+  assert.deepEqual(f.invoke(BINGO_CHANNELS.finalize, ['a']), FINALIZED, 'the stale ack must not be returned');
+  assert.equal(f.finalizeWrites[0].at, '2026-10-01T10:00:00.001Z', 'strictly later than the head, never the head');
+});
+
+test('bingo:finalize refuses a foreign event id or a missing committed award as stale before any write', () => {
+  const f = fixture();
+  f.state.award = storedAward();
+  const foreign = f.invoke(BINGO_CHANNELS.finalize, ['b']);
+  assert.deepEqual(code(foreign), [false, 'stale_session']);
+  assert.equal(f.finalizeWrites.length, 0);
+  const g = fixture(); // a legacy declaration committed no bingo award for the id to be checked against
+  const missing = g.invoke(BINGO_CHANNELS.finalize, ['a']);
+  assert.deepEqual(code(missing), [false, 'stale_session']);
+  assert.deepEqual(g.calls, ['award', 'load'], 'identity is checked against the store, never computed');
+  assert.equal(g.finalizeWrites.length, 0);
+});
+
+test('bingo:finalize answers not_available for an already finished event and writes nothing', () => {
+  const f = fixture();
+  f.state.award = storedAward();
+  f.state.event = { ...f.state.event, phase: 'finished' };
+  assert.deepEqual(code(f.invoke(BINGO_CHANNELS.finalize, ['a'])), [false, 'not_available']);
+  assert.equal(f.finalizeWrites.length, 0, 'the terminal phase refuses before the store call');
+  assert.deepEqual(f.playback, []);
+});
+
+test('bingo:finalize maps the store finalize refusal to not_available and never retries the write', () => {
+  const f = fixture();
+  f.state.award = storedAward();
+  f.state.finalizeOutcome = 'refused';
+  const result = f.invoke(BINGO_CHANNELS.finalize, ['a']);
+  assert.deepEqual(code(result), [false, 'not_available']);
+  assert.equal(JSON.stringify(result).includes('secret'), false);
+  assert.equal(f.finalizeWrites.length, 1, 'exactly one store call; a refusal is never retried');
+  assert.deepEqual(f.playback, [], 'a refusal publishes nothing');
+  assert.deepEqual(f.committedArgs, []);
+});
+
+test('bingo:finalize resolves an uncertain write by re-reading and never retries, typed or not', () => {
+  const f = fixture();
+  f.state.award = storedAward();
+  f.state.finalizeOutcome = 'uncertain';
+  assert.deepEqual(code(f.invoke(BINGO_CHANNELS.finalize, ['a'])), [false, 'storage_failure']);
+  assert.equal(f.finalizeWrites.length, 1, 'the write is never retried');
+  assert.deepEqual(f.playback, []);
+  const g = fixture();
+  g.state.award = storedAward();
+  g.state.finalizeOutcome = 'committed-then-throw';
+  assert.deepEqual(g.invoke(BINGO_CHANNELS.finalize, ['a']), FINALIZED,
+    'what the store holds decides, not the write acknowledgement');
+  assert.deepEqual(g.committedArgs, [['finalize']], 'an observed finish is published like any other');
+});
+
+test('bingo:finalize fails closed on unreadable storage without touching the write path', () => {
+  const f = fixture();
+  f.state.award = storedAward();
+  f.state.fail = 'award';
+  const result = f.invoke(BINGO_CHANNELS.finalize, ['a']);
+  assert.deepEqual(code(result), [false, 'storage_failure']);
+  assert.equal(JSON.stringify(result).includes('secret'), false);
+  assert.equal(f.finalizeWrites.length, 0);
+  assert.deepEqual(f.playback, []);
+});
+
+test('bingo:finalize runs inside the shared processing guard and authorization like every Bingo route', () => {
+  const f = fixture();
+  f.state.award = storedAward();
+  const observed: unknown[] = [];
+  f.state.onFinish = () => {
+    observed.push(code(f.invoke(BINGO_CHANNELS.read)));
+    observed.push(code(f.invoke(BINGO_CHANNELS.finalize, ['a'])));
+  };
+  assert.deepEqual(f.invoke(BINGO_CHANNELS.finalize, ['a']), FINALIZED);
+  assert.deepEqual(observed, [[false, 'setup_active'], [false, 'setup_active']],
+    'reentry during the store call is refused as busy');
+  assert.throws(() => f.invoke(BINGO_CHANNELS.finalize, ['a'], f.frame, {}), /Unauthorized/);
+  assert.equal(f.finalizeWrites.length, 1, 'the unauthorized attempt never reached the store');
+});
+
+// The family's two shared guards run BEFORE the store, exactly as bingo:correct does. A celebration already
+// completed plus a settled lot is `delivered`, so the store alone would allow the finish: without these guards a
+// finalize pressed while a repeat is in flight would move the phase to `finished` and publish over the playback.
+test('bingo:finalize shares the tongo and presentation guards and refuses before the store', () => {
+  const f = fixture({ tongoPlaying: () => true });
+  f.state.award = storedAward();
+  assert.deepEqual(code(f.invoke(BINGO_CHANNELS.finalize, ['a'])), [false, 'tongo_active']);
+  assert.deepEqual(f.calls, [], 'a playing tongo is never interrupted by a finalize');
+  assert.equal(f.finalizeWrites.length, 0);
+  const g = fixture({ presentationBusy: () => true });
+  g.state.award = storedAward();
+  assert.deepEqual(code(g.invoke(BINGO_CHANNELS.finalize, ['a'])), [false, 'presentation_busy']);
+  assert.deepEqual(g.calls, [], 'a celebration in flight is never overwritten by a finish');
+  assert.equal(g.finalizeWrites.length, 0);
 });
