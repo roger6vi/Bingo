@@ -76,6 +76,28 @@ test('bingo subscribes before any read and never reads, writes or plays by itsel
   assert.deepEqual([f.last().mode, f.last().pending, f.last().error], ['idle', false, null]);
 });
 
+// #32 slice 4: the controller's own admission is the first of the two doors, and nothing pinned it. The page
+test('bingo finalization sends nothing outside the declared mode and carries only the event id', async () => {
+  const sent: unknown[][] = [];
+  const f = bingoFixture({ finalizeEvent: (...args: unknown[]) => {
+    sent.push(args);
+    return Promise.resolve({ ok: true, state: 'finalized' });
+  } }, () => {}, { committed: () => Promise.resolve(true) });
+  f.controller.setEvent('e1', 'drawing');
+  await flush();
+  // With no adopted award the controller is not in the declared mode, so the one-way door never reaches main.
+  await f.controller.finalize('e1');
+  assert.deepEqual(sent, [], 'the action is not dispatched outside the declared mode');
+  f.reply(declared());
+  await f.controller.start();
+  assert.equal(f.last().mode, 'declared');
+  // A foreign event is refused by the same admission, even from the declared mode.
+  await f.controller.finalize('e2');
+  assert.deepEqual(sent, [], 'the action targets only the controller own event');
+  await f.controller.finalize('e1');
+  assert.deepEqual(sent, [['e1']], 'exactly one dispatch, carrying only the event id');
+});
+
 test('bingo adopts only a validated setup or declared award, and hands out independent clones', async () => {
   const f = bingoFixture();
   f.controller.setEvent('e1', 'drawing');

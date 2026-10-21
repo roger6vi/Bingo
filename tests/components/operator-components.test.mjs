@@ -3829,7 +3829,26 @@ it('the finalization dialog carries no reason and dispatches only the event id',
     await settle();
     await settle();
     expect(calls, 'the dispatch carries only the event id').to.deep.equal(['a']);
+    // The bridge records its arguments joined by ':', so an extra one cannot hide behind a tuple comparison.
+    expect(op.requests.filter((request) => request.startsWith('bingo:finalizeEvent')),
+      'the bridge receives exactly one argument').to.deep.equal(['bingo:finalizeEvent:a']);
     expect(f.open(), 'the dialog closes on the committed finalization').to.equal(false);
+  } finally { op.cleanup(); }
+});
+
+it('the finalization control is offered while the shared lot is still pending, because eligibility is the store\'s', async () => {
+  const op = await loadFinalize();
+  try {
+    // Two winners leave the shared lot pending, which is exactly the case the store's refusal exists for.
+    const declared = await openBingo(op);
+    declared.type('2');
+    await declared.dialog.updateComplete;
+    declared.action('confirm').click();
+    await settle();
+    await settle();
+    const control = op.main.querySelector('#bingo-finalize');
+    expect([control.hidden, control.disabled], 'a pending lot never gates the page')
+      .to.deep.equal([false, false]);
   } finally { op.cleanup(); }
 });
 
