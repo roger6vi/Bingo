@@ -106,7 +106,7 @@ async function loadOperator(options = {}) {
       bingo.push = callback;
       return () => { bingo.log.push('unsubscribe'); bingo.push = null; };
     },
-    ...Object.fromEntries(['beginBingoSetup', 'cancelBingoSetup', 'confirmBingo', 'correctBingo', 'readLegacyBingoCheck', 'cancelLegacyBingoCheck',
+    ...Object.fromEntries(['beginBingoSetup', 'cancelBingoSetup', 'confirmBingo', 'correctBingo', 'finalizeEvent', 'readLegacyBingoCheck', 'cancelLegacyBingoCheck',
       'retryBingoPresentation', 'repeatBingoPresentation'].map((name) => [name, async (...args) => {
       requests.push(`bingo:${name}:${args.join(':')}`);
       return bingo[name] ? bingo[name](...args) : { ok: false, code: 'not_available', message: 'unexpected' };
@@ -268,7 +268,7 @@ it('operator page is a Spanish three-tab application shell with shared panels an
     expect(page.querySelector(`footer[slot="status"] bingo-status#${id}`)).not.to.equal(null, `${id} in the status bar`);
   }
   for (const id of ['open-public', 'move-public']) expect(page.querySelector(`bingo-button#${id}`)).not.to.equal(null);
-  expect([...page.querySelectorAll('bingo-dialog')].map((dialog) => dialog.id)).to.deep.equal(['unsaved-dialog', 'line-dialog', 'line-correction-dialog', 'legacy-dialog', 'bingo-dialog', 'bingo-legacy-dialog', 'bingo-correction-dialog']);
+  expect([...page.querySelectorAll('bingo-dialog')].map((dialog) => dialog.id)).to.deep.equal(['unsaved-dialog', 'line-dialog', 'line-correction-dialog', 'legacy-dialog', 'bingo-dialog', 'bingo-legacy-dialog', 'bingo-correction-dialog', 'bingo-finalize-dialog']);
   // No English operator copy remains in the page.
   const copy = [page.title, page.body.textContent, ...[...page.querySelectorAll('[label],[heading],[message],[title],[aria-label]')]
     .flatMap((element) => ['label', 'heading', 'message', 'title', 'aria-label'].map((name) => element.getAttribute(name) ?? ''))].join(' ');
@@ -3771,6 +3771,94 @@ it('a refused correction shows the translated reason and keeps the award', async
     expect([op.main.querySelector('#bingo-correct').hidden, declared.claim.ariaLabel],
       'the award stands after the refusal').to.deep.equal([false, 'Bingo cantado']);
     expect(c.status.message, 'the operator reads the reason in Spanish').to.include('Tongo');
+  } finally { op.cleanup(); }
+});
+
+// ---- Bingo finalization (#32 T3): the rail offers the explicit finalization only for a declared bingo, the
+// ---- dialog carries no reason at all (S18), and the store's own answer drives the rail — the page never decides
+// ---- whether the celebration is delivered or the lot settled.
+
+const loadFinalize = (options = {}) => loadBingo({ bingo: {
+  finalizeEvent: async () => ({ ok: true, state: 'finalized' }), ...options.bingo } });
+
+async function declareBingo(op) {
+  const declared = await openBingo(op);
+  declared.type('1');
+  await declared.dialog.updateComplete;
+  declared.action('confirm').click();
+  await settle();
+  await settle();
+  return declared;
+}
+
+async function openFinalize(op) {
+  const control = op.main.querySelector('#bingo-finalize');
+  await control.updateComplete;
+  control.click();
+  await settle();
+  const dialog = op.main.querySelector('#bingo-finalize-dialog');
+  await dialog.updateComplete;
+  return { control, dialog, status: op.main.querySelector('#bingo-status'),
+    action: (name) => dialog.shadowRoot.querySelector(`[data-action="${name}"]`), open: () => dialog.shadowRoot.querySelector('dialog').open };
+}
+
+it('the finalization control is offered only for a declared bingo with its award', async () => {
+  const op = await loadFinalize();
+  try {
+    await openBingo(op);
+    expect(op.main.querySelector('#bingo-finalize').hidden, 'line_declared hides finalization').to.equal(true);
+    await declareBingo(op);
+    const control = op.main.querySelector('#bingo-finalize');
+    expect([control.hidden, control.disabled], 'declared offers finalization').to.deep.equal([false, false]);
+  } finally { op.cleanup(); }
+});
+
+it('the finalization dialog carries no reason and dispatches only the event id', async () => {
+  const calls = [];
+  const op = await loadFinalize({ bingo: { finalizeEvent: async (eventId) => {
+    calls.push(eventId);
+    return { ok: true, state: 'finalized' };
+  } } });
+  try {
+    await declareBingo(op);
+    const f = await openFinalize(op);
+    expect(f.open(), 'the dialog opens').to.equal(true);
+    expect(f.dialog.querySelector('bingo-text-field'), 'S18 gives finalizing no operational motive, so it asks nothing')
+      .to.equal(null);
+    f.action('confirm').click();
+    await settle();
+    await settle();
+    expect(calls, 'the dispatch carries only the event id').to.deep.equal(['a']);
+    expect(f.open(), 'the dialog closes on the committed finalization').to.equal(false);
+  } finally { op.cleanup(); }
+});
+
+it('a refused finalization keeps the award standing and shows the Spanish refusal', async () => {
+  const op = await loadFinalize({ bingo: { finalizeEvent: async () =>
+    ({ ok: false, code: 'not_available', message: 'The Bingo cannot be finalized now.' }) } });
+  try {
+    const declared = await declareBingo(op);
+    const f = await openFinalize(op);
+    f.action('confirm').click();
+    await settle();
+    await settle();
+    expect([op.main.querySelector('#bingo-finalize').hidden, declared.claim.ariaLabel],
+      'the award stands and the control stays offered').to.deep.equal([false, 'Bingo cantado']);
+    expect(f.status.message, 'the operator reads the refusal in Spanish')
+      .to.include('todavía no se puede finalizar');
+  } finally { op.cleanup(); }
+});
+
+it('a committed finalization hides the control and leaves nothing to repeat', async () => {
+  const op = await loadFinalize();
+  try {
+    await declareBingo(op);
+    const f = await openFinalize(op);
+    f.action('confirm').click();
+    await settle();
+    await settle();
+    expect([op.main.querySelector('#bingo-finalize').hidden, op.main.querySelector('#bingo-repeat').hidden],
+      'the one-way door closes the control and nothing is offered to replay').to.deep.equal([true, true]);
   } finally { op.cleanup(); }
 });
 

@@ -632,6 +632,23 @@ export function createBingoController(api, view, { committed = () => {}, recover
       }, 'dispatch');
   }
 
-  return { start, begin, cancel, confirm, correct, retry, repeat, checkLegacy, cancelLegacy, retryRefresh, setGuards, setEvent,
+  // The explicit finalization (#32 T3): a one-way door, so main owns every decision and the page supplies only
+  // the event. A committed finalization reverts nothing and starts no celebration; a refusal lands in the status,
+  // because the store's gate is the only authority on whether the celebration and the shared lot are settled.
+  function finalize(eventId) {
+    const allowed = () => mode === 'declared' && context !== null && context === eventId;
+    return fly(() => allowed() && typeof api.finalizeEvent === 'function',
+      () => api.finalizeEvent(eventId), (result, stage) => {
+        if (result?.ok === true && result.state === 'finalized') {
+          award = null; anchor = null; session = null; refreshDue = generation; mode = 'idle'; error = null;
+        } else if (knownRefusal(result) && result.code !== 'storage_failure') error = result.message;
+        else {
+          keepSeen(stage);
+          uncertain(result?.ok === false ? refusal(result) : result === null ? connectionError : invalidUpdate);
+        }
+      }, 'dispatch');
+  }
+
+  return { start, begin, cancel, confirm, correct, finalize, retry, repeat, checkLegacy, cancelLegacy, retryRefresh, setGuards, setEvent,
     dispose, getState: snapshot };
 }

@@ -222,6 +222,15 @@ const bingoCorrectionActions = (disabled) => [{ action: 'cancel', label: 'Cancel
   { action: 'confirm', label: 'Corregir bingo', signal: 'confirm', disabled }];
 bingoCorrectionDialog.actions = bingoCorrectionActions(true);
 let bingoCorrectionOpen = false;
+// The explicit finalization (#32 T3) is a one-way door, so its dialog asks only for confirmation: S18 gives it no
+// operational motive, and these bindings sit here, with their siblings, because paintBingo runs from the
+// controller's first render and a binding reached earlier would throw inside a swallowed update.
+const bingoFinalize = required('bingo-finalize', BingoButton);
+const bingoFinalizeDialog = required('bingo-finalize-dialog', HTMLElement);
+const bingoFinalizeActions = (disabled) => [{ action: 'cancel', label: 'Cancelar', signal: 'dismiss' },
+  { action: 'confirm', label: 'Finalizar partida', signal: 'confirm', disabled }];
+bingoFinalizeDialog.actions = bingoFinalizeActions(false);
+let bingoFinalizeOpen = false;
 // The Bingo dialog belongs to one event and, once main opened it, one setup: { eventId, session, sent }. It is reserved
 // before the begin is dispatched, so nothing rendered from its callbacks opens a second one.
 let bingoModal = null;
@@ -240,6 +249,12 @@ const bingoRetryReady = (expected) => manualAdmitted(bingoPage(), bingoState, ex
 // The audited correction (#33): offered for the declared bingo of the active event while every page lock is
 // known and idle; the reason follows the store's own rule (trimmed, 1–200) and the dialog owns its text.
 const bingoCorrectable = () => bingoState.eventId !== null && bingoState.eventId === activeEventId &&
+  bingoState.mode === 'declared' && bingoState.award && !lineMismatch() &&
+  !(selecting || activating || tongoBusy || eventsPending || bingoState.pending) && bingoModal === null;
+// The finalization control (#32 T3) takes the correction's admission without a reason to validate. It deliberately
+// reads nothing about the lot or the celebration: whether delivery is resolved belongs to the store's own gate, and
+// a page that approximated it would be the second door T1 removed.
+const bingoFinalizeable = () => bingoState.eventId !== null && bingoState.eventId === activeEventId &&
   bingoState.mode === 'declared' && bingoState.award && !lineMismatch() &&
   !(selecting || activating || tongoBusy || eventsPending || bingoState.pending) && bingoModal === null;
 const correctionReasonValid = () => {
@@ -320,6 +335,14 @@ function paintBingo() {
   const correctionReady = bingoCorrectionOpen && correctionReasonValid();
   if (bingoCorrectionDialog.actions[1].disabled !== !correctionReady) {
     bingoCorrectionDialog.actions = bingoCorrectionActions(!correctionReady);
+  }
+  // The finalization control (#32 T3): offered exactly where the correction is, and a dialog that stopped being
+  // valid closes without writing anything, like the correction and legacy dialogs above.
+  bingoFinalize.hidden = !(mine && state.mode === 'declared' && state.award);
+  bingoFinalize.disabled = bingoFinalize.hidden || state.pending || !bingoFinalizeable();
+  if (bingoFinalizeOpen && !bingoFinalizeable()) {
+    bingoFinalizeOpen = false;
+    bingoFinalizeDialog.shadowRoot?.querySelector('dialog')?.close();
   }
   // A held celebration that may still be running outranks the bare error: the operator has to learn why the page is
   // locked, not only that a read failed. The branch needs BOTH facts, so an uncertain state whose held award is
@@ -779,6 +802,22 @@ bingoCorrectionDialog.addEventListener('confirm', () => {
   void bingo.correct(eventId, reason).then(() => applyLocks());
 });
 bingoCorrectionDialog.addEventListener('dismiss', () => { bingoCorrectionOpen = false; paintBingo(); });
+// The finalization control (#32 T3): the dialog asks for confirmation and nothing else, and the dispatch carries
+// only the event. Every other decision is main's, so a refusal is rendered as the store's own Spanish message.
+bingoFinalize.addEventListener('click', () => {
+  if (bingoFinalize.hidden || bingoFinalize.disabled || bingoState.pending) return;
+  bingoFinalizeOpen = true;
+  paintBingo();
+  void bingoFinalizeDialog.show();
+});
+bingoFinalizeDialog.addEventListener('confirm', () => {
+  const eventId = activeEventId;
+  if (!bingoFinalizeOpen || !bingoFinalizeable()) { paintBingo(); return; }
+  bingoFinalizeOpen = false;
+  bingoFinalizeDialog.shadowRoot?.querySelector('dialog')?.close();
+  void bingo.finalize(eventId).then(() => applyLocks());
+});
+bingoFinalizeDialog.addEventListener('dismiss', () => { bingoFinalizeOpen = false; paintBingo(); });
 // Cancel and Escape cancel only the dialog's own setup, whatever else is locked; a stale dialog cancels nothing.
 bingoDialog.addEventListener('dismiss', () => {
   const own = bingoModal;
