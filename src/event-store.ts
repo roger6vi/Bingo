@@ -1757,8 +1757,13 @@ export function createEventStore(path: string) {
         // #112 T3 (owner decision): a live run is never destroyed silently. At `bingo_declared` the LINE presentation
         // is always completed — declaring a bingo is gated on its delivery being resolved — so the only run that can
         // be in flight here is the BINGO celebration. A started run must be cancelled explicitly first, because that
-        // is what records the `interrupted` disposition; a pending one has not started, so it is failed here rather
-        // than left muted under a row that is about to disappear.
+        // is what records the `interrupted` disposition. A pending one is failed here instead, and that status is
+        // DURABLE rather than transient: this UPDATE targets `bingo_awards`, which SURVIVES the reset — only
+        // `line_awards` is deleted — so the row carries `failed` afterwards and stays recoverable through
+        // `bingo:retry-presentation`. That is a deliberate, owner-approved departure from S5's "preserve the bingo
+        // award and its presentation": the committed money and lot are untouched, only the presentation STATUS moves.
+        // (An earlier version of this comment said the row was "about to disappear", which was false: it is the one
+        // row of the two that stays.)
         const bingoStatus = bingo.stored.presentation.status;
         if (bingoStatus === 'started') {
           throw new Error('Line award reset requires the bingo celebration to be cancelled first');
