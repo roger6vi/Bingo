@@ -3643,9 +3643,10 @@ test('resetLineAward retires the declared line award without moving the phase an
     // The point of the issue: the phase did NOT move, the line award is gone, the bingo award is untouched.
     assert.equal(store.load()?.phase, 'bingo_declared');
     assert.equal(store.loadLineAward(), null);
-    // #112 T3's decision: the reset does not touch the committed AWARD, but it FAILS an unstarted bingo run so a row
-    // about to disappear cannot keep claiming a pending celebration. Naming which part is untouched and which moved is
-    // stricter than the old snapshot comparison, not weaker.
+    // #112 T3's decision: the reset does not touch the committed AWARD, but it FAILS an unstarted bingo run, and that
+    // status is durable — the updated row is `bingo_awards`, which SURVIVES the reset; only `line_awards` disappears.
+    // Naming which part is untouched and which part moved is stricter than the old whole-object comparison against a
+    // `pending` snapshot that no longer exists at this point, not weaker.
     const afterReset = store.loadBingoAward();
     assert.ok(afterReset !== null);
     assert.deepEqual({ ...afterReset, presentation: { ...afterReset.presentation, status: 'pending' } }, bingoAward,
