@@ -27,10 +27,11 @@ function harness() {
   const frame = { url: 'file:///operator.html' };
   const state = { award: null as ReturnType<typeof award> | null, line: false, tongo: false, busy: false,
     uncertain: false, resolved: false, loadFail: false, publicFail: false, privateFail: false, corrected: false,
+    finished: false, finishUncertain: false,
     hook: undefined as (() => void) | undefined,
     publicSink: undefined as ((snapshot: unknown) => void) | undefined };
   const store = {
-    load: () => { calls.push('phase'); return { calledNumbers: [7], phase: state.corrected ? 'line_declared' : 'bingo_declared', lastTransitionAt: '2026-10-01T09:00:00.000Z' }; },
+    load: () => { calls.push('phase'); return { calledNumbers: [7], phase: state.corrected ? 'line_declared' : state.finished ? 'finished' : 'bingo_declared', lastTransitionAt: '2026-10-01T09:00:00.000Z' }; },
     loadBingoAward: () => {
       calls.push('award');
       if (state.loadFail) throw new Error('unreadable');
@@ -57,6 +58,12 @@ function harness() {
     loadLegacyBingoCheck: legacy,
     cancelLegacyBingoCheck: () => { calls.push('recover'); state.award = null; },
     confirmLegacyBingoCancel: () => 'recovered',
+    transitionPhase: (intent: string, at: string) => {
+      calls.push('finish');
+      if (state.finishUncertain) throw new Error('uncertain');
+      state.finished = true;
+      return { calledNumbers: [7], phase: 'finished', lastTransitionAt: at };
+    },
     interruptStartedBingoPresentations: () => { calls.push('interrupt'); },
     failPendingBingoPresentations: () => { calls.push('fail-pending'); },
   };
@@ -87,7 +94,7 @@ function harness() {
   return { calls, handlers, state, store, ports, privateValues, wiring, invoke, begin, sender, frame };
 }
 
-test('production registers exactly eight routes; every route uses exact operator authorization', () => {
+test('production registers exactly ten routes; every route uses exact operator authorization', () => {
   const h = harness();
   assert.deepEqual([...h.handlers.keys()], Object.values(BINGO_CHANNELS));
   for (const channel of h.handlers.keys()) {
@@ -401,4 +408,22 @@ test('committed correction refreshes both windows with the post-line snapshot an
   assert.equal(h.privateValues.at(-1), null, 'both windows learn the award is gone');
   assert.deepEqual(begun, [], 'no playback begins after a correction');
   assert.equal(published.at(-1)?.phase, 'line_declared', 'the public window reverts to the post-line state');
+});
+
+// #32 slice 2: the explicit finalize refreshes both windows with the finished snapshot and never begins
+// playback — S12/S16 make the one-way door operator-explicit only, and no celebration starts from it.
+test('committed finalize refreshes both windows with the finished snapshot and never begins playback', () => {
+  const h = harness();
+  const begun: unknown[] = [];
+  h.ports.begin = (value) => { h.calls.push('begin'); begun.push(value); };
+  const published: Array<{ phase: string }> = [];
+  h.state.publicSink = (snapshot) => published.push(snapshot as { phase: string });
+  h.state.award = award();
+  const result = h.invoke(BINGO_CHANNELS.finalize, ['a']);
+  assert.deepEqual(result, { ok: true, state: 'finalized', phase: 'finished',
+    lastTransitionAt: '2026-10-01T09:00:00.000Z' });
+  assert.deepEqual(h.calls, ['award', 'phase', 'finish', 'phase', 'phase', 'public', 'award', 'private'],
+    'one store write, then the observed phase is published through the ordinary refresh');
+  assert.deepEqual(begun, [], 'no playback begins from finalize');
+  assert.equal(published.at(-1)?.phase, 'finished', 'the public window moves to its finished state');
 });
