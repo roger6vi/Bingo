@@ -18,7 +18,8 @@ const transitions = {
     correct_line_declaration: 'drawing',
   },
   checking_bingo: { declare_bingo: 'bingo_declared', reject_bingo_claim: 'line_declared' },
-  bingo_declared: { finish: 'finished', correct_bingo_declaration: 'line_declared' },
+  bingo_declared: { finish: 'finished', correct_bingo_declaration: 'line_declared',
+    reset_line_award: 'bingo_declared' },
   finished: {},
 } as const satisfies Record<GamePhase, Record<string, GamePhase>>;
 
