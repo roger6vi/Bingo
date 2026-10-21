@@ -24,6 +24,28 @@ const phases: readonly GamePhase[] = [
   'checking_bingo', 'bingo_declared', 'finished',
 ];
 
+// #32 slice 4 (S12/S16): the phase cannot reach finished on its own. A declared Bingo moves on by exactly two
+// decisions, and only the explicit finish intent ends the game; from finished there is no way out at all, so the
+// one-way door is structural rather than a convention the callers are trusted to respect.
+test('finished is reachable only by the explicit finish intent and has no way out', () => {
+  const intents: readonly PhaseTransitionIntent[] = [
+    'begin_line_check', 'declare_line_directly', 'declare_line', 'reject_line_claim', 'begin_bingo_check',
+    'correct_line_declaration', 'declare_bingo_directly', 'declare_bingo', 'reject_bingo_claim', 'finish',
+    'correct_bingo_declaration',
+  ];
+  const accepted: string[] = [];
+  for (const intent of intents) {
+    try { transitionPhase({ phase: 'bingo_declared' }, intent); accepted.push(intent); } catch { /* refused */ }
+  }
+  assert.deepEqual(accepted.sort(), ['correct_bingo_declaration', 'finish'],
+    'a declared Bingo offers exactly two decisions, and only finish ends the game');
+  assert.deepEqual(transitionPhase({ phase: 'bingo_declared' }, 'finish'), { phase: 'finished' });
+  for (const intent of intents) {
+    assert.throws(() => transitionPhase({ phase: 'finished' }, intent), /Invalid phase transition/,
+      `finished must refuse ${intent}: the door does not swing back`);
+  }
+});
+
 test('initial phase and all approved transitions return distinct immutable results', () => {
   const initial = createPhaseState();
   assert.deepEqual(initial, { phase: 'drawing' });
