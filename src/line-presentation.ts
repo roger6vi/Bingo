@@ -54,6 +54,8 @@ export interface BingoPresentationCoordinator {
   retry(id: string): void;
   repeat(id: string): void;
   busy(): boolean;
+  /** #112 T4: release exactly this run so a late timer or receipt cannot resurrect it. */
+  stop(id: string): boolean;
 }
 type RunSteps = Pick<LinePresentationStore, 'startLinePresentation' | 'failLinePresentation' | 'completeLinePresentation'>;
 
@@ -64,6 +66,8 @@ export interface LinePresentationCoordinator {
   retry(id: string): void;
   repeat(id: string): void;
   busy(): boolean;
+  /** #112 T4: release exactly this run so a late timer or receipt cannot resurrect it. */
+  stop(id: string): boolean;
 }
 
 export function createBingoPresentationCoordinator(
@@ -76,7 +80,7 @@ export function createBingoPresentationCoordinator(
   }, ports);
   const manual = manualStep(run, 'Bingo');
   return {
-    begin: run.begin, receiptStarted: run.receiptStarted, busy: run.busy,
+    begin: run.begin, receiptStarted: run.receiptStarted, busy: run.busy, stop: run.stop,
     retry: (id) => manual((value) => store.retryBingoPresentation(value), id),
     repeat: (id) => manual((value) => store.replayBingoPresentation(value), id),
   };
@@ -88,7 +92,7 @@ export function createLinePresentationCoordinator(
   const run = createRun('line', store, ports);
   const manual = manualStep(run, 'Line');
   return {
-    begin: run.begin, receiptStarted: run.receiptStarted, busy: run.busy,
+    begin: run.begin, receiptStarted: run.receiptStarted, busy: run.busy, stop: run.stop,
     retry: (id) => manual((value) => store.retryLinePresentation(value), id),
     repeat: (id) => manual((value) => store.replayLinePresentation(value), id),
   };
@@ -125,6 +129,17 @@ function createRun<Kind extends 'line' | 'bingo'>(
     try { ports.cancel(handle); } catch { /* the timer is already dropped from our state */ }
   };
   const owns = (phase: 'awaiting' | 'running', id: string): boolean => active?.phase === phase && active.id === id;
+
+  // #112 T4: an explicit operator cancel releases the coordinator for exactly the run being retired. The store's
+  // `interrupt` step is the durable record; this makes sure a late acknowledgement or a late completion timer cannot
+  // resurrect a run whose award has just been interrupted. Cancels only the armed timer and drops the slot: it never
+  // touches the store or the delivery, which own their own halves of the ordering.
+  function stop(id: string): boolean {
+    if (active === null || active.id !== id) return false;
+    safeCancel(active.timer);
+    active = null;
+    return true;
+  }
 
   // Moves a pending award to failed (the manual retry path); null when even that is refused.
   function failStored(id: string): void {
@@ -206,5 +221,5 @@ function createRun<Kind extends 'line' | 'bingo'>(
     return true;
   }
 
-  return { begin, receiptStarted, busy: () => active !== null, notify: safeNotify };
+  return { begin, receiptStarted, busy: () => active !== null, notify: safeNotify, stop };
 }

@@ -417,7 +417,7 @@ function bingoHarness(initial = award('b1'), options: { publish?: boolean } = {}
 
 test('a fresh Bingo declaration publishes one 4 s bingo signal and completes from the receipt via Bingo methods only', () => {
   const h = bingoHarness();
-  assert.deepEqual(Object.keys(h.coordinator).sort(), ['begin', 'busy', 'receiptStarted', 'repeat', 'retry']);
+  assert.deepEqual(Object.keys(h.coordinator).sort(), ['begin', 'busy', 'receiptStarted', 'repeat', 'retry', 'stop']);
   h.coordinator.begin(h.store.current);
   h.coordinator.begin(h.store.current);
   assert.deepEqual(h.published, [{ kind: 'bingo', id: 'b1', durationMs: 4000 }]);

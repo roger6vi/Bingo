@@ -245,6 +245,13 @@ export function createPublicEventDelivery(
       if (current === target) current = null;
       unbind(target);
     },
+    // #112 T4: a committed reset retires one kind's award, so that kind's pending receipt must be voided before any
+    // late `public:…-presentation-started` signal can be accepted against a presentation that no longer exists.
+    // Per kind by design: the two celebrations are independent, and `unbind(target)`/`navigationStarted` are far too
+    // aggressive for this — they also drop `current` or bump `generation`, which would tear down an unrelated view.
+    unbindReceipt(kind: 'line' | 'bingo'): void {
+      bindings[kind] = null;
+    },
     // The owning window's main frame began navigating (reload, same URL included). The frame object and URL may
     // survive it, so identity alone cannot tell documents apart: detach now, which voids any pending receipt and
     // keeps every send away from the loading page, and let the finished load re-attach static state only. The
