@@ -39,6 +39,8 @@ type Bingo = Store & {
   loadBingoAward(): any;
   confirmBingoDeclaration(expected: unknown, winnerCount: unknown, at: unknown): any;
   correctBingoDeclaration(expected: unknown, reason: unknown, at: unknown): any;
+  startBingoPresentation(id: unknown, startedAt: unknown): any;
+  completeBingoPresentation(id: unknown, now: unknown): any;
 };
 const LINE_AT = '2025-01-01T00:00:01.000Z';
 const BINGO_AT = '2025-01-01T00:00:02.000Z';
@@ -318,6 +320,11 @@ test('both draw modes are rejected authoritatively once bingo is declared, finis
   const restarted = open(path);
   attempts(restarted);
   assert.equal(restarted.load()?.phase, 'bingo_declared'); // no automatic finish
+  // #32: closing the game now requires a delivered celebration, so the presentation runs to completion first. The
+  // draw lock pinned here is still asserted on the same three states; only the route to `finished` became the legal one.
+  const award = restarted.loadBingoAward();
+  restarted.startBingoPresentation(award.presentation.id, 2000);
+  restarted.completeBingoPresentation(award.presentation.id, 6000);
   restarted.transitionPhase('finish', '2025-01-01T00:00:05.000Z');
   attempts(restarted);
   assert.equal(restarted.load()?.phase, 'finished');
@@ -648,4 +655,84 @@ test('a legacy generic bingo history stays readable, baseline-eligible and re-de
   const fresh = reopened.loadBingoDeclarationBaseline();
   assert.equal(fresh.eventId, event.id);
   assert.equal(reopened.declareBingoDirectly(fresh, 1, '2025-01-01T00:00:04.000Z').award.winnerCount, 1);
+});
+
+// #32: explicit event finalization. `bingo_declared` stays open until the celebration was delivered AND the
+// indivisible tie was settled; only then does the operator's explicit finalize commit, and `finished` is terminal.
+// Refusing before delivery must write nothing at all — no phase change and no `phase_audit` row.
+function auditRows(path: string) {
+  return withDb(path, (db) => db.prepare('SELECT sequence, kind, from_phase, to_phase FROM phase_audit ORDER BY sequence').all());
+}
+// A committed bingo, presented in full when `complete` is set. One winner needs no lot; two leave it pending.
+function presentedBingo(path: string, over: { winners?: number; complete?: boolean } = {}) {
+  const { store } = resolvedLine(path);
+  const bingo = store.declareBingoDirectly(store.loadBingoDeclarationBaseline(), over.winners ?? 1, BINGO_AT);
+  if (over.complete !== false) {
+    store.startBingoPresentation(bingo.presentation.id, 2000);
+    store.completeBingoPresentation(bingo.presentation.id, 6000);
+  }
+  return { store, bingo };
+}
+
+test('finalize is refused while the bingo celebration has not been delivered, and writes no audit row', () => {
+  const path = fixture();
+  const { store } = presentedBingo(path, { complete: false });
+  const before = auditRows(path);
+  assert.equal(store.loadBingoAward().presentation.status, 'pending');
+  assert.throws(() => store.transitionPhase('finish', '2025-01-01T00:00:05.000Z'),
+    (error: any) => error.code === 'finalize_not_eligible', 'the celebration is not delivered yet');
+  assert.equal(store.load()?.phase, 'bingo_declared', 'the refusal never moves the phase');
+  assert.deepEqual(auditRows(path), before, 'the refusal writes no audit row at all');
+});
+
+test('a pending indivisible tie blocks finalization even after the celebration, and a settled one does not', () => {
+  const path = fixture();
+  const { store, bingo } = presentedBingo(path, { winners: 2 });
+  assert.equal(bingo.award.lotResolution, 'pending');
+  assert.equal(store.loadBingoAward().presentation.status, 'completed');
+  assert.throws(() => store.transitionPhase('finish', '2025-01-01T00:00:05.000Z'),
+    (error: any) => error.code === 'finalize_not_eligible', 'the tie is not drawn yet');
+  store.resolveBingoLot({ eventId: bingo.eventId, auditSequence: 2, presentationId: bingo.presentation.id },
+    { participantNumber: 2, colorId: participantColor(2).id });
+  assert.equal(store.loadBingoAward().award.lotResolution, 'resolved');
+  assert.equal(store.transitionPhase('finish', '2025-01-01T00:00:05.000Z').phase, 'finished');
+});
+
+test('finalize commits the delivered bingo explicitly: one audit row, the calls preserved, the clock advanced', () => {
+  const path = fixture();
+  const { store } = presentedBingo(path);
+  const calls = store.load()?.calledNumbers;
+  const events = store.loadBingoAward().award.winnerCount;
+  const before = auditRows(path);
+  assert.equal(events, 1, 'one winner settles the lot without a draw');
+  assert.equal(store.transitionPhase('finish', '2025-01-01T00:00:05.000Z').phase, 'finished');
+  const after = auditRows(path);
+  assert.deepEqual(after.slice(0, before.length), before, 'finalizing never rewrites the history it appends to');
+  assert.equal(after.length, before.length + 1, 'exactly one row was appended');
+  assert.equal(after.filter((row: any) => row.kind === 'finish').length, 1);
+  // A sqlite row has a null prototype, so it is compared field by field, never against an object literal.
+  const head = after.at(-1) as any;
+  assert.deepEqual({ sequence: head.sequence, kind: head.kind, from_phase: head.from_phase, to_phase: head.to_phase },
+    { sequence: before.length + 1, kind: 'finish', from_phase: 'bingo_declared', to_phase: 'finished' });
+  const event = store.load();
+  assert.deepEqual(event?.calledNumbers, calls, 'finalizing never touches the drawn numbers');
+  assert.equal(event?.lastTransitionAt, '2025-01-01T00:00:05.000Z', 'the explicit action owns the clock');
+});
+
+test('finished is terminal: a second finalize is refused without a second row, and the bingo correction stops being offered', () => {
+  const { store } = presentedBingo(fixture());
+  store.transitionPhase('finish', '2025-01-01T00:00:05.000Z');
+  const before = state(store);
+  assert.throws(() => store.transitionPhase('finish', '2025-01-01T00:00:07.000Z'), /invalid phase transition/i);
+  // S16: an operator who finalizes cannot take the bingo back.
+  assert.throws(() => store.correctBingoDeclaration(store.loadBingoCorrectionBaseline(), '09:00', '2025-01-01T00:00:09.000Z'));
+  assert.equal(state(store), before, 'neither refusal changed anything');
+});
+
+test('a legacy bingo declared through the generic checks has nothing to deliver, so finalizing stays available', () => {
+  const { store } = resolvedLine(fixture());
+  store.transitionPhase('begin_bingo_check', BINGO_AT);
+  store.transitionPhase('declare_bingo', '2025-01-01T00:00:03.000Z');
+  assert.equal(store.loadBingoAward(), null, 'the legacy path commits no award');
+  assert.equal(store.transitionPhase('finish', '2025-01-01T00:00:05.000Z').phase, 'finished');
 });

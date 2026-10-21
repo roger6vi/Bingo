@@ -1238,6 +1238,12 @@ function bingoCheckNotEligible(reason: string): Error {
   return Object.assign(new Error(`Legacy bingo check not eligible: ${reason}`), { code: 'legacy_bingo_check_not_eligible' });
 }
 
+// Finalizing is the last door of the game, so it opens only on state the store can prove. The code lets the operator
+// rail tell "not yet" apart from "not this game".
+function finalizeNotEligible(reason: string): Error {
+  return Object.assign(new Error(`Event finalization not eligible: ${reason}`), { code: 'finalize_not_eligible' });
+}
+
 function readLegacyBingoCheck(db: DatabaseSync): LegacyBingoCheck {
   const id = readActiveEventId(db);
   const event = id === null ? null : readEvent(db);
@@ -1719,6 +1725,18 @@ export function createEventStore(path: string) {
         }
         if (award !== null && !isLineDeliveryResolved(award.award, { status: award.presentation.status })) {
           throw new Error('Line delivery must be completed and its lot settled before the bingo check');
+        }
+        // Closing a game is irreversible, so the operator may only do it once the committed bingo was delivered: shown
+        // in full and, for an indivisible tie, drawn. `delivered` is already derivable from the award, so this gate
+        // adds no column. A bingo declared through the legacy checks committed no award at all — nothing was ever
+        // presented or drawn — and refusing it would leave that game open forever, so only an existing award gates.
+        if (intent === 'finish') {
+          const bingo = readBingoAward(db, id, audit);
+          if (bingo !== null && !isLineDeliveryResolved(bingo.award, { status: bingo.presentation.status })) {
+            throw finalizeNotEligible(bingo.presentation.status === 'completed'
+              ? 'the shared prize draw is still pending'
+              : `the celebration is ${bingo.presentation.status}, not completed`);
+          }
         }
         const sequence = audit.length + 1;
         db.prepare('UPDATE events SET phase = ?, lastTransitionAt = ? WHERE id = ?')
