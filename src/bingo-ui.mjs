@@ -162,6 +162,9 @@ export function createBingoBinding(api, { render, refresh }) {
     cancel: () => controller.cancel(),
     confirm: (count) => controller.confirm(count),
     correct: (eventId, reason) => controller.correct(eventId, reason),
+    // The explicit finalization (#32 T3): the page supplies only the event, and the controller owns the admission
+    // and the whole refusal table. It reverts nothing and starts no celebration.
+    finalize: (eventId) => controller.finalize(eventId),
     // The explicit retry of exactly `id`, admitted by the page's `ready` once more right before the bridge. A call
     // reentering from the pending render joins that flight and restores the outer check.
     retry(id, ready) {

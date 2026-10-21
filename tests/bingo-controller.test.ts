@@ -63,7 +63,7 @@ function bingoFixture(overrides: Record<string, unknown> = {}, onRender: (state:
 test('bingo subscribes before any read and never reads, writes or plays by itself', async () => {
   const f = bingoFixture();
   assert.deepEqual(Object.keys(f.controller).sort(),
-    ['begin', 'cancel', 'cancelLegacy', 'checkLegacy', 'confirm', 'correct', 'dispose', 'getState', 'repeat', 'retry',
+    ['begin', 'cancel', 'cancelLegacy', 'checkLegacy', 'confirm', 'correct', 'dispose', 'finalize', 'getState', 'repeat', 'retry',
       'retryRefresh', 'setEvent', 'setGuards', 'start']);
   assert.deepEqual(f.calls, ['subscribe']);
   assert.equal(f.last().mode, 'unknown');
