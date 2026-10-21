@@ -18,6 +18,9 @@ const legal: readonly [GamePhase, PhaseTransitionIntent, GamePhase][] = [
   ['checking_bingo', 'reject_bingo_claim', 'line_declared'],
   ['bingo_declared', 'finish', 'finished'],
   ['bingo_declared', 'correct_bingo_declaration', 'line_declared'],
+  // The post-bingo line-award reset (#112): an audited self-loop, because the schema's invariant is that every
+  // audit kind is a legal transition intent from its own phase, and a reset deliberately does not move the phase.
+  ['bingo_declared', 'reset_line_award', 'bingo_declared'],
 ];
 const phases: readonly GamePhase[] = [
   'drawing', 'checking_line', 'line_declared',
@@ -31,14 +34,14 @@ test('finished is reachable only by the explicit finish intent and has no way ou
   const intents: readonly PhaseTransitionIntent[] = [
     'begin_line_check', 'declare_line_directly', 'declare_line', 'reject_line_claim', 'begin_bingo_check',
     'correct_line_declaration', 'declare_bingo_directly', 'declare_bingo', 'reject_bingo_claim', 'finish',
-    'correct_bingo_declaration',
+    'correct_bingo_declaration', 'reset_line_award',
   ];
   const accepted: string[] = [];
   for (const intent of intents) {
     try { transitionPhase({ phase: 'bingo_declared' }, intent); accepted.push(intent); } catch { /* refused */ }
   }
-  assert.deepEqual(accepted.sort(), ['correct_bingo_declaration', 'finish'],
-    'a declared Bingo offers exactly two decisions, and only finish ends the game');
+  assert.deepEqual(accepted.sort(), ['correct_bingo_declaration', 'finish', 'reset_line_award'],
+    'a declared Bingo offers exactly three decisions, and only finish ends the game');
   assert.deepEqual(transitionPhase({ phase: 'bingo_declared' }, 'finish'), { phase: 'finished' });
   for (const intent of intents) {
     assert.throws(() => transitionPhase({ phase: 'finished' }, intent), /Invalid phase transition/,

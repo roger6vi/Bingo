@@ -176,8 +176,9 @@ const bingoCorrectionsGuards = [
   `CREATE TRIGGER bingo_corrections_no_delete BEFORE DELETE ON bingo_corrections
     BEGIN SELECT RAISE(ABORT, 'bingo correction evidence is immutable'); END`,
 ];
-// Append-only line correction evidence: one row per audited correct_line_declaration written with its
-// audit row. reason is the operator's constrained justification; award snapshots the cleared line award.
+// Append-only line-award retirement evidence: one row per audited correct_line_declaration OR reset_line_award,
+// written with its audit row. reason is the operator's constrained justification; award snapshots the cleared line
+// award. The table name says "correction" for history, but the audit KIND is what distinguishes the two.
 const lineCorrectionsTable = `CREATE TABLE line_corrections (
   event_id TEXT NOT NULL REFERENCES events(id),
   sequence INTEGER NOT NULL,
@@ -990,15 +991,18 @@ function readBingoAward(db: DatabaseSync, eventId: string, audit: PhaseAuditEntr
 // A correction with nothing to pair belongs to the legacy generic checking flow (pre-#33 transitionPhase
 // accepted it; migrations preserve those histories) and never enters the direct-award consistency checks.
 function directAwardLedger(audit: PhaseAuditEntry[], declareKind: PhaseAuditEntry['kind'],
-    correctKind: PhaseAuditEntry['kind']): {
+    pairingKinds: readonly PhaseAuditEntry['kind'][]): {
   declared: number; corrected: number; lastSequence: number | null;
 } {
+  // A pairing kind is any audited entry that closes one unmatched declare. Corrections close it by moving the
+  // phase; the post-bingo line-award reset (#112) closes it without moving the phase at all.
+  const pairs = new Set<PhaseAuditEntry['kind']>(pairingKinds);
   let declared = 0;
   let corrected = 0;
   let lastSequence: number | null = null;
   for (const entry of audit) {
     if (entry.kind === declareKind) { declared += 1; lastSequence = entry.sequence; }
-    else if (entry.kind === correctKind && declared > corrected) corrected += 1;
+    else if (pairs.has(entry.kind) && declared > corrected) corrected += 1;
   }
   return { declared, corrected, lastSequence };
 }
@@ -1006,7 +1010,7 @@ function directAwardLedger(audit: PhaseAuditEntry[], declareKind: PhaseAuditEntr
 function checkBingoAward(db: DatabaseSync, eventId: string, audit: PhaseAuditEntry[]): void {
   const award = readBingoAward(db, eventId, audit);
   const sequence = db.prepare('SELECT audit_sequence FROM bingo_awards WHERE event_id = ?').get(eventId)?.audit_sequence;
-  const ledger = directAwardLedger(audit, 'declare_bingo_directly', 'correct_bingo_declaration');
+  const ledger = directAwardLedger(audit, 'declare_bingo_directly', ['correct_bingo_declaration']);
   if (award === null ? ledger.declared !== ledger.corrected
       : (ledger.declared === 0 || ledger.lastSequence !== sequence)) {
     throw new Error('Invalid stored bingo award: audit and award do not match');
@@ -1055,7 +1059,7 @@ function readBingoDeclarationBaseline(db: DatabaseSync): BingoDeclarationBaselin
   if (id === null || event === null) throw notEligibleBingo('no current event');
   const audit = replayAudit(db, id);
   const line = readLineAwardRecord(db, id, audit);
-  const ledger = directAwardLedger(audit, 'declare_bingo_directly', 'correct_bingo_declaration');
+  const ledger = directAwardLedger(audit, 'declare_bingo_directly', ['correct_bingo_declaration']);
   if (event.phase !== 'line_declared' || event.lastTransitionAt === null || line === null ||
       readBingoAward(db, id, audit) !== null ||
       ledger.declared !== ledger.corrected) {
@@ -1133,7 +1137,7 @@ function readLineDeclarationBaseline(db: DatabaseSync): LineDeclarationBaseline 
   // A direct declare is only correctable while unpaired: the ledger pairs each audited correction with
   // the preceding unmatched direct declare, so declare-then-correct stays re-declarable (legacy generic
   // corrections never pair and never block).
-  const ledger = directAwardLedger(audit, 'declare_line_directly', 'correct_line_declaration');
+  const ledger = directAwardLedger(audit, 'declare_line_directly', ['correct_line_declaration', 'reset_line_award']);
   if (event.phase !== 'drawing' || readLineAward(db, id, audit) !== null ||
       ledger.declared !== ledger.corrected) {
     throw new Error('Line declaration not eligible: the line is already declared');
@@ -1175,6 +1179,77 @@ function parseBaseline(value: unknown): LineDeclarationBaseline {
   }
   return { eventId: value.eventId, calledNumbers: called, phase: 'drawing', lastTransitionAt: value.lastTransitionAt,
     auditSequence: value.auditSequence as number, linePrize: { amount: prize.amount, lot: prize.lot } };
+}
+
+// A post-bingo line-award reset (#112) is taken at `bingo_declared`, a phase neither existing baseline describes:
+// `parseBaseline` demands `drawing` and `BingoDeclarationBaseline` is the snapshot for DECLARING a bingo, one phase
+// earlier. What the operator actually holds when the reset control is offered is the committed BINGO award plus the
+// identity of the LINE award being retired, so that is exactly what the reset's expected value carries.
+export type LineAwardReset = {
+  readonly eventId: string;
+  readonly auditSequence: number;
+  readonly transitionAt: string;
+  readonly reason: string;
+  readonly award: StoredLineAward['award'];
+};
+
+export type LineAwardResetBaseline = {
+  readonly eventId: string;
+  readonly calledNumbers: readonly number[];
+  readonly phase: 'bingo_declared';
+  readonly lastTransitionAt: string;
+  readonly auditSequence: number;
+  readonly bingoPresentationId: string;
+  readonly lineAuditSequence: number;
+};
+
+function parseLineAwardResetBaseline(value: unknown): LineAwardResetBaseline {
+  const invalid = () => new Error('Invalid line award reset baseline');
+  const plain = (v: unknown): v is Record<string, unknown> =>
+    typeof v === 'object' && v !== null && !Array.isArray(v);
+  const exact = (v: Record<string, unknown>, keys: string[]) =>
+    Object.keys(v).length === keys.length && keys.every((key) => Object.hasOwn(v, key));
+  if (!plain(value) || !exact(value, ['eventId', 'calledNumbers', 'phase', 'lastTransitionAt', 'auditSequence',
+    'bingoPresentationId', 'lineAuditSequence'])) {
+    throw invalid();
+  }
+  if (typeof value.eventId !== 'string' || !Array.isArray(value.calledNumbers) ||
+      value.phase !== 'bingo_declared' || !canonicalTime(value.lastTransitionAt) ||
+      !Number.isSafeInteger(value.auditSequence) || (value.auditSequence as number) < 1 ||
+      typeof value.bingoPresentationId !== 'string' || value.bingoPresentationId === '' ||
+      !Number.isSafeInteger(value.lineAuditSequence) || (value.lineAuditSequence as number) < 1) {
+    throw invalid();
+  }
+  // Dense, ordered, valid and unique balls, same decode rule as the declaration baseline; a private copy so the
+  // caller cannot change the input between this check and the comparison inside the transaction.
+  const called: number[] = [];
+  const seen = new Set<number>();
+  for (let index = 0; index < value.calledNumbers.length; index += 1) {
+    const ball: unknown = Object.hasOwn(value.calledNumbers, index) ? value.calledNumbers[index] : undefined;
+    if (typeof ball !== 'number' || !Number.isInteger(ball) || ball < 1 || ball > 90 || seen.has(ball)) throw invalid();
+    seen.add(ball);
+    called.push(ball);
+  }
+  return Object.freeze({ eventId: value.eventId, calledNumbers: Object.freeze(called), phase: 'bingo_declared' as const,
+    lastTransitionAt: value.lastTransitionAt, auditSequence: value.auditSequence as number,
+    bingoPresentationId: value.bingoPresentationId, lineAuditSequence: value.lineAuditSequence as number });
+}
+
+// The reset is only offered on a committed bingo whose line award still stands, so the reader refuses otherwise and
+// hands the operator exactly the identities the write will later re-check.
+function readLineAwardResetBaseline(db: DatabaseSync): LineAwardResetBaseline {
+  const id = readActiveEventId(db);
+  const event = id === null ? null : readEvent(db);
+  if (id === null || event === null || event.phase !== 'bingo_declared' || event.lastTransitionAt === null) {
+    throw new Error('Line award reset requires a declared bingo');
+  }
+  const audit = replayAudit(db, id);
+  const bingo = readBingoAwardRecord(db, id, audit);
+  const line = readLineAwardRecord(db, id, audit);
+  if (bingo === null || line === null) throw new Error('Line award reset requires a declared bingo');
+  return Object.freeze({ eventId: id, calledNumbers: Object.freeze([...event.calledNumbers]),
+    phase: 'bingo_declared' as const, lastTransitionAt: event.lastTransitionAt, auditSequence: audit.length,
+    bingoPresentationId: bingo.stored.presentation.id, lineAuditSequence: line.auditSequence });
 }
 
 function sameBaseline(a: LineDeclarationBaseline, b: LineDeclarationBaseline): boolean {
@@ -1571,6 +1646,10 @@ export function createEventStore(path: string) {
     // Audited line correction (#29): rebuilds the pre-declaration identity for the committed line, the exact
     // token correctLineDeclaration accepts: the head is the direct declare; the pre-declare head is the entry
     // before it (null when the declare is the first audit row). Read-only snapshot, never a write.
+    // The reset's expected snapshot (#112): the committed bingo plus the identity of the line award being retired.
+    loadLineAwardResetBaseline(): LineAwardResetBaseline {
+      return readLineAwardResetBaseline(db);
+    },
     loadLineCorrectionBaseline(): LineDeclarationBaseline {
       return readSnapshot(() => {
         const id = readActiveEventId(db);
@@ -1644,6 +1723,70 @@ export function createEventStore(path: string) {
           eventId: id, auditSequence: audit.length + 1, transitionAt: at, reason,
           award: record.stored.award,
         });
+      });
+    },
+    // The post-bingo line-award reset (#112): retires the declared line award while the bingo stands, WITHOUT moving
+    // the phase — that is the whole point, because S8 forbids reopening drawing after the bingo. It pairs the audited
+    // declare exactly like a correction does, so the direct-award ledger stays balanced and no later baseline is
+    // poisoned, and it snapshots the cleared award into the same append-only evidence table a correction writes.
+    resetLineAward(expected: unknown, reason: unknown, at: unknown): LineAwardReset {
+      const baseline = parseLineAwardResetBaseline(expected);
+      if (typeof reason !== 'string' || reason !== reason.trim() || reason.length < 1 || reason.length > 200) {
+        throw new Error('Invalid line award reset reason');
+      }
+      if (!canonicalTime(at)) throw new Error('Invalid phase transition timestamp');
+      return transaction(() => {
+        const id = readActiveEventId(db);
+        if (id === null) throw new Error('Current event does not exist');
+        const current = readEvent(db);
+        if (current === null || current.phase !== 'bingo_declared' || current.lastTransitionAt === null) {
+          throw new Error('Line award reset requires a declared bingo');
+        }
+        if (at <= current.lastTransitionAt) throw new Error('Invalid phase transition timestamp');
+        const audit = replayAudit(db, id);
+        if (baseline.eventId !== id || baseline.auditSequence !== audit.length ||
+            JSON.stringify([...current.calledNumbers]) !== JSON.stringify([...baseline.calledNumbers])) {
+          throw new Error('Stale line award reset snapshot');
+        }
+        const bingo = readBingoAwardRecord(db, id, audit);
+        const line = readLineAwardRecord(db, id, audit);
+        if (bingo === null || line === null || bingo.stored.presentation.id !== baseline.bingoPresentationId ||
+            line.auditSequence !== baseline.lineAuditSequence) {
+          throw new Error('Stale line award reset snapshot');
+        }
+        // #112 T3 (owner decision): a live run is never destroyed silently. At `bingo_declared` the LINE presentation
+        // is always completed — declaring a bingo is gated on its delivery being resolved — so the only run that can
+        // be in flight here is the BINGO celebration. A started run must be cancelled explicitly first, because that
+        // is what records the `interrupted` disposition; a pending one has not started, so it is failed here rather
+        // than left muted under a row that is about to disappear.
+        const bingoStatus = bingo.stored.presentation.status;
+        if (bingoStatus === 'started') {
+          throw new Error('Line award reset requires the bingo celebration to be cancelled first');
+        }
+        if (bingoStatus === 'pending') {
+          db.prepare(`UPDATE bingo_awards SET presentation_status = 'failed'
+            WHERE event_id = ? AND presentation_id = ? AND presentation_status = 'pending'`)
+            .run(id, bingo.stored.presentation.id);
+        }
+        const moved = db.prepare(`UPDATE events SET lastTransitionAt = ?
+          WHERE id = ? AND phase = 'bingo_declared' AND lastTransitionAt = ?`)
+          .run(at, id, current.lastTransitionAt);
+        if (moved.changes !== 1) throw new Error('Line award reset changed concurrently');
+        db.prepare(`INSERT INTO phase_audit (event_id, sequence, transitionAt, kind, from_phase, to_phase)
+          VALUES (?, ?, ?, 'reset_line_award', 'bingo_declared', 'bingo_declared')`)
+          .run(id, audit.length + 1, at);
+        db.prepare('DELETE FROM line_awards WHERE event_id = ?').run(id);
+        db.prepare(`INSERT INTO line_corrections (event_id, sequence, transitionAt, reason, award)
+          VALUES (?, ?, ?, ?, ?)`)
+          .run(id, audit.length + 1, at, reason, JSON.stringify(line.stored.award));
+        // Revalidate by reading the event itself: `readLineDeclarationBaseline` refuses on this phase by design.
+        const after = readEvent(db);
+        if (after === null || after.phase !== 'bingo_declared' || after.lastTransitionAt !== at ||
+            readLineAward(db, id, replayAudit(db, id)) !== null) {
+          throw new Error('Invalid stored line award reset: mismatch after write');
+        }
+        return Object.freeze({ eventId: id, auditSequence: audit.length + 1, transitionAt: at, reason,
+          award: line.stored.award });
       });
     },
     correctBingoDeclaration(expected: unknown, reason: unknown, at: unknown): BingoCorrection {
@@ -2239,6 +2382,17 @@ export function createEventStore(path: string) {
     replayBingoPresentation(id: unknown): StoredBingoAward { return stepPresentation(id, 'replay', noTimes, 'bingo'); },
     completeBingoPresentation(id: unknown, now: unknown): StoredBingoAward {
       return stepPresentation(id, 'complete', completePlan('Bingo', now), 'bingo');
+    },
+    // Explicit operator cancel of a STARTED bingo run (#112 T3): the only per-id door to `interrupted`, whose edge
+    // exists in the pure graph but was reachable only from the all-rows startup reconcile. The committed status is
+    // the durable record; stopping the coordinator's timer and unbinding the pending receipt are the caller's job,
+    // in that order. Never a blind retry: the id names exactly the run being cancelled.
+    interruptBingoPresentation(id: unknown): StoredBingoAward {
+      // The times are KEPT, not cleared: the table's CHECK allows NULL times only for `pending`/`failed`, and an
+      // interrupted run is a run that had started. Clearing them here fails the constraint (found by running the
+      // started-branch test), and keeping them is also what the startup reconcile does for the same edge.
+      return stepPresentation(id, 'interrupt',
+        (current) => ({ startedAt: current.startedAt, deadlineAt: current.deadlineAt }), 'bingo');
     },
     // Startup only, like the line ones; never run by open, read or event switching.
     interruptStartedBingoPresentations(): number { return reconcilePresentations('bingo', 'started'); },
