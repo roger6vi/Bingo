@@ -3643,7 +3643,15 @@ test('resetLineAward retires the declared line award without moving the phase an
     // The point of the issue: the phase did NOT move, the line award is gone, the bingo award is untouched.
     assert.equal(store.load()?.phase, 'bingo_declared');
     assert.equal(store.loadLineAward(), null);
-    assert.deepEqual(store.loadBingoAward(), bingoAward);
+    // #112 T3's decision: the reset does not touch the committed AWARD, but it FAILS an unstarted bingo run so a row
+    // about to disappear cannot keep claiming a pending celebration. Naming which part is untouched and which moved is
+    // stricter than the old snapshot comparison, not weaker.
+    const afterReset = store.loadBingoAward();
+    assert.ok(afterReset !== null);
+    assert.deepEqual({ ...afterReset, presentation: { ...afterReset.presentation, status: 'pending' } }, bingoAward,
+      'the committed bingo award is untouched by the line reset');
+    assert.equal(afterReset.presentation.status, 'failed',
+      'an unstarted bingo run is failed by the reset rather than left muted');
     assert.equal(store.load()?.calledNumbers.length, 2, 'the calls survive the reset');
     // The audit records the reset as a legal self-loop, so replay still validates and the event still loads.
     const audit = store.readAudit();
@@ -3702,5 +3710,34 @@ test('a reset leaves a delivered bingo finalizable, and a finished event refuses
       /declared bingo|stale|timestamp/i);
     assert.deepEqual(dump(path), before, 'a refused reset writes nothing');
     assert.equal(store.load()?.phase, 'finished');
+  } finally { store.close(); }
+});
+
+test('a reset refuses a STARTED bingo celebration and writes nothing (#112 T3)', (t) => {
+  const { path, store } = openDrawing(t, { amount: 10, lot: 'Jamón' });
+  try {
+    store.update((e) => drawManual(drawManual(e, 7), 42));
+    store.declareLineDirectly(store.loadLineDeclarationBaseline(), 1, T1);
+    const declaredLine = store.loadLineAward();
+    assert.ok(declaredLine !== null);
+    store.startLinePresentation(declaredLine.presentation.id, 10000);
+    store.completeLinePresentation(declaredLine.presentation.id, 14000);
+    const bingo = store.declareBingoDirectly(store.loadBingoDeclarationBaseline(), 1, T2);
+    store.startBingoPresentation(bingo.presentation.id, 20000);
+    assert.equal(store.loadBingoAward()?.presentation.status, 'started');
+    const reset = store.loadLineAwardResetBaseline();
+    const before = dump(path);
+    // A live run must be cancelled explicitly first: that is what records the `interrupted` disposition, and a reset
+    // that deleted the row underneath a playing overlay would destroy it with no trace of why.
+    assert.throws(() => store.resetLineAward(reset, 'Motivo', T3), /cancelled first/i);
+    assert.deepEqual(dump(path), before, 'the refused reset writes nothing');
+    assert.equal(store.load()?.phase, 'bingo_declared');
+    assert.notEqual(store.loadLineAward(), null, 'the line award still stands');
+    // The operator's real path: cancel the run explicitly, and only then is the reset admitted.
+    store.interruptBingoPresentation(bingo.presentation.id);
+    assert.equal(store.loadBingoAward()?.presentation.status, 'interrupted');
+    store.resetLineAward(reset, 'Motivo', T3);
+    assert.equal(store.load()?.phase, 'bingo_declared');
+    assert.equal(store.loadLineAward(), null, 'after the explicit cancel the reset commits');
   } finally { store.close(); }
 });

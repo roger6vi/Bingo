@@ -1754,6 +1754,20 @@ export function createEventStore(path: string) {
             line.auditSequence !== baseline.lineAuditSequence) {
           throw new Error('Stale line award reset snapshot');
         }
+        // #112 T3 (owner decision): a live run is never destroyed silently. At `bingo_declared` the LINE presentation
+        // is always completed — declaring a bingo is gated on its delivery being resolved — so the only run that can
+        // be in flight here is the BINGO celebration. A started run must be cancelled explicitly first, because that
+        // is what records the `interrupted` disposition; a pending one has not started, so it is failed here rather
+        // than left muted under a row that is about to disappear.
+        const bingoStatus = bingo.stored.presentation.status;
+        if (bingoStatus === 'started') {
+          throw new Error('Line award reset requires the bingo celebration to be cancelled first');
+        }
+        if (bingoStatus === 'pending') {
+          db.prepare(`UPDATE bingo_awards SET presentation_status = 'failed'
+            WHERE event_id = ? AND presentation_id = ? AND presentation_status = 'pending'`)
+            .run(id, bingo.stored.presentation.id);
+        }
         const moved = db.prepare(`UPDATE events SET lastTransitionAt = ?
           WHERE id = ? AND phase = 'bingo_declared' AND lastTransitionAt = ?`)
           .run(at, id, current.lastTransitionAt);
@@ -2368,6 +2382,17 @@ export function createEventStore(path: string) {
     replayBingoPresentation(id: unknown): StoredBingoAward { return stepPresentation(id, 'replay', noTimes, 'bingo'); },
     completeBingoPresentation(id: unknown, now: unknown): StoredBingoAward {
       return stepPresentation(id, 'complete', completePlan('Bingo', now), 'bingo');
+    },
+    // Explicit operator cancel of a STARTED bingo run (#112 T3): the only per-id door to `interrupted`, whose edge
+    // exists in the pure graph but was reachable only from the all-rows startup reconcile. The committed status is
+    // the durable record; stopping the coordinator's timer and unbinding the pending receipt are the caller's job,
+    // in that order. Never a blind retry: the id names exactly the run being cancelled.
+    interruptBingoPresentation(id: unknown): StoredBingoAward {
+      // The times are KEPT, not cleared: the table's CHECK allows NULL times only for `pending`/`failed`, and an
+      // interrupted run is a run that had started. Clearing them here fails the constraint (found by running the
+      // started-branch test), and keeping them is also what the startup reconcile does for the same edge.
+      return stepPresentation(id, 'interrupt',
+        (current) => ({ startedAt: current.startedAt, deadlineAt: current.deadlineAt }), 'bingo');
     },
     // Startup only, like the line ones; never run by open, read or event switching.
     interruptStartedBingoPresentations(): number { return reconcilePresentations('bingo', 'started'); },
